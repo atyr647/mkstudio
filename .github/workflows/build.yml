@@ -18,12 +18,118 @@ permissions:
   contents: write   # only used to attach starpacks to a tagged release
 
 jobs:
+
+  # ---------------------------------------------------------------- current Tcl/Tk runtimes for Linux and Windows
+  # The prebuilt tclkits (Tcl/Tk 8.6.3, 2014, zlib 1.2.8) are old.  Current Tcl/Tk 8.6.16 + Metakit kits are built
+  # here with KitCreator (tools/build-kit.sh), the way the macOS job builds its own, and cached until the script changes.
+  kit-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache the kit
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: kit-out/tclkit-8.6.16-linux-x86_64
+          key: kit-linux-${{ hashFiles('tools/build-kit.sh') }}
+      # glibc 2.28 (AlmaLinux 8): the kit then runs on RHEL 8+, Debian 10+, Ubuntu 18.10+ and anything newer
+      - name: Build Tcl/Tk 8.6.16 + Metakit in a glibc 2.28 container
+        if: steps.cache.outputs.cache-hit != 'true'
+        timeout-minutes: 50
+        run: |
+          mkdir -p kit-out
+          docker run --rm -v "$PWD":/src -w /src quay.io/pypa/manylinux_2_28_x86_64 bash -c '
+            set -e
+            yum install -y tcl autoconf automake libX11-devel libXft-devel fontconfig-devel freetype-devel libXext-devel libXrender-devel libXScrnSaver-devel
+            tools/build-kit.sh linux /src/kit-out'
+          ls -la kit-out
+      - name: What the kit needs from the machine it runs on
+        run: |
+          KIT=kit-out/tclkit-8.6.16-linux-x86_64
+          chmod +x "$KIT"
+          ls -la "$KIT"
+          ldd "$KIT"
+          echo "newest glibc symbol:"; objdump -T "$KIT" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1
+          # it must not need more than glibc 2.28 nor a libstdc++ of its own
+          newest=$(objdump -T "$KIT" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1 | cut -d_ -f2)
+          [ "$(printf '%s\n2.28\n' "$newest" | sort -V | tail -1)" = "2.28" ] || { echo "::error::needs glibc $newest"; exit 1; }
+          if ldd "$KIT" | grep -q 'libstdc++'; then echo "::error::links libstdc++ dynamically"; exit 1; fi
+      - name: Smoke test - Tk opens a window, Metakit and the vfs work
+        run: |
+          sudo apt-get update && sudo apt-get install -y xvfb
+          KIT=$PWD/kit-out/tclkit-8.6.16-linux-x86_64
+          cat > "$RUNNER_TEMP/smoke.tcl" <<'EOS'
+          puts "tcl [info patchlevel]"
+          package require Tk
+          puts "tk [package require Tk] [tk windowingsystem]"
+          puts "mk4tcl [package require Mk4tcl]"
+          puts "vfs [package require vfs::mk4]"
+          label .l -text hello; pack .l; update
+          puts "window [winfo width .] x [winfo height .] fonts [llength [font families]]"
+          puts "zlib [zlib adler32 hello]"
+          exit 0
+          EOS
+          xvfb-run -a "$KIT" "$RUNNER_TEMP/smoke.tcl"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kit-linux
+          path: kit-out/tclkit-8.6.16-linux-x86_64
+
+  kit-windows:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache the kit
+        id: cache
+        uses: actions/cache@v4
+        with:
+          path: kit-out/tclkit-8.6.16-windows-x86_64.exe
+          key: kit-windows-${{ hashFiles('tools/build-kit.sh') }}
+      - name: Build Tcl/Tk 8.6.16 + Metakit with mingw-w64
+        if: steps.cache.outputs.cache-hit != 'true'
+        timeout-minutes: 50
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64 tcl8.6 autoconf automake
+          # the win32 thread model needs no winpthread DLL
+          sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-win32
+          sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-win32
+          mkdir -p kit-out
+          tools/build-kit.sh windows "$PWD/kit-out"
+          ls -la kit-out
+      - name: What the kit needs from Windows
+        run: |
+          KIT=kit-out/tclkit-8.6.16-windows-x86_64.exe
+          ls -la "$KIT"; file "$KIT"
+          x86_64-w64-mingw32-objdump -p "$KIT" | grep -i 'DLL Name' | sort -u
+          # a mingw runtime DLL here would make the program fail on a machine without it
+          if x86_64-w64-mingw32-objdump -p "$KIT" | grep -i 'DLL Name' | grep -qiE 'libgcc|libstdc|libwinpthread|zlib1'; then
+            echo "::error::the kit depends on a mingw runtime DLL"; exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kit-windows
+          path: kit-out/tclkit-8.6.16-windows-x86_64.exe
+
   # ---------------------------------------------------------------- Linux: test + build every starpack
   linux:
+    needs: [kit-linux, kit-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: kit-linux
+          path: tools/ext
+      - uses: actions/download-artifact@v4
+        with:
+          name: kit-windows
+          path: tools/ext
+      - name: Current runtimes are executable
+        run: chmod +x tools/ext/tclkit-8.6.16-*
 
       - name: Install tools
         run: sudo apt-get update && sudo apt-get install -y tcl8.6 xvfb imagemagick strace
@@ -35,11 +141,11 @@ jobs:
         run: tclsh8.6 tests/lint.tcl
       - name: Engine tests (stand-in Metakit)
         run: tclsh8.6 tests/test_mkql.tcl
-      # Every suite runs on BOTH Tcl runtimes (8.6.3 and 8.5.17) against real Metakit; the ones that can also
+      # Every suite runs on BOTH Tcl runtimes (current 8.6.16 and 8.5.17) against real Metakit; the ones that can also
       # run on the pure-Tcl stand-in do that too.
       - name: Engine, contract, persistence, semantics, provider lifecycle and contract (real Metakit, Tcl 8.6 and 8.5)
         run: |
-          for kit in tools/ext/tclkit-8.6.3-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+          for kit in tools/ext/tclkit-8.6.16-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
             echo "=== $kit"
             for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract; do
               echo "--- $t"; REAL_MK=1 $kit tests/$t.tcl
@@ -51,51 +157,51 @@ jobs:
       - name: Optimised executor == reference executor (random queries; stand-in, Metakit 8.6, Metakit 8.5)
         run: |
           MKS_FUZZ=1000 tclsh8.6 tests/test_engine_diff.tcl
-          MKS_FUZZ=1500 REAL_MK=1 tools/ext/tclkit-8.6.3-linux-x86_64 tests/test_engine_diff.tcl
+          MKS_FUZZ=1500 REAL_MK=1 tools/ext/tclkit-8.6.16-linux-x86_64 tests/test_engine_diff.tcl
           MKS_FUZZ=800 MKS_SEED=5 REAL_MK=1 tools/ext/tclkit-8.5.17-linux-x86_64 tests/test_engine_diff.tcl
 
       - name: Crash-safe editing (real Metakit, kills a committing process; Tcl 8.6 and 8.5)
         run: |
-          MKS_CRASH_TRIALS=15 tools/ext/tclkit-8.6.3-linux-x86_64 tests/run.tcl tests/test_crash_safety.tcl
+          MKS_CRASH_TRIALS=15 tools/ext/tclkit-8.6.16-linux-x86_64 tests/run.tcl tests/test_crash_safety.tcl
           MKS_CRASH_TRIALS=8 tools/ext/tclkit-8.5.17-linux-x86_64 tests/run.tcl tests/test_crash_safety.tcl
 
       - name: Power loss, best effort (synthesised after-power-cut files; real kills at every point of a real commit)
         run: |
-          REAL_MK=1 tools/ext/tclkit-8.6.3-linux-x86_64 tests/run.tcl tests/test_power_loss.tcl
+          REAL_MK=1 tools/ext/tclkit-8.6.16-linux-x86_64 tests/run.tcl tests/test_power_loss.tcl
           MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views REAL_MK=1 tools/ext/tclkit-8.5.17-linux-x86_64 tests/run.tcl tests/test_power_loss.tcl
 
       - name: Power safety (first commit, checksum, backup), crash reports, update path (Tcl 8.6 and 8.5)
         run: |
-          for kit in tools/ext/tclkit-8.6.3-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+          for kit in tools/ext/tclkit-8.6.16-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
             for t in test_durability test_crash test_update; do REAL_MK=1 $kit tests/run.tcl tests/$t.tcl; done
           done
 
       - name: Write-lock protocol, crash points and chaos (Tcl 8.6 and 8.5)
         run: |
-          for kit in tools/ext/tclkit-8.6.3-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+          for kit in tools/ext/tclkit-8.6.16-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
             REAL_MK=1 $kit tests/run.tcl tests/test_lock_protocol.tcl
             REAL_MK=1 $kit tests/run.tcl tests/test_lock_crash.tcl
           done
 
       - name: Grid virtualisation (real Metakit, Tcl 8.6 and 8.5)
         run: |
-          REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.6.3-linux-x86_64 tests/test_grid.tcl
+          REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.6.16-linux-x86_64 tests/test_grid.tcl
           REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.5.17-linux-x86_64 tests/test_grid.tcl
 
       - name: UI logic (real Metakit, Tcl 8.6)
-        run: REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.6.3-linux-x86_64 tests/gui_logic.tcl
+        run: REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.6.16-linux-x86_64 tests/gui_logic.tcl
       - name: UI logic (real Metakit, Tcl 8.5)
         run: REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.5.17-linux-x86_64 tests/gui_logic.tcl
 
-      - name: Build starpacks (Linux, Windows)
-        run: ./build.sh all
+      - name: Build starpacks (Linux, Windows) on the current runtimes
+        run: MKS_REQUIRE_CURRENT=1 ./build.sh all
       - name: Verify embedded payloads
-        run: tools/ext/tclkit-8.6.3-linux-x86_64 tests/verify_payload.tcl dist/*
+        run: tools/ext/tclkit-8.6.16-linux-x86_64 tests/verify_payload.tcl dist/*
       - name: Launch the Linux starpack
         run: tests/smoke_starpack.sh
       - name: Real self-update - the real starpack replaces a running program (Tcl 8.6 and 8.5)
         run: |
-          for kit in tools/ext/tclkit-8.6.3-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+          for kit in tools/ext/tclkit-8.6.16-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
             MKS_TEST_STARPACK="$PWD/dist/mkstudio-linux-x86_64" REAL_MK=1 $kit tests/run.tcl tests/test_update.tcl
           done
       - name: --version and --selftest of the Linux starpack
@@ -120,7 +226,7 @@ jobs:
         shell: bash
     env:
       REAL_MK: '1'
-      KIT: tools/ext/tclkit-8.6.3-win32-x86_64.exe
+      KIT: tools/ext/tclkit-8.6.16-windows-x86_64.exe
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -128,8 +234,10 @@ jobs:
           name: starpacks
           path: dist
 
-      - name: Fetch tclkit runtimes
-        run: tools/fetch-runtimes.sh
+      - uses: actions/download-artifact@v4
+        with:
+          name: kit-windows
+          path: tools/ext
 
       # The Windows tclkit has no console, so each test also writes its output to MKS_TEST_LOG.
       - name: Engine, contract, persistence and UI tests on Windows (real Metakit)
