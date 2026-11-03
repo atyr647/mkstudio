@@ -90,6 +90,22 @@ leave it alone.
 
 **Read-only open** takes no lock. A read-only opener may look at the lock to warn the user.
 
+**One name per database.** The lock file is named after the database's *real* path: MK Studio resolves symbolic links (the last
+component too) before it takes the lock, so `current.mk` (a link) and `real/sales.mk` share one lock. A *hard link* is a second name
+for the same file and cannot be told from another file by name: inside one MK Studio process the same device and inode is refused
+("already open"), but a different process opening a hard link of a database that is open elsewhere takes a different lock file.
+Do not hard-link databases.
+
+**An unreadable lock is a held lock.** If `<database>.lock` exists but cannot be read (another user's file under a strict umask, a
+permissions problem) the database is treated as held by an owner that cannot be named - never as free.
+
+**Process start times, on every system.** A lock names a pid; after a crash or a restart the system may hand that pid to an
+unrelated program, which would make the lock look held for ever. The process that *wrote* the lock is told from a later one with
+the same pid by its start time: a process that started after the lock file was written cannot be its owner (Linux `/proc`; macOS
+and BSD `ps -o etime=`; Windows PowerShell `Get-Process`). Where nothing can tell, the lock is respected. The application also
+offers *Remove Lock...* (with a confirmation) for a lock the user knows is dead - for example a lock from another host name, which
+is always respected because a remote process cannot be checked.
+
 **Limits.** The lock is advisory: programs that don't follow it are not stopped. `O_EXCL` is reliable on local
 file systems and modern NFS; on exotic network file systems it may not be, in which case run one server instead.
 **Time limits and slow processes.** The two abandonment limits (5 s for an empty lock file, 10 s for the takeover guard) assume that a
@@ -123,10 +139,11 @@ MK Studio keeps a few small files beside `sales.mk`. Another component that writ
 | file | what | lifetime |
 |---|---|---|
 | `sales.mk.lock`, `.lock.guard` | the advisory write lock (above) | while a writer has the file open |
-| `sales.mk.commit` | `<header-hex16> <size>` of the last committed state, or `empty 0` for a new file - written and forced to disk **before** a commit, removed after it | only during a commit; finding it at open means the commit never finished, and the next writer puts the header and size back (`store::repairFile`). Do not delete it, do not "complete" the commit |
+| `sales.mk.commit` | `<header-hex16> <size>` of the last committed state, or `empty 0` for a new file - written and forced to disk **before** a commit; after it, first rewritten to describe the *finished* file (so it cannot undo the commit even if deleting it fails or the delete is lost in a power cut), then removed | only during a commit; finding it at open means the commit never finished, and the next writer puts the header and size back (`store::repairFile`). Do not delete it, do not "complete" the commit |
 | `sales.mk.sum` | `<crc32> <size> <mtime>` of the file after its last commit | kept; checked at the next write-open only while size and mtime still match |
-| `sales.mk.bak` | the file as it was before the first commit of the last editing session | kept; replaced at the next session that commits |
-| `sales.mk.damaged` | a file that failed its checksum, set aside by *Restore Backup* | until the user deletes it |
+| `sales.mk.bak` | the file as it was before the first commit of the last editing session (copied completely and forced to disk before it replaces the previous backup) | kept; replaced at the next session that commits |
+| `sales.mk.bak.good` | a second copy of the backup, made when a file that failed its checksum was opened anyway and then saved: the next session would otherwise copy the damaged data over `.bak`. Restore Backup prefers it and deletes it afterwards | until restored |
+| `sales.mk.damaged` (`.damaged.1`, ...) | a file that failed its checksum, set aside by *Restore Backup* - an earlier one is never overwritten | until the user deletes it |
 
 A program that writes the database without this protocol (mkit-sql's own storage layer, a script) leaves `.sum` out of date; that is
 harmless - the next MK Studio open sees a different size or time, calls it a legitimate change and takes a new baseline.

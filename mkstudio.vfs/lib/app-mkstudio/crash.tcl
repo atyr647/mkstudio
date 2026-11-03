@@ -100,12 +100,60 @@ proc ::crash::scrub {text} {
         }
     }
     set text [string map $map $text]
+    # the user name, as text (NOT as a pattern: a name such as "Ann (Work" or "Bob[1]" is not a valid regular expression)
     foreach v {USER USERNAME LOGNAME} {
-        if {[info exists ::env($v)] && [string length $::env($v)] > 2} { regsub -all -- [string map {. {\.}} $::env($v)] $text <user> text }
+        if {[info exists ::env($v)] && [string length $::env($v)] > 2} { set text [string map [list $::env($v) <user>] $text] }
     }
-    # database file names are the user's business
-    regsub -all {[^\s"'<>|]*[\\/]([^\\/\s"'<>|]+\.(mk|mk4|db|dat))} $text {<folder>/\1} text
+    # Quoted text in an error message is where a value can sneak in ("bad value 'Jane Roe 123-45-6789'").  Quotes around a plain
+    # name (a variable, a command, a view) stay - that is what makes the message useful; anything else inside quotes goes.
+    set text [scrubQuoted $text]
+    # file names are the user's business: a path (it runs to the next ": " or the end of the line - folder names have spaces)
+    # becomes <folder>/<file> plus its extension; so does a bare name that looks like a database file
+    set text [scrubPaths $text]
+    regsub -all {[^\s"'<>|/\\]+(\.(?:mk|mk4|mkd|db|dat|kit|metakit))(?![A-Za-z0-9_])} $text {<file>\1} text
     return $text
+}
+proc ::crash::scrubPaths {text} {
+    set out "" ; set pos 0
+    set re {(?:[A-Za-z]:[\\/]|~[\\/]|/)(?:[^\n"'<>|:]|:(?! ))+}
+    while {[regexp -indices -start $pos $re $text m]} {
+        lassign $m s e
+        set prev [expr {$s == 0 ? " " : [string index $text [expr {$s - 1}]]}]
+        if {![string is space $prev] && [string first $prev "(\[\{=,\"'"] < 0} {
+            append out [string range $text $pos $s] ; set pos [expr {$s + 1}] ; continue       ;# "and/or", "a/b": not a path
+        }
+        set hit [string range $text $s $e]
+        set ext ""
+        regexp {(\.[A-Za-z0-9]{1,6})\s*$} $hit -> ext
+        append out [string range $text $pos [expr {$s - 1}]] "<folder>/<file>$ext"
+        set pos [expr {$e + 1}]
+    }
+    append out [string range $text $pos end]
+    return $out
+}
+proc ::crash::scrubQuoted {text} {
+    set out "" ; set pos 0 ; set n [string length $text]
+    while {$pos < $n} {
+        # a quote opens a quoted string only at the start of a word - the apostrophe in "can't" does not
+        set qs -1 ; set from $pos
+        while {[regexp -indices -start $from {['"]} $text m]} {
+            set at [lindex $m 0]
+            set prev [expr {$at == 0 ? " " : [string index $text [expr {$at - 1}]]}]
+            if {[string is space $prev] || [string first $prev "(\[\{=:,"] >= 0} { set qs $at ; break }
+            set from [expr {$at + 1}]
+        }
+        if {$qs < 0} break
+        set quote [string index $text $qs]
+        set close [string first $quote $text [expr {$qs + 1}]]
+        if {$close < 0} break
+        set body [string range $text [expr {$qs + 1}] [expr {$close - 1}]]
+        append out [string range $text $pos $qs]
+        if {[regexp {^[A-Za-z_:][A-Za-z0-9_:.\-]{0,60}$} $body]} { append out $body } else { append out "..." }
+        append out $quote
+        set pos [expr {$close + 1}]
+    }
+    append out [string range $text $pos end]
+    return $out
 }
 proc ::crash::header {title} {
     set tk "no"
@@ -154,9 +202,16 @@ proc ::crash::save {text {tag crash}} {
     while {[file exists $f]} { set f $base-[incr n].txt }
     if {[catch {set h [open $f w] ; fconfigure $h -encoding utf-8 ; puts -nonewline $h $text ; close $h}]} { return "" }
     set lastReport $f
-    # keep the newest `keep` reports
-    set all [lsort -decreasing [glob -nocomplain -directory $d *.txt]]
-    foreach old [lrange $all $keep end] { catch {file delete $old} }
+    # keep the newest `keep` reports of each kind (by modification time, not by name: many "unexpected-end" files must not push
+    # out the one real "crash" report that was just written)
+    foreach kind {crash unexpected-end} {
+        set all {}
+        foreach x [glob -nocomplain -directory $d $kind-*.txt] { if {$x ne $f} { lappend all [list [file mtime $x] $x] } }
+        set all [lsort -decreasing -index 0 -integer $all]
+        # (the report just written always stays, whatever the clock says about its neighbours)
+        set room [expr {[string match $d/$kind-* $f] ? $keep - 1 : $keep}]
+        foreach old [lrange $all $room end] { catch {file delete [lindex $old 1]} }
+    }
     return $f
 }
 # the whole story for one error; returns {file text}

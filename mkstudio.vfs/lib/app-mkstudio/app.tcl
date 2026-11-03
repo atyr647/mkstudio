@@ -599,7 +599,14 @@ proc ::app::openOne {path} {
     if {[catch {::store::openFile $path} tag opts]} {
         set code [dict get $opts -errorcode]
         if {[lindex $code 0] eq "STORE" && [lindex $code 1] eq "LOCKED"} {
-            set r [::ui::ask "Database in use" "$tag\n\nTwo programs writing the same Metakit file can corrupt it. You can look at it read-only, but what you see may be inconsistent while the other process is saving." {"Open Read-Only" Cancel} warn]
+            set r [::ui::ask "Database in use" "$tag\n\nTwo programs writing the same Metakit file can corrupt it. You can look at it read-only, but what you see may be inconsistent while the other process is saving.\n\nIf no program has this file open any more (it crashed, or the computer was restarted), the lock it left behind can be removed." {"Open Read-Only" "Remove Lock..." Cancel} warn]
+            if {$r eq "Remove Lock..."} {
+                set who [::store::lockInfo $path]
+                set r2 [::ui::ask "Remove the lock?" "Only do this if you are sure that no program - on this or any other computer - has this database open for editing. Two programs saving into the same file corrupt it.\n\nThe lock says: [expr {[dict exists $who text] ? [dict get $who text] : {(it has just disappeared)}}]" {"Remove Lock and Open" Cancel} warn]
+                if {$r2 ne "Remove Lock and Open"} { return "" }
+                if {[catch {::store::breakLock $path} err]} { ::ui::problem "Could not remove the lock:\n\n$err" "Remove lock" ; return "" }
+                return [openOne $path]
+            }
             if {$r ne "Open Read-Only"} { return "" }
             if {[catch {::store::openFile $path -readonly} tag]} {
                 ::ui::problem "Could not open the file:\n\n$path\n\n$tag" "Open database"
@@ -610,10 +617,11 @@ proc ::app::openOne {path} {
             return ""
         }
     }
+    set path [::store::path $tag]                       ;# the real name (links resolved) - what the lock and the backup are named after
     if {[::store::integrityState $tag] eq "damaged"} {
         # the content of the file changed without its size or time changing: a bad sector, bit rot, a failing disk
-        set bak [::store::backupPath $path]
-        set have [file exists $bak]
+        set bak [::store::backupFile $path]
+        set have [expr {$bak ne ""}]
         set msg "$path\n\nThis file no longer matches the checksum recorded when it was last saved by MK Studio, although its size and date are unchanged. That is what a failing disk or memory looks like: some of the data may be wrong."
         if {$have} {
             append msg "\n\nA backup from [clock format [file mtime $bak] -format {%Y-%m-%d %H:%M}] is available (the file as it was before the last editing session). Restoring it keeps the damaged file next to it as .damaged."

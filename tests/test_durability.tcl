@@ -172,6 +172,128 @@ set t [store::openFile $f3] ; store::setCell $t.items 1 label x ; store::commit 
 check backups_off [file exists $f3.bak] 0
 set store::backups 1
 
+
+# ---- found by the code review: the commit record can never undo a FINISHED commit ----------------------------------------
+# (a virus scanner holds the record on Windows, or the unlink is lost in a power cut on Linux: the old record then says
+# "undo the commit that follows" about a commit that is complete - and for a first commit "empty 0" empties the whole database)
+proc withDeleteFailing {pattern body} {
+    rename ::file ::tcl_file_real
+    proc ::file {args} [format {
+        if {[lindex $args 0] eq "delete" && [string match {%s} [lindex $args end]]} { return -code error "permission denied (simulated)" }
+        uplevel 1 [list ::tcl_file_real {*}$args]
+    } $pattern]
+    set rc [catch {uplevel 1 $body} res opts]
+    rename ::file {}
+    rename ::tcl_file_real ::file
+    return -options $opts $res
+}
+foreach {label first} {first_commit 1 later_commit 0} {
+    set f [tmp dur_stale.mk] ; clean $f
+    if {$first} {
+        set t [store::openFile $f -create] ; store::createView $t items {id:I label:S}
+    } else {
+        set t [mkdb $f 3] ; store::closeFile $t ; set t [store::openFile $f]
+    }
+    store::appendRow $t.items {id label} [list 99 "kept"]
+    set before [rows $t]
+    withDeleteFailing *.commit { store::commit $t }
+    ok "${label}_commit_returned_with_the_record_undeletable" 1
+    check "${label}_record_is_still_there" [file exists $f.commit] 1
+    set rec [readbin $f.commit]
+    set info [store::headerInfo $f]
+    check "${label}_record_describes_the_finished_file" $rec "[dict get $info header] [dict get $info size]"
+    store::closeFile $t
+    set t [store::openFile $f]
+    check "${label}_reopen_keeps_the_data" [rows $t] $before
+    check "${label}_nothing_was_undone" [store::repairedNote $t] ""
+    store::closeFile $t
+    check "${label}_record_gone_after_reopen" [file exists $f.commit] 0
+}
+# and when the record can neither be changed nor deleted the user is told, not left to lose the save later
+set f [tmp dur_stale2.mk] ; set t [mkdb $f 3] ; store::closeFile $t ; set t [store::openFile $f]
+store::appendRow $t.items {id label} [list 100 x]
+# (a record nobody can write, rename or delete: every such call on a *.commit path fails, as under a scanner that locks the file)
+store::beginCommit $f ; mk::file commit $t       ;# (the two halves of store::commit, with the trouble only in the second)
+rename ::file ::tcl_file_real ; rename ::open ::tcl_open_real
+proc ::file {args} {
+    if {[lindex $args 0] in {delete rename} && [string match *.commit* [lindex $args end]]} { return -code error "permission denied (simulated)" }
+    uplevel 1 [list ::tcl_file_real {*}$args]
+}
+proc ::open {path args} {
+    if {[string match *.commit* $path] && [llength $args] && [string match w* [lindex $args 0]]} { return -code error "permission denied (simulated)" }
+    uplevel 1 [list ::tcl_open_real $path {*}$args]
+}
+set rec_dir_trick [catch { store::endCommit $f } msg]
+rename ::file {} ; rename ::open {} ; rename ::tcl_file_real ::file ; rename ::tcl_open_real ::open
+check commit_says_when_the_record_is_stuck $rec_dir_trick 1
+ok commit_stuck_message_explains [string match "*leftover file*" $msg] $msg
+file delete -force $f.commit
+catch {store::closeFile $t}
+
+# ---- found by the code review: one database, one name (symbolic links), and an unreadable lock is a held lock ---------------
+if {$::tcl_platform(platform) ne "windows"} {
+    set dir [tmp dur_links] ; file delete -force $dir ; file mkdir $dir/real $dir/links
+    set real $dir/real/sales.mk
+    set t [mkdb $real 3] ; store::closeFile $t
+    file link -symbolic $dir/links/current.mk ../real/sales.mk
+    file link -symbolic $dir/links/twice.mk current.mk
+    check canonical_resolves_the_last_link [store::canonical $dir/links/current.mk] [file normalize $real]
+    check canonical_resolves_a_chain [store::canonical $dir/links/twice.mk] [file normalize $real]
+    check canonical_leaves_plain_paths [store::canonical $real] [file normalize $real]
+    set t [store::openFile $dir/links/current.mk]
+    check opened_through_a_link_is_the_real_path [store::path $t] [file normalize $real]
+    ok lock_file_is_the_real_ones [file exists $real.lock]
+    ok no_lock_file_next_to_the_link [expr {![file exists $dir/links/current.mk.lock]}]
+    check second_name_is_refused [catch {store::openFile $real}] 1
+    check second_name_via_chain_is_refused [catch {store::openFile $dir/links/twice.mk}] 1
+    file link -hard $dir/links/hard.mk $real
+    check hard_link_to_an_open_database_is_refused [catch {store::openFile $dir/links/hard.mk}] 1
+    store::closeFile $t
+    file delete -force $dir
+}
+# an existing lock that cannot be read is held by somebody we cannot name - never "free" (a directory stands in for an
+# unreadable file: it exists and cannot be read, whoever runs the test)
+set f [tmp dur_unread.mk] ; clean $f ; set t [mkdb $f 2] ; store::closeFile $t
+file mkdir $f.lock
+check unreadable_lock_is_held [dict get [store::lockInfo $f] state] held
+check unreadable_lock_refuses_a_writer [catch {store::openFile $f}] 1
+file delete -force $f.lock
+check lock_gone_means_free [dict get [store::lockInfo $f] state] free
+# the escape hatch for a lock nobody holds any more
+set h [open $f.lock w] ; puts -nonewline $h "424242 some-other-machine" ; close $h
+check foreign_host_lock_is_held [dict get [store::lockInfo $f] state] held
+check break_lock_returns_what_it_removed [store::breakLock $f] "424242 some-other-machine"
+check break_lock_frees_it [dict get [store::lockInfo $f] state] free
+set t [store::openFile $f] ; store::closeFile $t
+
+# ---- found by the code review: a damaged file's good backup survives, and restoring never clobbers an earlier .damaged ------
+set f [tmp dur_bak2.mk] ; set t [mkdb $f 30] ; store::closeFile $t
+set t [store::openFile $f] ; store::setCell $t.items 1 label "session one" ; store::commit $t ; store::closeFile $t
+set good [store::crcFile $f.bak]
+set mt [file mtime $f] ; set d [readbin $f] ; set pos [expr {[string length $d] / 3}]
+writebin $f [string replace $d $pos $pos [format %c [expr {([scan [string index $d $pos] %c] + 7) % 256}]]] ; file mtime $f $mt
+set t [store::openFile $f]
+check damaged_open_anyway_verdict [store::integrityState $t] damaged
+store::setCell $t.items 2 label "edited on top of damage" ; store::commit $t ; store::closeFile $t
+ok good_backup_has_a_protected_copy [file exists $f.bak.good]
+check protected_copy_is_the_good_one [store::crcFile $f.bak.good] $good
+# the NEXT session sees a file that checks out, and copies the damaged data over .bak ...
+set t [store::openFile $f] ; store::setCell $t.items 3 label "next session" ; store::commit $t ; store::closeFile $t
+ok later_session_replaced_the_plain_backup [expr {[store::crcFile $f.bak] ne $good}]
+# ... but the good one is still there, and is the one restored
+check backup_file_prefers_the_protected_copy [store::backupFile $f] $f.bak.good
+store::restoreBackup $f
+check restore_gives_the_good_state [store::crcFile $f] $good
+ok restore_uses_up_the_protected_copy [expr {![file exists $f.bak.good]}]
+ok restore_kept_the_damaged_file [file exists $f.damaged]
+# a second restore must not overwrite the first .damaged
+set d1 [readbin $f.damaged]
+set t [store::openFile $f] ; store::setCell $t.items 4 label "again" ; store::commit $t ; store::closeFile $t
+store::restoreBackup $f
+check second_restore_keeps_the_first_damaged_file [readbin $f.damaged] $d1
+ok second_restore_made_its_own_damaged_file [file exists $f.damaged.1]
+clean [tmp dur_stale.mk] ; clean [tmp dur_stale2.mk] ; clean [tmp dur_unread.mk] ; clean [tmp dur_bak2.mk]
+
 foreach x {dur_sync dur_first dur_sum dur_sum2 dur_bak dur_nobak} { clean [tmp $x.mk] }
 puts "$pass passed, $fail failed"
 exit [expr {$fail ? 1 : 0}]        ;# (explicit: a Windows GUI tclkit would otherwise wait in its event loop)

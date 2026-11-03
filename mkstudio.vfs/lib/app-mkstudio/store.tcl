@@ -92,7 +92,8 @@ proc ::store::pidAlive {pid} {
     if {$pid == [pid]} { return 1 }
     if {$::tcl_platform(platform) eq "windows"} {
         # (tasklist that cannot run is not evidence that the process is gone: never take a lock away on a guess)
-        if {[catch {exec tasklist /FI "PID eq $pid" /NH /FO CSV} out]} { return 1 }
+        set tl [winTool tasklist]
+        if {$tl eq "" || [catch {exec $tl /FI "PID eq $pid" /NH /FO CSV} out]} { return 1 }
         return [expr {[string first "\"$pid\"" $out] >= 0}]
     }
     if {[file isdirectory /proc/self]} {
@@ -124,15 +125,56 @@ proc ::store::procState {pid} {
     if {[catch {set h [open /proc/$pid/stat r] ; set d [read $h] ; close $h}]} { return "" }
     return [lindex [string range $d [expr {[string last ")" $d] + 2}] end] 0]
 }
-# epoch second at which a local process started (Linux: /proc/<pid>/stat field 22 and /proc/stat btime), "" where unknown
+# epoch second at which a local process started, "" where it cannot be found out.  Used to tell the process that wrote a lock
+# from a LATER process that happens to have the same pid (after a reboot or a crash the system hands pids out again).
+#   Linux    /proc/<pid>/stat field 22 and /proc/stat btime
+#   macOS/BSD  ps -o etime= (elapsed time) subtracted from now
+#   Windows  PowerShell Get-Process (~0.5 s; the answer is remembered for a few seconds)
+namespace eval ::store { variable startCache [dict create] }
 proc ::store::procStartTime {pid} {
-    if {[catch {set h [open /proc/$pid/stat r] ; set d [read $h] ; close $h}]} { return "" }
-    set rest [string range $d [expr {[string last ")" $d] + 2}] end]
-    set ticks [lindex $rest 19]
-    if {![string is integer -strict $ticks]} { return "" }
-    if {[catch {set h [open /proc/stat r] ; set st [read $h] ; close $h}] || ![regexp {btime (\d+)} $st -> btime]} { return "" }
-    return [expr {$btime + $ticks / 100}]
+    if {[file isdirectory /proc/self]} {
+        if {[catch {set h [open /proc/$pid/stat r] ; set d [read $h] ; close $h}]} { return "" }
+        set rest [string range $d [expr {[string last ")" $d] + 2}] end]
+        set ticks [lindex $rest 19]
+        if {![string is integer -strict $ticks]} { return "" }
+        if {[catch {set h [open /proc/stat r] ; set st [read $h] ; close $h}] || ![regexp {btime (\d+)} $st -> btime]} { return "" }
+        return [expr {$btime + $ticks / 100}]
+    }
+    variable startCache
+    set now [clock seconds]
+    if {[dict exists $startCache $pid]} {
+        lassign [dict get $startCache $pid] when value
+        if {$now - $when < 5} { return $value }
+    }
+    set value ""
+    if {$::tcl_platform(platform) eq "windows"} {
+        set ps [winTool powershell]
+        if {$ps ne "" && ![catch {exec $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "\$p=Get-Process -Id $pid -ErrorAction Stop; ([DateTimeOffset]\$p.StartTime).ToUnixTimeSeconds()" 2>@1} out]} {
+            if {[string is integer -strict [string trim $out]]} { set value [string trim $out] }
+        }
+    } else {
+        if {![catch {exec ps -o etime= -p $pid} out]} {
+            # [[dd-]hh:]mm:ss
+            if {[regexp {^\s*(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+)\s*$} $out -> dd hh mm ss]} {
+                foreach v {dd hh mm ss} { set x [set $v] ; set $v [expr {$x eq "" ? 0 : [scan $x %d]}] }
+                set value [expr {$now - ((($dd * 24 + $hh) * 60 + $mm) * 60 + $ss)}]
+            }
+        }
+    }
+    dict set startCache $pid [list $now $value]
+    return $value
 }
+# A Windows program by its full path in the system folder.  The search Tcl does for a bare name looks in the folder of the
+# running program and in the current folder BEFORE the system folders, so a planted powershell.exe / curl.exe there would run.
+proc ::store::winTool {name} {
+    if {$::tcl_platform(platform) ne "windows"} { return "" }
+    set root [expr {[info exists ::env(SystemRoot)] ? $::env(SystemRoot) : {C:/Windows}}]
+    foreach f [list $root/System32/$name.exe $root/System32/WindowsPowerShell/v1.0/$name.exe $root/Sysnative/$name.exe] {
+        if {[file isfile $f]} { return $f }
+    }
+    return ""
+}
+
 # "<pid> <host> [<role> [<endpoint>]]"  (role "-" when only an endpoint is given)
 proc ::store::lockText {} {
     variable lockRole ; variable lockEndpoint
@@ -154,7 +196,12 @@ proc ::store::readLock {path} {
 proc ::store::lockInfo {path} {
     set l [readLock $path]
     if {![file exists [lockPath $path]]} { return [dict create state free] }
-    if {$l eq ""} { return [dict create state free] }            ;# unreadable / vanished meanwhile
+    if {$l eq ""} {
+        # We could not read it.  If it has vanished meanwhile it is free; if it is still there, somebody we may not even read
+        # (another user, a stricter umask) made it: that is a lock held by an owner we cannot name, never a free database.
+        if {![file exists [lockPath $path]]} { return [dict create state free] }
+        return [dict create state held pid 0 host unknown role "" endpoint "" text ""]
+    }
     set state held
     set pid [dict get $l pid] ; set host [dict get $l host]
     if {![string is integer -strict $pid] || $host eq ""} {
@@ -340,6 +387,26 @@ proc ::store::fileSize {tag} {
     return $n
 }
 
+# The name a database is known by - and its lock file is named after: absolute, with every symbolic link resolved, the LAST
+# component too (`file normalize` leaves that one alone).  Without this, opening `current.mk` (a link) and `real.mk` took two
+# different locks on one file and the two writers overwrote each other's commits.
+proc ::store::canonical {path} {
+    set p [file normalize $path]
+    for {set i 0} {$i < 40} {incr i} {
+        if {[catch {file type $p} t] || $t ne "link"} break
+        if {[catch {file readlink $p} target]} break
+        set p [file normalize [file join [file dirname $p] $target]]
+    }
+    return $p
+}
+# the same file under two names (a hard link): same device and inode.  (Another PROCESS opening a hard link of a database that
+# is open here takes a different lock file; the policy document lists this among the limits.)
+proc ::store::sameFile {a b} {
+    if {$a eq $b} { return 1 }
+    if {[catch {file stat $a sa ; file stat $b sb}]} { return 0 }
+    return [expr {$sa(ino) != 0 && $sa(ino) == $sb(ino) && $sa(dev) == $sb(dev)}]
+}
+
 # Open (or, when -create is given, create) a Metakit datafile.  Returns the tag.
 # Files are always opened with -nocommit so nothing is written until the user
 # commits -- closing a file never silently saves.
@@ -349,9 +416,9 @@ proc ::store::openFile {path args} {
     foreach a $args {
         switch -- $a { -create {set create 1} -readonly {set readonly 1} }
     }
-    set path [file normalize $path]
+    set path [canonical $path]
     foreach t $tags {
-        if {$file($t) eq $path} { error "File is already open as '$t'." }
+        if {[sameFile $file($t) $path]} { error "File is already open as '$t'." }
     }
     if {!$create && ![file exists $path]} { error "File not found: $path" }
     set holder [lockHolder $path]
@@ -435,7 +502,9 @@ proc ::store::closeFile {tag} {
 #   * before a commit starts, <file>.commit records the committed header and size (and is forced to disk where the OS
 #     has `sync`); after it, the file is forced to disk and the record is removed.  If the record is found when the
 #     database is opened for writing, the commit never finished (or was never confirmed): the header and size are put
-#     back and the database is exactly what it was before that commit.
+#     back and the database is exactly what it was before that commit.  After a commit the record is first rewritten to
+#     describe the finished file and only then deleted, so that a record which cannot be deleted (a virus scanner holds it on
+#     Windows) or whose deletion is lost in a power cut can never undo a commit that was acknowledged.
 #   * without a record, a file longer than its header says (an unfinished append) is cut back to the header's offset.
 # Not covered: a disk that loses data it said was written, or a system with no way to force data out (Windows has no
 # `sync` command, so there the protocol is as good as the OS's own write ordering - best effort).
@@ -477,7 +546,8 @@ proc ::store::syncWindows {args} {
     set ::env(MKS_FLUSH) [join $files "|"]
     set script {foreach($f in $env:MKS_FLUSH.Split('|')){ $s=[IO.File]::Open($f,'Open','ReadWrite','ReadWrite'); try{ $s.Flush($true) } finally{ $s.Dispose() } }}
     set ok 0 ; set started 0
-    foreach exe {powershell pwsh} {
+    foreach exe [list [winTool powershell]] {
+        if {$exe eq ""} continue
         if {[catch {exec $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $script 2>@1} out opts]} {
             # "couldn't execute": no such program (try the next, and remember if neither exists); a program that ran and
             # failed (a file another program keeps locked) only fails THIS flush
@@ -510,7 +580,30 @@ proc ::store::beginCommit {path} {
 }
 proc ::store::endCommit {path} {
     syncDisk $path
-    catch {file delete [commitRecord $path]}
+    set rec [commitRecord $path]
+    # The record says "if you find me, undo the commit that follows".  Deleting it must not be the only thing that stands between
+    # a finished commit and being undone: on Windows a virus scanner or a sync client can hold the file so the delete fails, and
+    # on Linux the unlink can be lost in a power cut seconds after the data reached the disk (the old record then reverts an
+    # acknowledged commit - or, for the first commit of a new database, empties it).  So first the record is rewritten to describe
+    # the file AS IT NOW IS: found later, it finds nothing to undo.  Only then is it deleted.
+    set info [headerInfo $path]
+    set neutral 0
+    if {$info ne ""} {
+        set line "[dict get $info header] [dict get $info size]"
+        if {![catch { set h [open $rec.tmp w] ; puts -nonewline $h $line ; close $h ; file rename -force $rec.tmp $rec }]} {
+            set neutral 1
+        } elseif {![catch { set h [open $rec w] ; puts -nonewline $h $line ; close $h }]} {
+            set neutral 1                                   ;# (the rename can fail where the file is held open: write in place)
+        }
+        catch {file delete $rec.tmp}
+        if {$neutral} { syncDisk $rec }
+    }
+    set gone [expr {![catch {file delete $rec}] && ![file exists $rec]}]
+    if {$gone} { syncDisk $path } elseif {!$neutral} {
+        # the data IS saved, but the record still describes the state before it and would undo it the next time the file is
+        # opened for writing.  Say so rather than let a later open quietly take the data back.
+        error "The changes were saved, but the leftover file\n$rec\ncould not be removed or updated (another program may be holding it). Close that program and delete the file, or the next open will undo this save."
+    }
     catch {sumWrite $path}
 }
 # Put right an interrupted commit.  Needs the write lock.  Returns "" (nothing to do) or what was done.
@@ -598,21 +691,56 @@ proc ::store::backupBeforeCommit {path} {
     if {!$backups || ![sumCovered $path] || ![file exists $path]} { return 0 }
     if {[sumCheck $path] eq "damaged"} { return 0 }               ;# never replace a good backup with a bad copy
     set bak [backupPath $path]
+    set size [file size $path]
     if {[catch {
         file copy -force $path $bak.tmp
+        # a complete copy, and on the disk before it takes the old backup's place (a power cut must not leave a half-written one)
+        if {[file size $bak.tmp] != $size} { error "short copy" }
+        syncDisk $bak.tmp
         file rename -force $bak.tmp $bak
+        syncDisk $bak
     }]} { catch {file delete $bak.tmp} ; return 0 }
     return 1
 }
-# Put the backup back (the damaged file is kept as <file>.damaged).  Needs the write lock - call it with the file closed.
-proc ::store::restoreBackup {path} {
+# The file failed its checksum and the user chose to go on anyway.  Whatever is saved from here on will be taken as the new
+# normal, so a LATER session would copy the damaged data over the backup.  Keep a second copy of the good backup, which nothing
+# overwrites (it is deleted again when it has been restored).
+proc ::store::protectBackup {path} {
     set bak [backupPath $path]
-    if {![file exists $bak]} { error "There is no backup of this database." }
-    if {[file exists $path]} { file rename -force $path $path.damaged }
+    if {[file exists $bak] && ![file exists $bak.good]} {
+        if {[catch {file copy $bak $bak.good.tmp ; syncDisk $bak.good.tmp ; file rename $bak.good.tmp $bak.good}]} { catch {file delete $bak.good.tmp} }
+    }
+}
+# the backup to offer: the protected one if there is one (it is older than the damage was noticed), else the usual one
+proc ::store::backupFile {path} {
+    foreach f [list [backupPath $path].good [backupPath $path]] { if {[file exists $f]} { return $f } }
+    return ""
+}
+# Put the backup back (the damaged file is kept as <file>.damaged, or .damaged.1, ... - an earlier one is never overwritten).
+# Needs the write lock - call it with the file closed.
+proc ::store::restoreBackup {path} {
+    set path [canonical $path]
+    set bak [backupFile $path]
+    if {$bak eq ""} { error "There is no backup of this database." }
+    if {[file exists $path]} {
+        set dest $path.damaged ; set n 0
+        while {[file exists $dest]} { set dest $path.damaged.[incr n] }
+        file rename $path $dest
+    }
     file copy -force $bak $path
     catch {file delete [sumPath $path] ; file delete [commitRecord $path]}
     catch {sumWrite $path}
+    if {[string match *.good $bak]} { catch {file delete $bak} }
     return $path
+}
+# Remove the lock of a database that is NOT open for writing by anyone - after a crash, a restart, or a host that has been
+# renamed.  The application asks the user first; this only does it.  Returns the text of the lock that was removed.
+proc ::store::breakLock {path} {
+    set path [canonical $path]
+    set lf [lockPath $path] ; set old ""
+    catch {set h [open $lf r] ; set old [read $h 512] ; close $h}
+    file delete -force $lf $lf.guard
+    return [string trim $old]
 }
 # at open for writing: the verdict (ok none changed damaged), and a new baseline when there is none or it is out of date
 proc ::store::integrityOnOpen {path} {
@@ -630,7 +758,9 @@ proc ::store::commit {tag} {
     variable dirty ; variable file ; variable backedUp
     set record 0
     if {$dirty($tag) > 0} {
-        if {![info exists backedUp($tag)]} { set backedUp($tag) [backupBeforeCommit $file($tag)] }
+        if {![info exists backedUp($tag)]} {
+            if {[integrityState $tag] eq "damaged"} { protectBackup $file($tag) ; set backedUp($tag) 0 } else { set backedUp($tag) [backupBeforeCommit $file($tag)] }
+        }
         set record [beginCommit $file($tag)]
     }
     mk::file commit $tag

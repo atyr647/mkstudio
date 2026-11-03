@@ -36,10 +36,40 @@ ok report_has_stack [expr {[string match "*inner line 1*" $text] && [string matc
 ok report_has_breadcrumbs [string match "*step 99*" $text]
 ok report_has_no_sql [expr {![string match "*Bob Private*" $text] && ![string match "*payroll WHERE*" $text] && ![string match "*SELECT*" $text]}] $text
 ok report_has_no_home [expr {![string match "*alice_secret*" $text]}] $text
-ok report_shortens_db_paths [string match "*<folder>/payroll.mk*" $text] $text
+ok report_shortens_db_paths [expr {[string match "*<folder>/<file>.mk*" $text] && ![string match "*payroll*" $text]}] $text
 ok report_says_so [string match "*Nothing in this report comes from your databases*" $text]
 # a very long message is cut
 ok long_message_cut [expr {[string length [::crash::build [string repeat x 5000] "" Unhandled]] < 3000}]
+
+# ---- found by the code review ---------------------------------------------------------------------------------------------
+# a user name is text, not a pattern: these used to make the scrubber itself fail, so no report and no dialog appeared at all
+foreach u {"Bob (Work" "Ann[x" "J.R. Smith" "a+b*c?" "x|y"} {
+    set ::env(USER) $u
+    set rc [catch {::crash::scrub "failed for $u in /home/$u/x.mk"} out]
+    check "scrub_survives_user_name_$u" $rc 0
+    ok "scrub_hides_user_name_$u" [expr {![string match "*$u*" $out]}] $out
+}
+set ::env(USER) alice_secret
+# a value that sneaks into an error message stays out; plain names stay in (they make the message useful)
+check scrub_quoted_value  [::crash::scrub "bad value 'Jane Roe 123-45-6789' for column"] "bad value '...' for column"
+check scrub_double_quoted [::crash::scrub {expected "Credit Card 4111 1111" got x}] {expected "..." got x}
+check scrub_keeps_names   [::crash::scrub {can't read "count": no such variable}] {can't read "count": no such variable}
+check scrub_keeps_command [::crash::scrub {invalid command name "::store::nosuch"}] {invalid command name "::store::nosuch"}
+check scrub_apostrophe_is_not_a_quote [::crash::scrub "isn't it 'odd' that it's fine"] "isn't it 'odd' that it's fine"
+# paths with spaces, bare database names, Windows paths
+check scrub_path_with_spaces [::crash::scrub "couldn't open /home/x/Clients Q3/acme corp.mk: no such file"] "couldn't open <folder>/<file>.mk: no such file"
+check scrub_windows_path [::crash::scrub {failed C:\Program Files\App\y.exe: boom}] {failed <folder>/<file>.exe: boom}
+check scrub_bare_db_names [::crash::scrub "no such table in customers.metakit and sales.mk4"] "no such table in <file>.metakit and <file>.mk4"
+check scrub_leaves_and_or [::crash::scrub "read and/or write"] "read and/or write"
+# rotation: a pile of "unexpected-end" reports (every kill or power cut adds one) must not push out a crash report
+set rd [file join [::crash::ensureDir]] ; foreach x [glob -nocomplain -directory $rd *.txt] { file delete $x }
+set ::crash::keep 5
+for {set i 0} {$i < 8} {incr i} { ::crash::save "end $i" unexpected-end ; after 5 }
+set fresh [::crash::save "the real crash" crash]
+ok newest_crash_report_survives_many_unexpected_ends [file exists $fresh]
+check each_kind_is_pruned_separately [llength [glob -directory $rd unexpected-end-*.txt]] 5
+set ::crash::keep 20
+foreach x [glob -nocomplain -directory $rd *.txt] { file delete $x }
 
 # ---- saving and rotation ---------------------------------------------------------------------------------------------------
 lassign [::crash::record "boom" $info] f t

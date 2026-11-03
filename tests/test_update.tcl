@@ -213,10 +213,15 @@ if {!$haveTool} { puts "  (no curl/wget/PowerShell here: download tests skipped)
             return [expr {![catch {exec kill -0 $pid}]}]
         }
         set ext [expr {$::tcl_platform(platform) eq "windows" ? ".exe" : ""}]
-        set app [tmp upd_real] ; file delete -force $app ; file mkdir $app
-        set old $app/mkstudio$ext
+        # The program lives in a folder whose name has spaces and parentheses - and, on Windows, an accented letter - and its own
+        # name has them too, like a browser's "mkstudio (1).exe": the paths that broke the first version of the Windows helper.
+        set app [tmp [expr {$::tcl_platform(platform) eq "windows" ? "upd real (1) caf\u00e9" : "upd real (1)"}]] ; file delete -force $app ; file mkdir $app
+        set old "$app/mkstudio (1)$ext"
         # (not `file copy`: a running tclkit has itself mounted as a directory, `file copy` would copy its virtual contents)
-        if {$::tcl_platform(platform) eq "windows"} { exec cmd /c copy /Y /B [file nativename [info nameofexecutable]] [file nativename $old] } else { exec cp [info nameofexecutable] $old ; exec chmod 755 $old }
+        if {$::tcl_platform(platform) eq "windows"} {
+            set ::env(MKS_A) [file nativename [info nameofexecutable]] ; set ::env(MKS_B) [file nativename $old]
+            exec powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command {Copy-Item -LiteralPath $env:MKS_A -Destination $env:MKS_B -Force}
+        } else { exec cp [info nameofexecutable] $old ; exec chmod 755 $old }
         set h [open $app/hold.tcl w] ; puts $h "after 90000 exit\nvwait forever" ; close $h
         set holdPid [exec $old $app/hold.tcl &]
         for {set i 0} {$i < 100 && ![alive $holdPid]} {incr i} { after 50 }
@@ -284,6 +289,35 @@ if {!$haveTool} { puts "  (no curl/wget/PowerShell here: download tests skipped)
     file delete -force $feed
 }
 unset -nocomplain ::env(MKS_UPDATE_API)
+# ---- found by the code review --------------------------------------------------------------------------------------------------
+# the scratch folder is private and unguessable (a predictable /tmp name could be pre-created by another user of the machine)
+set d1 [::update::scratch] ; set d2 [::update::scratch]
+ok scratch_folders_differ [expr {$d1 ne $d2}]
+ok scratch_name_is_random [expr {[regexp {mkstudio-update-[0-9a-f]{16}$} $d1] && ![string match "*[pid]" $d1]}] $d1
+if {$::tcl_platform(platform) ne "windows"} {
+    check scratch_is_closed_to_others [expr {[file attributes $d1 -permissions] & 077}] 0
+    check scratch_is_ours [file attributes $d1 -owner] $::tcl_platform(user)
+}
+file delete -force $d1 $d2
+# a copy installed by the package manager is not replaced in place, even by root
+namespace eval ::starkit {} ; set ::starkit::mode starpack
+check package_managed_copy_not_replaced [::update::selfReplaceable /usr/bin/mkstudio] ""
+ok package_managed_reason [string match "*package manager*" $::update::lastError] $::update::lastError
+# the Windows helper: constant plain ASCII, the path comes from the environment - never from the text of the script
+set hs [::update::helperScript]
+ok helper_is_ascii [expr {[string length $hs] == [string bytelength $hs]}]
+ok helper_takes_the_path_from_the_environment [string match "*%MKS_EXE%*" $hs]
+ok helper_has_no_fixed_path [expr {![regexp {[A-Za-z]:\\|/tmp|/home} $hs]}] $hs
+ok helper_waits_until_the_program_exits_no_deadline [expr {![string match "*gtr 900*" $hs] && [string match "*:again*" $hs]}]
+ok helper_retries_the_final_move [string match "*geq 15*" $hs]
+ok helper_stops_when_the_staged_file_is_gone [string match "*if not exist \"%NEW%\" goto giveup*" $hs]
+# the system's own copy of a Windows tool, never one found next to the program or in the current folder
+if {$::tcl_platform(platform) ne "windows"} { check wintool_unused_on_unix [::update::winTool curl] "" }
+if {$::tcl_platform(platform) eq "windows"} {
+    set ct [::update::tool certutil]
+    ok windows_tools_come_from_the_system_folder [expr {$ct eq "" || [string match -nocase "*/system32/*" [file normalize $ct]] || [string match -nocase "*/sysnative/*" [file normalize $ct]]}] $ct
+}
+
 # selftest text
 ok selftest_text [string match "ok $::version::current mk4tcl *" [::update::selftestText]]
 puts "$pass passed, $fail failed"

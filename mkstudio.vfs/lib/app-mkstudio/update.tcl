@@ -60,14 +60,25 @@ proc ::update::onReadable {ch seq} {
 
 # ---- transfer ---------------------------------------------------------------------------------------------------------------
 proc ::update::tool {name} {
+    if {$::tcl_platform(platform) eq "windows"} { return [winTool $name] }
     set p [auto_execok $name]
     if {$p eq "" || $p eq "0"} { return "" }
     return [lindex $p 0]
 }
+# A Windows program by its full path in the system folder.  Tcl's search for a bare name looks in the folder of the running
+# program and in the current folder BEFORE the system folders: a curl.exe or certutil.exe dropped next to a downloaded
+# starpack (or in the folder it was started from) would run on every update check.  Only the system's own copies are used.
+proc ::update::winTool {name} {
+    set root [expr {[info exists ::env(SystemRoot)] ? $::env(SystemRoot) : {C:/Windows}}]
+    foreach f [list $root/System32/$name.exe $root/System32/WindowsPowerShell/v1.0/$name.exe $root/Sysnative/$name.exe] {
+        if {[file isfile $f]} { return $f }
+    }
+    return ""
+}
 # which transfer program will be used ("" = none)
 proc ::update::transport {} {
     foreach t {curl wget} { if {[tool $t] ne ""} { return $t } }
-    if {$::tcl_platform(platform) eq "windows" && ([tool powershell] ne "" || [tool pwsh] ne "")} { return powershell }
+    if {$::tcl_platform(platform) eq "windows" && [tool powershell] ne ""} { return powershell }
     return ""
 }
 # download URL to FILE; raises an error with a readable message
@@ -85,7 +96,7 @@ proc ::update::download {url file {timeoutMs 180000}} {
         powershell {
             set ::env(MKS_URL) $url ; set ::env(MKS_OUT) [file nativename $file.part] ; set ::env(MKS_UA) [userAgent]
             set script {[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri $env:MKS_URL -OutFile $env:MKS_OUT -UserAgent $env:MKS_UA}
-            set exe [expr {[tool powershell] ne "" ? [tool powershell] : [tool pwsh]}]
+            set exe [tool powershell]
             set cmd [list $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $script]
         }
     }
@@ -97,12 +108,38 @@ proc ::update::download {url file {timeoutMs 180000}} {
     file rename -force $file.part $file
     return $file
 }
+# A folder only this user can use, with a name nobody can guess, that did not exist a moment ago.  (A predictable name in a
+# shared temp folder lets another user on the machine create it first and control what the updater downloads and reads.)
+proc ::update::randomName {} {
+    if {![catch {set h [open /dev/urandom rb] ; set r [read $h 8] ; close $h}] && [string length $r] == 8} {
+        binary scan $r H* hex ; return $hex
+    }
+    expr {srand([clock microseconds] + [pid])}
+    return [format %08x%08x [expr {int(rand() * 4294967296)}] [expr {int(rand() * 4294967296)}]]
+}
 proc ::update::scratch {} {
-    foreach v {TMPDIR TEMP TMP} { if {[info exists ::env($v)] && [file isdirectory $::env($v)]} { set d $::env($v) ; break } }
-    if {![info exists d]} { set d /tmp }
-    set d [file join $d mkstudio-update-[pid]]
-    file mkdir $d
-    return $d
+    set bases {}
+    if {$::tcl_platform(platform) eq "windows"} {
+        foreach v {LOCALAPPDATA TEMP TMP} { if {[info exists ::env($v)]} { lappend bases $::env($v) } }
+    } else {
+        if {[info exists ::env(XDG_CACHE_HOME)] && $::env(XDG_CACHE_HOME) ne ""} { lappend bases $::env(XDG_CACHE_HOME) }
+        if {[info exists ::env(HOME)]} { lappend bases $::env(HOME)/.cache }
+        foreach v {TMPDIR} { if {[info exists ::env($v)]} { lappend bases $::env($v) } }
+        lappend bases /tmp
+    }
+    foreach b $bases {
+        if {$b eq "" || (![file isdirectory $b] && [catch {file mkdir $b}])} continue
+        set d [file join $b mkstudio-update-[randomName]]
+        if {[file exists $d] || [catch {file mkdir $d}]} continue
+        if {$::tcl_platform(platform) ne "windows"} {
+            catch {file attributes $d -permissions 0700}
+            # ours alone: owned by this user and closed to everybody else
+            if {[catch {file attributes $d -owner} owner] || $owner ne $::tcl_platform(user)} { file delete -force $d ; continue }
+            if {[catch {file attributes $d -permissions} perm] || ($perm & 0077)} { file delete -force $d ; continue }
+        }
+        return $d
+    }
+    error "No private folder for the update could be created."
 }
 proc ::update::readFile {f {enc utf-8}} { set h [open $f rb] ; set d [read $h] ; close $h ; return [encoding convertfrom $enc $d] }
 
@@ -304,6 +341,11 @@ proc ::update::selfReplaceable {{exe ""}} {
     if {$exe eq ""} { set exe [info nameofexecutable] }
     set exe [file normalize $exe]
     if {[string match "*.app/Contents/*" $exe]} { set lastError "this copy is inside an application bundle" ; return "" }
+    # a copy the package manager installed (/usr/bin/mkstudio from the .deb) belongs to it, and root can write there: replacing it
+    # would leave dpkg with a file it does not recognise
+    foreach pre {/usr/bin/ /usr/sbin/ /usr/lib/ /usr/share/ /bin/ /sbin/} {
+        if {[string first $pre $exe] == 0} { set lastError "this copy was installed by the system's package manager - install the new .deb instead" ; return "" }
+    }
     if {![file isfile $exe] || ![file writable $exe] || ![file writable [file dirname $exe]]} {
         set lastError "the folder or file is not writable (an installed copy)" ; return ""
     }
@@ -360,30 +402,49 @@ proc ::update::install {info {progress {}} {target ""}} {
         file delete -force $dir
         return $exe
     }
+    # The way back (<name>.old) is made WITHOUT touching the program's own name - a hard link to the same file, or a copy where
+    # links are not possible - and the new version then replaces the program in ONE rename.  (Renaming the program away first and
+    # the new one into its place second leaves, for an instant, no program at all: a crash or power cut there is a program
+    # that is gone.)  A running program is not disturbed: it keeps the old file open.
     file delete -force $old
-    file rename -force $exe $old
+    if {[catch {file link -hard $old $exe}] && [catch {file copy -force $exe $old} copyErr]} {
+        file delete -force $new $dir
+        error "Could not keep the old version as $old ($copyErr); nothing was changed."
+    }
     if {[catch {file rename -force $new $exe} err]} {
-        catch {file rename -force $old $exe}
-        file delete -force $dir
-        error "Could not put the new version in place ($err); the old one was restored."
+        file delete -force $old $new $dir
+        error "Could not put the new version in place ($err); the old one is untouched."
     }
     file delete -force $dir
     return $exe
 }
 # Windows: write and start the script that completes the update once the program has exited.
+# The script is constant plain ASCII.  The program's path reaches it through an environment variable, never through the text
+# of the script or the command line: a folder with spaces, parentheses or an accented letter in its name ("Jos\u00e9 (work)") would
+# otherwise break cmd's quoting or its code page.  It is started through PowerShell's Start-Process for the same reason (`cmd /c`
+# strips quotes by rules that fail for exactly those paths).  It waits for as long as the program runs - the user may well keep
+# working for hours before closing it - and stops when the staged file is gone.  Putting the new file in place is retried (a
+# virus scanner may hold it for a moment) before the old program is put back.
 namespace eval ::update { variable deferred 0 }
-proc ::update::stageWindows {exe new} {
-    if {[regexp {[%^!&|<>"]} $exe]} { error "the program's path contains characters a batch file cannot handle safely: $exe" }
-    set w [file nativename $exe]
-    set script $exe.update.cmd
-    set lines [list "@echo off" "set \"EXE=$w\"" "set \"NEW=%EXE%.new\"" "set \"OLD=%EXE%.old\"" "set \"MARK=%EXE%.restart\"" "set /a tries=0" ":wait" "set /a tries+=1" \
-        "if %tries% gtr 900 goto giveup" "move /Y \"%EXE%\" \"%OLD%\" >nul 2>&1" "if errorlevel 1 goto again" \
-        "move /Y \"%NEW%\" \"%EXE%\" >nul 2>&1" "if errorlevel 1 goto restore" "if exist \"%MARK%\" goto start" "goto done" \
-        ":start" "del \"%MARK%\" >nul 2>&1" "start \"\" \"%EXE%\"" ":done" "(goto) 2>nul & del \"%~f0\"" \
+proc ::update::helperScript {} {
+    return [join [list "@echo off" "setlocal" "set \"EXE=%MKS_EXE%\"" "set \"NEW=%MKS_EXE%.new\"" "set \"OLD=%MKS_EXE%.old\"" "set \"MARK=%MKS_EXE%.restart\"" \
+        ":wait" "if not exist \"%NEW%\" goto giveup" "move /Y \"%EXE%\" \"%OLD%\" >nul 2>&1" "if errorlevel 1 goto again" \
+        "set /a n=0" ":put" "move /Y \"%NEW%\" \"%EXE%\" >nul 2>&1" "if not errorlevel 1 goto placed" "set /a n+=1" "if %n% geq 15 goto restore" \
+        "ping -n 2 127.0.0.1 >nul" "goto put" \
+        ":placed" "if not exist \"%MARK%\" goto done" "del \"%MARK%\" >nul 2>&1" "start \"\" \"%EXE%\"" \
+        ":done" "(goto) 2>nul & del \"%~f0\"" \
         ":again" "ping -n 2 127.0.0.1 >nul" "goto wait" \
-        ":restore" "move /Y \"%OLD%\" \"%EXE%\" >nul 2>&1" ":giveup" "exit /b 1"]
-    set h [open $script w] ; fconfigure $h -translation crlf ; puts $h [join $lines "\n"] ; close $h
-    exec cmd /c [file nativename $script] > NUL 2> NUL &
+        ":restore" "move /Y \"%OLD%\" \"%EXE%\" >nul 2>&1" ":giveup" "exit /b 1"] "\n"]
+}
+proc ::update::stageWindows {exe new} {
+    set script $exe.update.cmd
+    set h [open $script w] ; fconfigure $h -translation crlf -encoding ascii ; puts $h [helperScript] ; close $h
+    set ps [winTool powershell]
+    if {$ps eq ""} { error "PowerShell was not found, which is needed to start the update helper" }
+    set ::env(MKS_EXE) [file nativename $exe] ; set ::env(MKS_SCRIPT) [file nativename $script]
+    set rc [catch {exec $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command {Start-Process -WindowStyle Hidden -FilePath $env:MKS_SCRIPT} 2>@1} out]
+    unset -nocomplain ::env(MKS_SCRIPT)
+    if {$rc} { file delete -force $script ; error "the update helper could not be started: [string range $out 0 200]" }
     return $script
 }
 # ask the helper script (Windows) to start the new program as soon as it has replaced the old one
