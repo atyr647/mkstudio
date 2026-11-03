@@ -27,7 +27,17 @@ set childScript [file join $here crash_child.tcl]
 
 proc stamp {g i} { return "[format {g%07d-r%05d} $g $i][string repeat [format %c [expr {97 + ($g + 1000) % 26}]] 1500]" }
 proc readfile {f} { if {[catch {set h [open $f rb] ; set d [read $h] ; close $h}]} { return "" } ; return $d }
-proc readnum {f} { set d [string trim [readfile $f]] ; return [expr {[string is integer -strict $d] ? $d : -1}] }
+# (the child rewrites these small progress files all the time; on Windows a read can hit the instant the file is
+# being replaced and see nothing - retry instead of treating that as "no progress")
+proc readnum {f} {
+    for {set try 0} {$try < 20} {incr try} {
+        set d [string trim [readfile $f]]
+        if {[string is integer -strict $d]} { return $d }
+        if {![file exists $f]} { return -1 }
+        after 5
+    }
+    return -1
+}
 
 proc killpid {pid} {
     if {$::tcl_platform(platform) eq "windows"} { catch {exec taskkill /F /PID $pid} } else { catch {exec kill -9 $pid} }
@@ -174,6 +184,9 @@ proc killTrials {mode allowExtra count} {
         killpid $pid
         after 150
         set started [readnum $prog.started] ; set committed [readnum $prog.committed]
+        # a child killed while rewriting a progress file leaves it empty: then all we know is that it was at most
+        # one generation ahead of the last commit it reported
+        if {$started < $committed} { set started [expr {$committed + 1}] }
         set problem [verify $work $allowExtra]
         if {$problem ne ""} {
             incr bad
