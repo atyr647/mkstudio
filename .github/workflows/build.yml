@@ -301,6 +301,14 @@ jobs:
           name: kit-windows
           path: tools/ext
 
+      - name: Diagnostic - how a non-ASCII character reaches PowerShell from this Tcl
+        continue-on-error: true
+        timeout-minutes: 3
+        run: |
+          log="$RUNNER_TEMP/diag.log"; rm -f "$log"
+          MKS_TEST_LOG="$(cygpath -w "$log")" timeout 120 "$KIT" tests/run.tcl tests/diag_win_unicode.tcl || true
+          cat "$log"
+
       # The Windows tclkit has no console, so each test also writes its output to MKS_TEST_LOG.
       - name: Engine, contract, persistence and UI tests on Windows (real Metakit)
         timeout-minutes: 25

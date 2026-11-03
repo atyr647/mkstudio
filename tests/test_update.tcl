@@ -321,7 +321,7 @@ if {$::tcl_platform(platform) eq "windows"} {
 
 # a server that refuses (GitHub's anonymous rate limit answers 403): the message says what is probably going on
 if {[::update::transport] in {curl wget}} {
-    proc ::refuse {ch addr port} { fconfigure $ch -translation crlf ; after 50 [list apply {{ch} { catch { puts -nonewline $ch "HTTP/1.1 403 rate limit exceeded\r\nContent-Length: 0\r\nConnection: close\r\n\r\n" ; flush $ch ; close $ch } }} $ch] }
+    proc ::refuse {ch addr port} { fconfigure $ch -translation binary ; after 50 [list apply {{ch} { catch { puts -nonewline $ch "HTTP/1.1 403 rate limit exceeded\r\nContent-Length: 0\r\nConnection: close\r\n\r\n" ; flush $ch ; close $ch } }} $ch] }
     set srv [socket -server ::refuse -myaddr 127.0.0.1 0]
     set port [lindex [fconfigure $srv -sockname] 2]
     set ::env(MKS_UPDATE_API) "http://127.0.0.1:$port/releases"
