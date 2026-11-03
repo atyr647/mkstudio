@@ -97,18 +97,26 @@ proc stallRun {emptyStale {step created} {mutexStale 1}} {
     global db kit here host
     fresh
     if {$step eq "checked"} { rawlock "999999 $host" }       ;# a stale lock (its pid does not exist): the takeover path
-    set log [tmp lockstall.log] ; file delete $log
+    set log [tmp lockstall.log] ; file delete $log $log.release
     foreach v {MKS_LOCK_EMPTY_STALE MKS_LOCK_MUTEX_STALE} { set save($v) [expr {[info exists ::env($v)] ? $::env($v) : ""}] }
     set ::env(MKS_LOCK_EMPTY_STALE) $emptyStale ; set ::env(MKS_LOCK_MUTEX_STALE) $mutexStale
-    set a [exec $kit $here/lock_stall_child.tcl $db 4000 800 $log $step &]
+    # A stalls (up to 20 s) at the chosen point until it is released; B keeps trying for 6 s.  The parent releases A as soon as B
+    # has decided (got the lock, or gave up) - so how long process start-up takes on this machine does not matter.
+    set a [exec $kit $here/lock_stall_child.tcl $db 20000 800 $log $step 0 &]
     if {$step eq "created"} {
-        for {set i 0} {$i < 200 && ![file exists $db.lock]} {incr i} { after 10 }
+        for {set i 0} {$i < 1000 && ![file exists $db.lock]} {incr i} { after 20 }
     } else {
-        for {set i 0} {$i < 400 && ![file exists $db.lock.guard]} {incr i} { after 10 }
+        for {set i 0} {$i < 1000 && ![file exists $db.lock.guard]} {incr i} { after 20 }
     }
-    after 2400                                   ;# created: the lock file is empty and 2.4 s old; checked: A has held the guard for 2.4 s
-    set b [exec $kit $here/lock_stall_child.tcl $db 0 3000 $log &]
-    for {set i 0} {$i < 400 && ([store::pidAlive $a] || [store::pidAlive $b])} {incr i} { after 50 }
+    set b [exec $kit $here/lock_stall_child.tcl $db 0 3000 $log "" 6000 &]
+    for {set i 0} {$i < 1800} {incr i} {
+        set seen ""
+        catch {set h [open $log r] ; set seen [read $h] ; close $h}
+        if {[regexp "\\m$b (ACQUIRED|REFUSED)" $seen]} break
+        after 50
+    }
+    close [open $log.release w]
+    for {set i 0} {$i < 600 && ([store::pidAlive $a] || [store::pidAlive $b])} {incr i} { after 50 }
     foreach v {MKS_LOCK_EMPTY_STALE MKS_LOCK_MUTEX_STALE} { if {$save($v) eq ""} { unset ::env($v) } else { set ::env($v) $save($v) } }
     set h [open $log r] ; set lines [split [string trim [read $h]] \n] ; close $h
     set ev {}
@@ -124,12 +132,13 @@ set bRel [expr {[dict exists $ev $b RELEASED] ? [dict get $ev $b RELEASED] : ""}
 puts "  stall reproduction, limit 1 s: [join $lines {; }]"
 ok "stall, limit 1 s: B overtook the starved A ([llength $lines] log lines)" [expr {$bAcq ne "" && $aAcq ne ""}] $lines
 ok "stall, limit 1 s: B acquired first, A woke up and 'acquired' while B still held the lock (the overlap)" [expr {$bAcq ne "" && $aAcq ne "" && $aAcq > $bAcq && $aAcq < $bRel}] $lines
-# b) the real limit (5 s): the same stall changes nothing - B is refused while the lock file is only 1.3 s old, A completes
-lassign [stallRun 5] a b ev lines
-puts "  stall, real limit 5 s: [join $lines {; }]"
+# b) a limit longer than the stall (the real one is 5 s; 60 s here so that no machine is slow enough to reach it): the same stall
+#    changes nothing - B keeps being refused, then gives up, and A completes
+lassign [stallRun 60] a b ev lines
+puts "  stall, limit 60 s: [join $lines {; }]"
 # (what matters is mutual exclusion, not who wins: on a slow machine the two start-up times decide that)
-ok "stall, limit 5 s: nobody held the lock at the same time as somebody else" [expr {![overlapped $ev]}] $lines
-ok "stall, limit 5 s: somebody got the lock, somebody was refused or both took turns" [expr {[dict exists $ev $a ACQUIRED] || [dict exists $ev $b ACQUIRED]}] $lines
+ok "stall, limit 60 s: nobody held the lock at the same time as somebody else" [expr {![overlapped $ev]}] $lines
+ok "stall, limit 60 s: somebody got the lock, somebody was refused or both took turns" [expr {[dict exists $ev $a ACQUIRED] || [dict exists $ev $b ACQUIRED]}] $lines
 # c) the same, in the takeover: A judges a stale lock stale, holds the takeover guard and is starved before it deletes the
 #    lock.  With the guard limit shortened to 1 s, B declares the guard abandoned, takes over properly and holds the lock - and
 #    A, waking up, deletes B's lock and creates its own.  (This - a slow process held up past a shortened guard limit - is the
@@ -140,11 +149,11 @@ set bAcq [expr {[dict exists $ev $b ACQUIRED] ? [dict get $ev $b ACQUIRED] : ""}
 set bRel [expr {[dict exists $ev $b RELEASED] ? [dict get $ev $b RELEASED] : ""}]
 puts "  takeover stall, guard limit 1 s: [join $lines {; }]"
 ok "takeover stall, guard limit 1 s: both processes ended up inside at the same time (the overlap)" [expr {$bAcq ne "" && $aAcq ne "" && $aAcq > $bAcq && $aAcq < $bRel}] $lines
-# d) the real limit (10 s): B waits for the guard, gives up after ~2.4 s ("starting at the same moment, please repeat"), A completes
-lassign [stallRun 5 checked 10] a b ev lines
-puts "  takeover stall, real guard limit 10 s: [join $lines {; }]"
-ok "takeover stall, guard limit 10 s: nobody held the lock at the same time as somebody else" [expr {![overlapped $ev]}] $lines
-ok "takeover stall, guard limit 10 s: somebody got the lock" [expr {[dict exists $ev $a ACQUIRED] || [dict exists $ev $b ACQUIRED]}] $lines
+# d) a guard limit longer than the stall (the real one is 10 s): B waits for the guard, gives up, A completes
+lassign [stallRun 60 checked 60] a b ev lines
+puts "  takeover stall, guard limit 60 s: [join $lines {; }]"
+ok "takeover stall, guard limit 60 s: nobody held the lock at the same time as somebody else" [expr {![overlapped $ev]}] $lines
+ok "takeover stall, guard limit 60 s: somebody got the lock" [expr {[dict exists $ev $a ACQUIRED] || [dict exists $ev $b ACQUIRED]}] $lines
 fresh
 
 # ---- B. chaos -------------------------------------------------------------------------------------------------------------
