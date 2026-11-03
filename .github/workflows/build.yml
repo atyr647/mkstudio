@@ -374,7 +374,7 @@ jobs:
           mkdir -p packages
           packaging/linux/make-packages.sh "$v" dist/mkstudio-linux-x86_64 packages
           makensis -V2 -DVERSION="$v" -DVIVERSION="$base.0" -DEXE="$PWD/dist/mkstudio-windows-x86_64.exe" \
-            -DICON="$PWD/packaging/icons/mkstudio.ico" -DOUTFILE="$PWD/packages/MKStudio-$v-windows-x64-setup.exe" packaging/windows/installer.nsi
+            -DICON="$PWD/packaging/icons/mkstudio.ico" -DLICENSE="$PWD/LICENSE" -DNOTICES="$PWD/THIRD_PARTY_NOTICES" -DOUTFILE="$PWD/packages/MKStudio-$v-windows-x64-setup.exe" packaging/windows/installer.nsi
           ls -l packages
       - name: Install the .deb, run it, remove it
         run: |
@@ -385,6 +385,10 @@ jobs:
           test -f /usr/share/icons/hicolor/256x256/apps/mkstudio.png
           sudo dpkg -r mkstudio
           test ! -e /usr/bin/mkstudio
+      - name: Package contents include the license
+        run: |
+          dpkg-deb -c packages/mkstudio_*_amd64.deb | grep -q usr/share/doc/mkstudio/copyright
+          tar tzf packages/MKStudio-*-linux-x86_64.tar.gz | grep -q LICENSE
       - name: The tarball installs for one user
         run: |
           export HOME=$(mktemp -d)
@@ -419,6 +423,7 @@ jobs:
           for i in $(seq 1 60); do [ -f "$INST/mkstudio.exe" ] && [ -f "$INST/Uninstall.exe" ] && break; sleep 1; done
           ls -la "$INST"
           test -f "$INST/mkstudio.exe"
+          test -f "$INST/LICENSE.txt"
           test -f "$APPDATA/Microsoft/Windows/Start Menu/Programs/MK Studio/MK Studio.lnk"
           reg query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\MKStudio' //v DisplayVersion | grep -q "$v"
           reg query 'HKCU\Software\Classes\MKStudio.Database\shell\open\command'

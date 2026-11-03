@@ -1,5 +1,5 @@
 ; MK Studio installer (NSIS).  Built on Linux in CI:
-;   makensis -DVERSION=1.0.0-rc.1 -DVIVERSION=1.0.0.0 -DEXE=mkstudio-windows-x86_64.exe -DICON=mkstudio.ico -DOUTFILE=out.exe installer.nsi
+;   makensis -DVERSION=1.0.0-rc.1 -DVIVERSION=1.0.0.0 -DEXE=mkstudio-windows-x86_64.exe -DICON=mkstudio.ico -DLICENSE=LICENSE -DNOTICES=THIRD_PARTY_NOTICES -DOUTFILE=out.exe installer.nsi
 ;
 ; Per-user install (no administrator rights): %LOCALAPPDATA%\Programs\MK Studio.  That folder is writable by the user, so
 ; "Help > Check for Updates" can replace the program in place.  Nothing is written outside the user's profile.
@@ -26,7 +26,9 @@ VIAddVersionKey "ProductVersion" "${VERSION}"
 !define MUI_FINISHPAGE_RUN "$INSTDIR\mkstudio.exe"
 !define MUI_FINISHPAGE_RUN_TEXT "Start MK Studio"
 
+!define MUI_LICENSEPAGE_TEXT_TOP "MK Studio is free software under the MIT license."
 !insertmacro MUI_PAGE_WELCOME
+!insertmacro MUI_PAGE_LICENSE "${LICENSE}"
 !insertmacro MUI_PAGE_COMPONENTS
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
@@ -44,6 +46,8 @@ Section "MK Studio (required)" SecMain
     Rename "$INSTDIR\mkstudio.exe" "$INSTDIR\mkstudio.exe.old"
   File "/oname=mkstudio.exe" "${EXE}"
   File "/oname=mkstudio.ico" "${ICON}"
+  File "/oname=LICENSE.txt" "${LICENSE}"
+  File "/oname=THIRD_PARTY_NOTICES.txt" "${NOTICES}"
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
   CreateDirectory "$SMPROGRAMS\MK Studio"
@@ -81,6 +85,8 @@ Section "Uninstall"
   Delete "$INSTDIR\mkstudio.exe.old"
   Delete "$INSTDIR\mkstudio.exe.new"
   Delete "$INSTDIR\mkstudio.ico"
+  Delete "$INSTDIR\LICENSE.txt"
+  Delete "$INSTDIR\THIRD_PARTY_NOTICES.txt"
   Delete "$INSTDIR\Uninstall.exe"
   RMDir "$INSTDIR"
   Delete "$SMPROGRAMS\MK Studio\MK Studio.lnk"

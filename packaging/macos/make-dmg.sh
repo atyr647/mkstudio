@@ -14,6 +14,7 @@ APP="$W/stage/MK Studio.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/mkstudio" && chmod +x "$APP/Contents/MacOS/mkstudio"
 cp "$HERE/../icons/mkstudio.icns" "$APP/Contents/Resources/mkstudio.icns"
+cp "$HERE/../../LICENSE" "$HERE/../../THIRD_PARTY_NOTICES" "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

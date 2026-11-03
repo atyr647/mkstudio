@@ -37,6 +37,11 @@ designer use `store.tcl` directly and don't depend on the language at all.
 
 Edit the `stmts` array at the top of that test for your dialect and point it at your engine.
 
+## License
+
+MIT - see [`LICENSE`](LICENSE). The downloads contain Tcl/Tk, Metakit and other components under their own permissive
+licenses: [`THIRD_PARTY_NOTICES`](THIRD_PARTY_NOTICES).
+
 ## Install
 
 Download from the [releases page](https://github.com/atyr647/mkstudio/releases). **The files are not signed with a

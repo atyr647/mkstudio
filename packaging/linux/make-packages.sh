@@ -20,6 +20,8 @@ for n in 16 32 48 64 128 256 512; do
   mkdir -p "$P/usr/share/icons/hicolor/${n}x${n}/apps"
   install -m 0644 "$ICONS/icon-$n.png" "$P/usr/share/icons/hicolor/${n}x${n}/apps/mkstudio.png"
 done
+install -m 0644 "$HERE/../../LICENSE" "$P/usr/share/doc/mkstudio/copyright"
+install -m 0644 "$HERE/../../THIRD_PARTY_NOTICES" "$P/usr/share/doc/mkstudio/THIRD_PARTY_NOTICES"
 cat > "$P/usr/share/doc/mkstudio/README" <<DOC
 MK Studio $VER - a workbench for Metakit databases.
 https://github.com/atyr647/mkstudio
@@ -55,6 +57,8 @@ mkdir -p "$T"
 install -m 0755 "$BIN" "$T/mkstudio"
 install -m 0644 "$HERE/mkstudio.desktop" "$T/mkstudio.desktop"
 install -m 0644 "$ICONS/icon-256.png" "$T/mkstudio.png"
+install -m 0644 "$HERE/../../LICENSE" "$T/LICENSE"
+install -m 0644 "$HERE/../../THIRD_PARTY_NOTICES" "$T/THIRD_PARTY_NOTICES"
 cat > "$T/install.sh" <<'INS'
 #!/bin/sh
 # Install for the current user only (no root): program in ~/.local/bin, launcher and icon in ~/.local/share.
