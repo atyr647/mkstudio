@@ -17,12 +17,14 @@ namespace eval ::store {
     variable file    ;# tag -> absolute path
     variable ro      ;# tag -> read-only flag
     variable dirty   ;# tag -> number of uncommitted mutations
+    variable lockOwned   ;# tag -> lock file we created (and must remove)
+    variable lockedBy    ;# tag -> "pid host" of another process that holds a write lock (read-only opens)
     variable types {
         S {String  string}  I {Integer int}  L {Long long}
         F {Float   float}   D {Double  double}  B {Bytes bytes}
         V {Subview subview}
     }
-    array set file {} ; array set ro {} ; array set dirty {}
+    array set file {} ; array set ro {} ; array set dirty {} ; array set lockOwned {} ; array set lockedBy {}
 }
 
 # -- availability ------------------------------------------------------------
@@ -65,6 +67,60 @@ proc ::store::makeTag {path} {
     return $tag
 }
 
+# ---- advisory write lock ---------------------------------------------------------------------
+# Metakit itself does no locking: another process reading a file while it is committed can
+# see a half-written state (measured: tests/test_crash_safety.tcl), and two writers can
+# overwrite each other.  MK Studio therefore keeps "<file>.lock" (pid, host) next to a
+# database it has open for writing.  A lock whose process is dead is stale and is taken over,
+# so a crash never leaves a database permanently locked.  Other programs ignore it.
+proc ::store::lockPath {path} { return $path.lock }
+
+proc ::store::pidAlive {pid} {
+    if {![string is integer -strict $pid] || $pid <= 0} { return 0 }
+    if {$pid == [pid]} { return 1 }
+    if {$::tcl_platform(platform) eq "windows"} {
+        if {[catch {exec tasklist /FI "PID eq $pid" /NH /FO CSV} out]} { return 0 }
+        return [expr {[string first "\"$pid\"" $out] >= 0}]
+    }
+    return [expr {![catch {exec kill -0 $pid}]}]
+}
+proc ::store::thisHost {} { if {[catch {info hostname} h]} { return unknown } ; return $h }
+
+# "pid host" of a live foreign holder, or "" when the file is unlocked (or the lock is stale/ours)
+proc ::store::lockHolder {path} {
+    set lf [lockPath $path]
+    if {![file exists $lf]} { return "" }
+    if {[catch {set h [open $lf r] ; set d [string trim [read $h]] ; close $h}]} { return "" }
+    lassign [split $d " "] pid host
+    if {$pid eq [pid] && $host eq [thisHost]} { return "" }
+    if {$host eq [thisHost]} { return [expr {[pidAlive $pid] ? "$pid $host" : ""}] }
+    # another machine (network share): cannot tell whether it is alive, so respect the lock
+    return "$pid $host"
+}
+# Create the lock file atomically (O_EXCL) so two processes starting at once cannot both win.
+# Returns the lock path, "" when no lock could be made (read-only folder: carry on unlocked), or
+# raises STORE LOCKED when somebody else got there first.  A stale file (lockHolder said its
+# holder is gone) is removed first.
+proc ::store::takeLock {path} {
+    set lf [lockPath $path]
+    for {set attempt 0} {$attempt < 3} {incr attempt} {
+        if {![catch {set h [open $lf {WRONLY CREAT EXCL}]}]} {
+            puts -nonewline $h "[pid] [thisHost]" ; close $h
+            return $lf
+        }
+        if {![file exists $lf]} { return "" }
+        set holder [lockHolder $path]
+        if {$holder ne ""} {
+            lassign $holder hpid hhost
+            return -code error -errorcode [list STORE LOCKED $hpid $hhost] \
+                "This database is open for editing in another process (pid $hpid on $hhost):\n$path"
+        }
+        catch {file delete $lf}                         ;# stale (or ours from an earlier run)
+    }
+    return ""
+}
+proc ::store::lockedByOther {tag} { variable lockedBy ; if {[info exists lockedBy($tag)]} { return $lockedBy($tag) } ; return "" }
+
 proc ::store::tags {} { variable tags ; return $tags }
 proc ::store::exists {tag} { variable tags ; expr {[lsearch -exact $tags $tag] >= 0} }
 proc ::store::path {tag}     { variable file ; return $file($tag) }
@@ -81,7 +137,7 @@ proc ::store::fileSize {tag} {
 # Files are always opened with -nocommit so nothing is written until the user
 # commits -- closing a file never silently saves.
 proc ::store::openFile {path args} {
-    variable tags ; variable file ; variable ro ; variable dirty
+    variable tags ; variable file ; variable ro ; variable dirty ; variable lockOwned ; variable lockedBy
     set create 0 ; set readonly 0
     foreach a $args {
         switch -- $a { -create {set create 1} -readonly {set readonly 1} }
@@ -91,12 +147,25 @@ proc ::store::openFile {path args} {
         if {$file($t) eq $path} { error "File is already open as '$t'." }
     }
     if {!$create && ![file exists $path]} { error "File not found: $path" }
+    set holder [lockHolder $path]
+    set lf ""
+    if {!$readonly} {
+        if {$holder ne ""} {
+            lassign $holder hpid hhost
+            return -code error -errorcode [list STORE LOCKED $hpid $hhost] \
+                "This database is open for editing in another process (pid $hpid on $hhost):\n$path"
+        }
+        set lf [takeLock $path]                          ;# before opening, so a refusal touches nothing
+    }
     set tag [makeTag $path]
     set opts {-nocommit}
     if {$readonly} { lappend opts -readonly }
     if {[catch {mk::file open $tag $path {*}$opts}]} {
         # very old Mk4tcl without -nocommit: fall back to the plain open
-        mk::file open $tag $path {*}[expr {$readonly ? {-readonly} : {}}]
+        if {[catch {mk::file open $tag $path {*}[expr {$readonly ? {-readonly} : {}}]} err]} {
+            if {$lf ne ""} { catch {file delete $lf} }
+            error $err
+        }
     }
     # Mk4tcl will "open" ANY file (a text file just looks like a database with no
     # views).  Refuse files that are neither Metakit nor empty, before anything
@@ -104,10 +173,16 @@ proc ::store::openFile {path args} {
     # a starkit/starpack has no such header but does contain views.
     if {!$create && [file size $path] > 0 && ![hasMetakitSignature $path] && ![llength [mk::file views $tag]]} {
         catch {mk::file close $tag}
+        if {$lf ne ""} { catch {file delete $lf} }
         error "This file isn't a Metakit database, so it was not opened:\n$path"
     }
     lappend tags $tag
     set file($tag) $path ; set ro($tag) $readonly ; set dirty($tag) 0
+    if {$readonly} {
+        if {$holder ne ""} { set lockedBy($tag) $holder }
+    } elseif {$lf ne ""} {
+        set lockOwned($tag) $lf
+    }
     return $tag
 }
 
@@ -119,7 +194,9 @@ proc ::store::hasMetakitSignature {path} {
 }
 
 proc ::store::closeFile {tag} {
-    variable tags ; variable file ; variable ro ; variable dirty
+    variable tags ; variable file ; variable ro ; variable dirty ; variable lockOwned ; variable lockedBy
+    if {[info exists lockOwned($tag)]} { catch {file delete $lockOwned($tag)} ; unset lockOwned($tag) }
+    unset -nocomplain lockedBy($tag)
     catch {mk::file close $tag}
     set i [lsearch -exact $tags $tag]
     if {$i >= 0} { set tags [lreplace $tags $i $i] }

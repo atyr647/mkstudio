@@ -584,9 +584,22 @@ proc ::app::openDB {{path ""}} {
     foreach p $paths { openOne $p }
 }
 proc ::app::openOne {path} {
-    if {[catch {::store::openFile $path} tag]} {
-        ::ui::problem "Could not open the file as a Metakit database:\n\n$path\n\n$tag" "Open database"
-        return ""
+    if {[catch {::store::openFile $path} tag opts]} {
+        set code [dict get $opts -errorcode]
+        if {[lindex $code 0] eq "STORE" && [lindex $code 1] eq "LOCKED"} {
+            set r [::ui::ask "Database in use" "$tag\n\nTwo programs writing the same Metakit file can corrupt it. You can look at it read-only, but what you see may be inconsistent while the other process is saving." {"Open Read-Only" Cancel} warn]
+            if {$r ne "Open Read-Only"} { return "" }
+            if {[catch {::store::openFile $path -readonly} tag]} {
+                ::ui::problem "Could not open the file:\n\n$path\n\n$tag" "Open database"
+                return ""
+            }
+        } else {
+            ::ui::problem "Could not open the file as a Metakit database:\n\n$path\n\n$tag" "Open database"
+            return ""
+        }
+    }
+    if {[::store::lockedByOther $tag] ne ""} {
+        setStatus "'$tag' is being edited by another process - this read-only view may be inconsistent." warn
     }
     addRecent $path
     afterDbChange
