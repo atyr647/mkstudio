@@ -82,6 +82,28 @@ switch -- $scenario {
         settle 300
         exec import -window root $out
     }
+    addcol {
+        set id [::app::openData $tag.products products]
+        update
+        after 700 { exec import -window root $::out ; set ::ui::result "" }
+        ::ddoc::addColumn $id
+    }
+    align {
+        set id [::app::openData $tag.employees employees]
+        set t [::app::docFrame $id].g.t
+        update
+        # report each column's geometry so the analysis can compare header vs cell text
+        set x0 [winfo rootx $t]
+        set y0 [winfo rooty $t]
+        lassign [$t bbox r0] bx by bw bh
+        set geo {}
+        foreach c [$t cget -columns] {
+            lassign [$t bbox r0 $c] cx cy cw ch
+            lappend geo "$c,[expr {$x0+$cx}],$cw,[$t column $c -anchor]"
+        }
+        set f [open /tmp/align_geo.txt w] ; puts $f "[expr {$y0}] [expr {$y0+$by}] $bh $geo" ; close $f
+        shot $out
+    }
     welcome {
         ::app::closeDB $tag 1
         set ::app::cfg(recent) [list /home/ada/projects/inventory.mk /home/ada/projects/crm/customers.mk \

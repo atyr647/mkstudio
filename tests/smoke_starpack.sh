@@ -1,20 +1,14 @@
 #!/bin/sh
-# Launch the packaged Linux starpack headless, opening a database, and make sure
-# it is still running (no crash, no Tcl error on stderr) after a few seconds.
-#   tests/smoke_starpack.sh [dist/mkstudio-linux-x86_64]
+# Launch a packaged starpack with a database open and make sure it keeps running.
+#   tests/smoke_starpack.sh [starpack] [kit-to-make-the-sample-db]     (Linux; needs xvfb-run)
+# CI runs the equivalent natively on the Windows and macOS runners.
 set -e
 cd "$(dirname "$0")/.."
 BIN=${1:-dist/mkstudio-linux-x86_64}
-KIT=${KIT:-tools/ext/tclkit-8.6.3-linux-x86_64}
+KIT=${2:-tools/ext/tclkit-8.6.3-linux-x86_64}
 DB=$(mktemp -u).mk
 export HOME=$(mktemp -d)
-cat > "$HOME/mk.tcl" <<EOT
-package require Mk4tcl
-foreach f {store} { source mkstudio.vfs/lib/app-mkstudio/\$f.tcl }
-store::createSample $DB
-exit
-EOT
-"$KIT" "$HOME/mk.tcl"
+"$KIT" tests/make_sample.tcl "$DB"
 set +e
 xvfb-run -a timeout 8 "$BIN" "$DB" 2> "$HOME/err.txt"
 code=$?

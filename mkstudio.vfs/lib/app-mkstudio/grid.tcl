@@ -24,8 +24,10 @@ proc ::grid::create {w args} {
     set G($w,order) {} ; set G($w,total) 0 ; set G($w,source) ""
 
     ttk::frame $w -style Surface.TFrame
-    ttk::treeview $w.t -style Grid.Treeview -show {tree headings} -selectmode extended \
-        -columns {} -yscrollcommand [list $w.v set] -xscrollcommand [list $w.h set]
+    # the row-number "#" is an ordinary right-aligned column (the tree column's anchor
+    # is ignored by some Tk versions, which made it left-aligned under a right-aligned header)
+    ttk::treeview $w.t -style Grid.Treeview -show headings -selectmode extended \
+        -columns {rn} -yscrollcommand [list $w.v set] -xscrollcommand [list $w.h set]
     ttk::scrollbar $w.v -orient vertical -command [list $w.t yview]
     ttk::scrollbar $w.h -orient horizontal -command [list $w.t xview]
     grid $w.t -row 0 -column 0 -sticky nsew
@@ -33,8 +35,8 @@ proc ::grid::create {w args} {
     grid $w.h -row 1 -column 0 -sticky ew
     grid rowconfigure $w 0 -weight 1 ; grid columnconfigure $w 0 -weight 1
 
-    $w.t column #0 -width [::theme::px 54] -stretch 0 -anchor e
-    $w.t heading #0 -text "#"
+    $w.t column rn -width [::theme::px 54] -stretch 0 -anchor e
+    $w.t heading rn -text "#" -anchor e
     ::ui::hoverTree $w.t
     ::theme::reg $w.t [list ::grid::recolor %w]
     ttk::label $w.t.empty -text "No rows" -style SurfaceDim.TLabel
@@ -91,7 +93,10 @@ proc ::grid::load {w result} {
     set G($w,sortcol) -1
     set ids {}
     for {set i 0} {$i < [llength $cols]} {incr i} { lappend ids c$i }
-    $t configure -columns $ids -displaycolumns $ids
+    $t configure -columns [concat rn $ids] -displaycolumns [concat rn $ids]
+    # (re)configuring -columns resets per-column options, so set the "#" column here
+    $t column rn -width [::theme::px 54] -minwidth [::theme::px 40] -stretch 0 -anchor e
+    $t heading rn -text "#" -anchor e
     set i 0
     foreach c $cols type $G($w,types) {
         set anchor [expr {$type in {I L F D N} ? "e" : "w"}]
@@ -141,7 +146,7 @@ proc ::grid::fill {w} {
     foreach p $G($w,order) {
         set vals {}
         foreach v [lindex $G($w,rows) $p] { lappend vals [display $v] }
-        $t insert {} end -id r$p -text [expr {$G($w,rowbase) + $k + 1}] -values $vals -tags [expr {$k % 2 ? "odd" : "even"}]
+        $t insert {} end -id r$p -values [linsert $vals 0 [expr {$G($w,rowbase) + $k + 1}]] -tags [expr {$k % 2 ? "odd" : "even"}]
         incr k
     }
     if {$G($w,total) == 0 && [llength $G($w,cols)]} {
@@ -301,8 +306,8 @@ proc ::grid::popupMenu {w x y X Y} {
 proc ::grid::motion {w x y} {
     variable G
     set cursor ""
-    if {[$w.t identify region $x $y] eq "cell" && [regexp {^#(\d+)$} [$w.t identify column $x $y] -> n]} {
-        if {[dict exists $G($w,drill) [expr {$n - 1}]]} { set cursor hand2 }
+    if {[$w.t identify region $x $y] eq "cell" && [regexp {^#(\d+)$} [$w.t identify column $x $y] -> n] && $n > 1} {
+        if {[dict exists $G($w,drill) [expr {$n - 2}]]} { set cursor hand2 }
     }
     if {[$w.t cget -cursor] ne $cursor} { $w.t configure -cursor $cursor }
 }
@@ -326,7 +331,7 @@ proc ::grid::keyMenu {w} {
 proc ::grid::noteColumn {w x y} {
     variable G
     set col [$w.t identify column $x $y]
-    if {[regexp {^#(\d+)$} $col -> n] && $n > 0} { set G($w,lastcol) [expr {$n - 1}] }
+    if {[regexp {^#(\d+)$} $col -> n] && $n > 1} { set G($w,lastcol) [expr {$n - 2}] }
 }
 
 # ---- editing / drill-down ---------------------------------------------------------
@@ -335,8 +340,8 @@ proc ::grid::doubleClick {w x y} {
     if {[$w.t identify region $x $y] ne "cell"} return
     set item [$w.t identify row $x $y]
     set col [$w.t identify column $x $y]
-    if {![regexp {^#(\d+)$} $col -> n]} return
-    set ci [expr {$n - 1}]
+    if {![regexp {^#(\d+)$} $col -> n] || $n < 2} return
+    set ci [expr {$n - 2}]
     set p [string range $item 1 end]
     if {[dict exists $G($w,drill) $ci]} {
         if {$G($w,-drill) ne "" && [llength $G($w,rowids)]} {

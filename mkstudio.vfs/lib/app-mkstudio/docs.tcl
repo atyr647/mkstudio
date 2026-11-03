@@ -322,10 +322,19 @@ proc ::ddoc::create {id f mk} {
         -style ToolSurface.TButton -command [list ::ddoc::addRow $id]
     ttk::button $f.bar.del -text "Delete" -image [::icons::get minus] -compound left \
         -style ToolSurface.TButton -command [list ::ddoc::deleteRows $id]
+    ttk::button $f.bar.col -text "Add Column" -image [::icons::get col_I] -compound left \
+        -style ToolSurface.TButton -command [list ::ddoc::addColumn $id]
     ttk::label $f.bar.count -text "" -style SurfaceDim.TLabel
     ttk::button $f.bar.next -text "\u203A" -width 3 -style ToolSurface.TButton -command [list ::ddoc::page $id 1]
     ttk::button $f.bar.prev -text "\u2039" -width 3 -style ToolSurface.TButton -command [list ::ddoc::page $id -1]
     pack $f.bar.add $f.bar.del -side left -padx {0 2}
+    pack $f.bar.col -side left -padx {8 2}
+    if {[string first ! $mk] >= 0} {
+        $f.bar.col state disabled
+        ::tip::attach $f.bar.col "Columns of a subview can't be changed from a row. Open the view's Design tab."
+    } else {
+        ::tip::attach $f.bar.col "Add a new column to this view  (more options in Design)"
+    }
     pack $f.bar.next $f.bar.count $f.bar.prev -side right -padx 2
     ::tip::attach $f.bar.prev "Previous page of rows  (Alt+Left)"
     ::tip::attach $f.bar.next "Next page of rows  (Alt+Right)"
@@ -333,7 +342,7 @@ proc ::ddoc::create {id f mk} {
     bind $f <Alt-Left>  [list ::ddoc::page $id -1]
 
     set ro [readonly $id]
-    if {$ro} { $f.bar.add state disabled ; $f.bar.del state disabled }
+    if {$ro} { foreach b {add del col} { $f.bar.$b state disabled } }
     ::grid::create $f.g -editable [expr {!$ro}] -commit [list ::ddoc::commit $id] \
         -drill [list ::ddoc::drill $id] -changed [list ::ddoc::updateCount $id]
     ttk::frame $f.msg -style Panel.TFrame -padding {12 5}
@@ -462,6 +471,13 @@ proc ::ddoc::drill {id rowid sub} {
         return
     }
     ::app::openData "$mk!$rowid.$sub" "[viewLabel $mk]\[$rowid\].$sub"
+}
+
+proc ::ddoc::addColumn {id} {
+    variable D
+    if {![::design::promptAddColumn $D($id,mk)]} return
+    ::app::dataChanged 1
+    note $id "Column added. It's empty for existing rows - double-click cells to fill it in."
 }
 
 proc ::ddoc::addRow {id} {
@@ -666,27 +682,38 @@ proc ::design::applyChange {id script} {
     return 1
 }
 
-proc ::design::validate {id d} {
-    variable X
+proc ::design::validate {id d} { variable X ; return [validateMk $X($id,mk) $d] }
+proc ::design::validateMk {mk d} {
     set n [dict get $d name]
     if {$n eq ""} { return "Please enter a name." }
     if {![regexp {^[A-Za-z_][A-Za-z0-9_]*$} $n]} { return "Use letters, digits and underscores, and don't start with a digit." }
     if {[dict exists $d old] && [string equal -nocase $n [dict get $d old]]} { return "" }
-    if {[::store::findCol [::store::layout $X($id,mk)] $n] ne ""} { return "A column called '$n' already exists." }
+    if {[::store::findCol [::store::layout $mk] $n] ne ""} { return "A column called '$n' already exists." }
     return ""
 }
 proc ::design::types {} { variable typeMap ; return [dict keys $typeMap] }
 proc ::design::letter {label} { variable typeMap ; return [dict get $typeMap $label] }
 
+# Ask for a name and type, then add the column.  Shared by the Designer and the
+# data editor.  Returns 1 if a column was added.
+proc ::design::promptAddColumn {mk} {
+    set r [::ui::formResult [::ui::form "Add column to [::ddoc::viewLabel $mk]" [list \
+        {name "Name" entry ""} [list type "Type" combo String [types]]] "Add" \
+        [list ::design::validateMk $mk]]]
+    if {$r eq ""} { return 0 }
+    if {[catch {
+        if {[::store::readonly [lindex [split $mk .] 0]]} { error "This database is open read-only." }
+        ::store::restructure $mk [concat [::store::layout $mk] \
+            [list [list [dict get $r name] [letter [dict get $r type]] {}]]]
+    } err]} { ::ui::problem $err ; return 0 }
+    return 1
+}
 proc ::design::addColumn {id} {
     variable X
-    set r [::ui::formResult [::ui::form "Add column" [list \
-        {name "Name" entry ""} [list type "Type" combo String [types]]] "Add" \
-        [list ::design::validate $id]]]
-    if {$r eq ""} return
-    set mk $X($id,mk)
-    applyChange $id [list ::store::restructure $mk [concat [::store::layout $mk] \
-        [list [list [dict get $r name] [letter [dict get $r type]] {}]]]]
+    if {![promptAddColumn $X($id,mk)]} return
+    refresh $id
+    ::app::dataChanged 1
+    note $id "Column added. Commit to keep the change, or Roll Back to undo it."
 }
 proc ::design::addSubview {id} {
     variable X

@@ -8,15 +8,17 @@
 set -e
 cd "$(dirname "$0")"
 mkdir -p ext
+# macOS has shasum, not sha1sum
+sha1() { if command -v sha1sum >/dev/null 2>&1; then sha1sum "$1" | cut -d' ' -f1; else shasum -a 1 "$1" | cut -d' ' -f1; fi; }
 BASE=https://tclkits.rkeene.org/fossil/raw
 want=${1:-all}
 
 get() {  # name remote-name sha1
     out=ext/$1
-    if [ -f "$out" ] && [ "$(sha1sum "$out" | cut -d' ' -f1)" = "$3" ]; then echo "ok      $1"; return; fi
+    if [ -f "$out" ] && [ "$(sha1 "$out")" = "$3" ]; then echo "ok      $1"; return; fi
     echo "fetch   $1"
     curl -fsSL --retry 3 -o "$out.part" "$BASE/$2?name=$3"
-    got=$(sha1sum "$out.part" | cut -d' ' -f1)
+    got=$(sha1 "$out.part")
     if [ "$got" != "$3" ]; then rm -f "$out.part"; echo "SHA1 mismatch for $1 (got $got)"; exit 1; fi
     mv "$out.part" "$out"; chmod +x "$out"
 }

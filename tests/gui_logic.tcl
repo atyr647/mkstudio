@@ -1,14 +1,15 @@
 # Drives the real UI code paths that need no dialogs.  wish tests/gui_logic.tcl
 set here [file dirname [file normalize [info script]]]
+source $here/util.tcl
 set ::mkstudio_root [file join $here .. mkstudio.vfs]
 if {![info exists ::env(REAL_MK)]} { source $here/mock_mk4tcl.tcl } else { package require Mk4tcl }
 lappend auto_path $::mkstudio_root/lib
 package require app-mkstudio
-set ::env(HOME) /tmp/mks_home_logic ; file mkdir $::env(HOME)
+set ::env(HOME) [tmp mks_home_logic] ; file mkdir $::env(HOME)
 ::app::main {}
 set pass 0 ; set fail 0
 proc check {n got want} { global pass fail ; if {$got eq $want} {incr pass} else {incr fail ; puts "FAIL $n: got <$got> want <$want>"} }
-set f /tmp/logic_demo.mk ; file delete $f
+set f [tmp logic_demo.mk] ; file delete $f
 set tag [::store::createSample $f] ; ::app::afterDbChange
 # data doc: edit, reject bad value, add row
 set id [::app::openData $tag.products products]
@@ -53,6 +54,21 @@ check addundo1 [::store::size $tag.employees] $nsub
 ::ddoc::undo $u
 check undorefused [::store::cell $tag.employees 2 name] "Changed elsewhere"
 
+# the '#' row-number column must keep its own width/alignment after every load (a reconfigure resets it)
+set gt [::app::docFrame $u].g.t
+check rn_width [expr {[$gt column rn -width] >= 40 && [$gt column rn -width] <= 90}] 1
+check rn_anchor [$gt column rn -anchor] e
+
+# Add Column from the data tab: same validation, grid reloads with the new column
+set pc [::app::openData $tag.products products]
+check addcol_validate [::design::validateMk $tag.products [dict create name sku]] "A column called 'sku' already exists."
+check addcol_ok [::design::validateMk $tag.products [dict create name weight]] ""
+::store::restructure $tag.products [concat [::store::layout $tag.products] [list {weight D {}}]]
+::app::dataChanged 1
+check addcol_grid [lindex $::grid::G([::app::docFrame $pc].g,cols) end] weight
+# the Add Column button is disabled on subview tabs
+set sv [::app::openData $tag.employees!0.skills skills0]
+check addcol_disabled_on_subview [[::app::docFrame $sv].bar.col instate disabled] 1
 # commit then rollback
 ::app::commit $tag
 check clean [::store::dirty $tag] 0

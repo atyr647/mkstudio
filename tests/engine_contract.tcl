@@ -5,6 +5,7 @@
 # ::engine::parseScript / ::engine::execute and set the ::engine variables), and
 # adjust the statements in `stmts` to your dialect.
 set here [file dirname [file normalize [info script]]]
+source $here/util.tcl
 if {![info exists ::env(REAL_MK)]} { source $here/mock_mk4tcl.tcl } else { package require Mk4tcl }
 foreach f {store engine mkql} { source $here/../mkstudio.vfs/lib/app-mkstudio/$f.tcl }
 # source $here/../../my-sql-engine/engine.tcl
@@ -15,7 +16,7 @@ proc check {name ok {detail ""}} {
     global pass fail
     if {$ok} { incr pass } else { incr fail ; puts "FAIL $name  $detail" }
 }
-set f /tmp/contract.mk ; file delete $f
+set f [tmp contract.mk] ; file delete $f
 set db [store::createSample $f]
 
 # statements in the dialect under test (edit these for another dialect)

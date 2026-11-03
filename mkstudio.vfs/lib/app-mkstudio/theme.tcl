@@ -245,7 +245,7 @@ proc ::theme::styles {} {
     ttk::style map Panel.Treeview -background [list selected $c(sel)] -foreground [list selected $c(selFg)]
     ttk::style layout Panel.Treeview {Treeview.padding -sticky nswe -children {Treeview.treearea -sticky nswe}}
     ttk::style configure Treeview.Heading -background $c(headBg) -foreground $c(dim) -relief flat \
-        -padding {8 5} -borderwidth 0 -bordercolor $c(border) -lightcolor $c(headBg) -darkcolor $c(headBg) \
+        -padding {4 5 4 5} -borderwidth 0 -bordercolor $c(border) -lightcolor $c(headBg) -darkcolor $c(headBg) \
         -font MkSmall
     ttk::style map Treeview.Heading -background [list active $c(hover)] -foreground [list active $c(fg)]
     ttk::style configure Grid.Treeview -rowheight [rowHeight]

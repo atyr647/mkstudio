@@ -1,5 +1,6 @@
 # Engine tests: run with   tclsh tests/test_mkql.tcl
 set here [file dirname [file normalize [info script]]]
+source $here/util.tcl
 if {![info exists ::env(REAL_MK)]} { source $here/mock_mk4tcl.tcl } else { package require Mk4tcl }
 foreach f {store engine mkql} { source $here/../mkstudio.vfs/lib/app-mkstudio/$f.tcl }
 
@@ -13,7 +14,7 @@ proc rows {sql} { dict get [q $sql] rows }
 proc lmap_ {l} { set r {} ; foreach c $l { lappend r [lindex $c 0] } ; return $r }
 proc errmsg {sql} { if {[catch {q $sql} m]} { return $m } ; return "(no error)" }
 
-set f [file join [expr {[info exists ::env(TMPDIR)] ? $::env(TMPDIR) : "/tmp"}] mkql_test.mk]
+set f [tmp mkql_test.mk]
 file delete $f
 set db [store::createSample $f]
 
