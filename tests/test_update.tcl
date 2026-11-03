@@ -219,8 +219,8 @@ if {!$haveTool} { puts "  (no curl/wget/PowerShell here: download tests skipped)
         set old "$app/mkstudio (1)$ext"
         # (not `file copy`: a running tclkit has itself mounted as a directory, `file copy` would copy its virtual contents)
         if {$::tcl_platform(platform) eq "windows"} {
-            set ::env(MKS_A) [file nativename [info nameofexecutable]] ; set ::env(MKS_B) [file nativename $old]
-            exec powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command {Copy-Item -LiteralPath $env:MKS_A -Destination $env:MKS_B -Force}
+            exec powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Copy-Item -LiteralPath [::update::psq [file nativename [info nameofexecutable]]] -Destination [::update::psq [file nativename $old]] -Force"
+            ok real_copy_landed_under_the_accented_name [file exists $old] $old
         } else { exec cp [info nameofexecutable] $old ; exec chmod 755 $old }
         set h [open $app/hold.tcl w] ; puts $h "after 90000 exit\nvwait forever" ; close $h
         set holdPid [exec $old $app/hold.tcl &]
@@ -257,8 +257,7 @@ if {!$haveTool} { puts "  (no curl/wget/PowerShell here: download tests skipped)
             catch {exec taskkill /F /PID $holdPid}                            ;# the program exits ...
             for {set i 0} {$i < 400 && ![file exists $old.old]} {incr i} { after 100 }   ;# ... the helper completes the swap
             ok real_windows_helper_swapped_the_files [file exists $old.old]
-            for {set i 0} {$i < 100 && [file exists $old.update.cmd]} {incr i} { after 100 }
-            ok real_windows_helper_cleaned_up [expr {![file exists $old.update.cmd]}]
+            ok real_windows_helper_cleaned_up [expr {![file exists $old.new]}]
         }
         check real_new_program_in_place [::update::sha256 $old] $spHash
         ok real_old_program_kept_as_dot_old [expr {[file exists $old.old] && [::update::sha256 $old.old] eq $oldHash}]
@@ -303,14 +302,16 @@ file delete -force $d1 $d2
 namespace eval ::starkit {} ; set ::starkit::mode starpack
 check package_managed_copy_not_replaced [::update::selfReplaceable /usr/bin/mkstudio] ""
 ok package_managed_reason [string match "*package manager*" $::update::lastError] $::update::lastError
-# the Windows helper: constant plain ASCII, the path comes from the environment - never from the text of the script
-set hs [::update::helperScript]
-ok helper_is_ascii [expr {[string length $hs] == [string bytelength $hs]}]
-ok helper_takes_the_path_from_the_environment [string match "*%MKS_EXE%*" $hs]
-ok helper_has_no_fixed_path [expr {![regexp {[A-Za-z]:\\|/tmp|/home} $hs]}] $hs
-ok helper_waits_until_the_program_exits_no_deadline [expr {![string match "*gtr 900*" $hs] && [string match "*:again*" $hs]}]
-ok helper_retries_the_final_move [string match "*geq 15*" $hs]
-ok helper_stops_when_the_staged_file_is_gone [string match "*if not exist \"%NEW%\" goto giveup*" $hs]
+# the Windows helper: a PowerShell command with the program's path inside it, quoted (a quote in the name is doubled)
+set weird "C:\\Users\\Jos\u00e9 (work)\\it's here\\mkstudio (1).exe"
+set hc [::update::helperCommand $weird]
+ok helper_has_the_path_quoted [expr {[string first "\$exe='C:\\Users\\Jos\u00e9 (work)\\it''s here\\mkstudio (1).exe'" $hc] == 0}] $hc
+ok helper_waits_until_the_program_exits_no_deadline [expr {[string match "*while(Test-Path -LiteralPath \$new)*" $hc] && ![string match "*900*" $hc]}] $hc
+ok helper_retries_the_final_move [string match "*\$i -lt 15*" $hc]
+ok helper_puts_the_old_one_back [string match "*Move-Item -LiteralPath \$old -Destination \$exe*" $hc]
+ok helper_starts_the_new_one_on_request [string match "*Start-Process -FilePath \$exe*" $hc]
+ok helper_never_uses_the_shell_or_env [expr {![string match "*cmd*" $hc] && ![string match "*env:*" $hc]}]
+check psq_doubles_quotes [::update::psq "a'b"] "'a''b'"
 # the system's own copy of a Windows tool, never one found next to the program or in the current folder
 if {$::tcl_platform(platform) ne "windows"} { check wintool_unused_on_unix [::update::winTool curl] "" }
 if {$::tcl_platform(platform) eq "windows"} {

@@ -94,8 +94,9 @@ proc ::update::download {url file {timeoutMs 180000}} {
             set cmd [list [tool wget] -q -T 60 -U [userAgent] -O $file.part $url]
         }
         powershell {
-            set ::env(MKS_URL) $url ; set ::env(MKS_OUT) [file nativename $file.part] ; set ::env(MKS_UA) [userAgent]
-            set script {[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12; $ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri $env:MKS_URL -OutFile $env:MKS_OUT -UserAgent $env:MKS_UA}
+            # (everything goes in the command text, single-quoted: an environment variable does not carry non-ASCII intact)
+            set q {' ''}
+            set script "\[Net.ServicePointManager\]::SecurityProtocol=\[Net.SecurityProtocolType\]::Tls12; \$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri '[string map $q $url]' -OutFile '[string map $q [file nativename $file.part]]' -UserAgent '[string map $q [userAgent]]'"
             set exe [tool powershell]
             set cmd [list $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $script]
         }
@@ -418,34 +419,36 @@ proc ::update::install {info {progress {}} {target ""}} {
     file delete -force $dir
     return $exe
 }
-# Windows: write and start the script that completes the update once the program has exited.
-# The script is constant plain ASCII.  The program's path reaches it through an environment variable, never through the text
-# of the script or the command line: a folder with spaces, parentheses or an accented letter in its name ("Jos\u00e9 (work)") would
-# otherwise break cmd's quoting or its code page.  It is started through PowerShell's Start-Process for the same reason (`cmd /c`
-# strips quotes by rules that fail for exactly those paths).  It waits for as long as the program runs - the user may well keep
-# working for hours before closing it - and stops when the staged file is gone.  Putting the new file in place is retried (a
-# virus scanner may hold it for a moment) before the old program is put back.
+# Windows: start the helper that completes the update once the program has exited.
+# A running starpack cannot be replaced, so the verified download waits as <name>.new and a PowerShell process - started now,
+# in the background - waits for the program to exit, swaps the files (the old one becomes <name>.old; retried for a moment if a
+# virus scanner holds the new one, and put back if it cannot be placed) and starts the new one when <name>.restart exists.
+# It waits for as long as the program runs (the user may keep working for hours) and stops when <name>.new is gone.
+# The paths are IN the command text, single-quoted (a quote inside a name is doubled): the command line reaches PowerShell as
+# Unicode, so a folder like "Jos\u00e9 (work)" works; environment variables and batch files (the code page of cmd) do not carry
+# such names intact.
 namespace eval ::update { variable deferred 0 }
-proc ::update::helperScript {} {
-    return [join [list "@echo off" "setlocal" "set \"EXE=%MKS_EXE%\"" "set \"NEW=%MKS_EXE%.new\"" "set \"OLD=%MKS_EXE%.old\"" "set \"MARK=%MKS_EXE%.restart\"" \
-        ":wait" "if not exist \"%NEW%\" goto giveup" "move /Y \"%EXE%\" \"%OLD%\" >nul 2>&1" "if errorlevel 1 goto again" \
-        "set /a n=0" ":put" "move /Y \"%NEW%\" \"%EXE%\" >nul 2>&1" "if not errorlevel 1 goto placed" "set /a n+=1" "if %n% geq 15 goto restore" \
-        "ping -n 2 127.0.0.1 >nul" "goto put" \
-        ":placed" "if not exist \"%MARK%\" goto done" "del \"%MARK%\" >nul 2>&1" "start \"\" \"%EXE%\"" \
-        ":done" "(goto) 2>nul & del \"%~f0\"" \
-        ":again" "ping -n 2 127.0.0.1 >nul" "goto wait" \
-        ":restore" "move /Y \"%OLD%\" \"%EXE%\" >nul 2>&1" ":giveup" "exit /b 1"] "\n"]
+proc ::update::psq {s} { return "'[string map {' ''} $s]'" }
+proc ::update::helperCommand {exe} {
+    set e [psq [file nativename $exe]]
+    return [join [list \
+        "\$exe=$e" "\$new=\$exe+'.new'" "\$old=\$exe+'.old'" "\$mark=\$exe+'.restart'" \
+        "while(Test-Path -LiteralPath \$new){" \
+        " try{ Move-Item -LiteralPath \$exe -Destination \$old -Force -ErrorAction Stop } catch { Start-Sleep -Seconds 1; continue }" \
+        " \$placed=\$false" \
+        " for(\$i=0;\$i -lt 15;\$i++){ try{ Move-Item -LiteralPath \$new -Destination \$exe -Force -ErrorAction Stop; \$placed=\$true; break } catch { Start-Sleep -Seconds 1 } }" \
+        " if(-not \$placed){ Move-Item -LiteralPath \$old -Destination \$exe -Force; break }" \
+        " if(Test-Path -LiteralPath \$mark){ Remove-Item -LiteralPath \$mark -Force; Start-Process -FilePath \$exe }" \
+        " break" \
+        "}"] " "]
 }
 proc ::update::stageWindows {exe new} {
-    set script $exe.update.cmd
-    set h [open $script w] ; fconfigure $h -translation crlf -encoding ascii ; puts $h [helperScript] ; close $h
     set ps [winTool powershell]
     if {$ps eq ""} { error "PowerShell was not found, which is needed to start the update helper" }
-    set ::env(MKS_EXE) [file nativename $exe] ; set ::env(MKS_SCRIPT) [file nativename $script]
-    set rc [catch {exec $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command {Start-Process -WindowStyle Hidden -FilePath $env:MKS_SCRIPT} 2>@1} out]
-    unset -nocomplain ::env(MKS_SCRIPT)
-    if {$rc} { file delete -force $script ; error "the update helper could not be started: [string range $out 0 200]" }
-    return $script
+    if {[catch {exec $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command [helperCommand $exe] > NUL 2> NUL &} err]} {
+        error "the update helper could not be started: [string range $err 0 200]"
+    }
+    return $exe.new
 }
 # ask the helper script (Windows) to start the new program as soon as it has replaced the old one
 proc ::update::requestRestart {} {
@@ -453,14 +456,17 @@ proc ::update::requestRestart {} {
     catch {set h [open $exe.restart w] ; close $h}
 }
 # at start-up: remove a half-finished download.  <name>.old (the version before the last update) is KEPT: it is the way back -
-# rename it over the program if the new version misbehaves; the next update replaces it.
+# rename it over the program if the new version misbehaves; the next update replaces it.  A staged update (Windows) that is
+# waiting for this program to exit keeps its .new; one that has been there a week was abandoned (the helper died with a log-off).
 proc ::update::cleanup {} {
     if {![info exists ::starkit::mode] || $::starkit::mode ne "starpack"} return
     set exe [info nameofexecutable]
-    # (an update waiting for this program to exit - Windows - keeps its .new and its script)
-    if {[file exists $exe.update.cmd]} return
+    if {$::tcl_platform(platform) eq "windows" && [file exists $exe.new]} {
+        if {[catch {file mtime $exe.new} mt] || [clock seconds] - $mt < 7 * 86400} return
+    }
     catch {file delete -force $exe.new}
     catch {file delete -force $exe.restart}
+    catch {file delete -force $exe.update.cmd}        ;# (left by an earlier version of the helper)
 }
 # what `--selftest FILE` writes:  "ok <version> mk4tcl <yes|no>"
 proc ::update::selftestText {} {

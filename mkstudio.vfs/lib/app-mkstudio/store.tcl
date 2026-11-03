@@ -552,9 +552,12 @@ proc ::store::syncWindows {args} {
     set files {}
     foreach p $args { if {[file isfile $p]} { lappend files [file nativename $p] } }
     if {![llength $files]} { return 1 }
-    # file names go in through the environment, not the command line: no quoting problems
-    set ::env(MKS_FLUSH) [join $files "|"]
-    set script {foreach($f in $env:MKS_FLUSH.Split('|')){ $s=[IO.File]::Open($f,'Open','ReadWrite','ReadWrite'); try{ $s.Flush($true) } finally{ $s.Dispose() } }}
+    # The names go into the command text as single-quoted PowerShell strings (a quote inside a name is doubled): the command
+    # line reaches PowerShell as Unicode.  They used to travel in an environment variable, which does not carry an accented
+    # letter ("C:\Users\Jos\u00e9\data.mk") intact - the flush then silently did nothing for such a database.
+    set quoted {}
+    foreach f $files { lappend quoted '[string map {' ''} $f]' }
+    set script "foreach(\$f in @([join $quoted ,])){ \$s=\[IO.File\]::Open(\$f,'Open','ReadWrite','ReadWrite'); try{ \$s.Flush(\$true) } finally{ \$s.Dispose() } }"
     set ok 0 ; set started 0
     foreach exe [list [winTool powershell]] {
         if {$exe eq ""} continue
@@ -566,7 +569,6 @@ proc ::store::syncWindows {args} {
         }
         set ok 1 ; set started 1 ; break
     }
-    unset -nocomplain ::env(MKS_FLUSH)
     if {!$started} { set psOk 0 } else { set psOk 1 }
     return $ok
 }

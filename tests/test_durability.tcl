@@ -36,6 +36,14 @@ if {$::tcl_platform(platform) eq "windows"} {
 } else {
     check sync_forced_to_disk $r 1
 }
+# a path with an accented letter, spaces, parentheses and a quote: the names reach PowerShell inside the command text, intact
+# (they used to travel in an environment variable and the flush silently did nothing for such a database)
+set weirdDir [tmp "dur sync caf\u00e9 (1) it's"] ; file delete -force $weirdDir ; file mkdir $weirdDir
+set wf $weirdDir/da\u00efta.mk ; writebin $wf "x"
+set rw [store::syncDisk $wf]
+check sync_weird_path_same_as_plain $rw $r
+if {$::tcl_platform(platform) eq "windows" && [info exists ::env(MKS_EXPECT_FLUSH)]} { check sync_windows_weird_path_flushed $rw 1 }
+file delete -force $weirdDir
 set store::durable 0 ; check sync_off [store::syncDisk $f] 0 ; set store::durable 1
 # a missing file is not an error
 ok sync_missing_ok [expr {[catch {store::syncDisk /nonexistent/zz.mk}] == 0}]
