@@ -347,7 +347,7 @@ proc ::ddoc::note {id text {kind dim}} {
 }
 proc ::ddoc::showError {id} {
     set f [docf $id]
-    note $id "✖  $::grid::G($f.g,lasterror)" bad
+    note $id "\u2716  $::grid::G($f.g,lasterror)" bad
 }
 proc ::ddoc::hint {id} {
     note $id "Double-click a cell to edit it. Changes stay in memory until you Commit."
@@ -359,7 +359,7 @@ proc ::ddoc::reload {id} {
     set f [docf $id]
     set mk $D($id,mk)
     if {[catch {::store::layout $mk} layout]} {
-        note $id "✖  This view no longer exists." bad
+        note $id "\u2716  This view no longer exists." bad
         return
     }
     set cols {} ; set types {} ; set props {} ; set drill [dict create]
@@ -381,7 +381,7 @@ proc ::ddoc::reload {id} {
             lassign $c name t
             if {$t eq "V"} {
                 set cnt [::store::subSize $mk $r $name]
-                lappend out "▸ $cnt row[expr {$cnt == 1 ? {} : {s}}]"
+                lappend out "\u25B8 $cnt row[expr {$cnt == 1 ? {} : {s}}]"
             } else { lappend out [lindex $vals $k] ; incr k }
         }
         lappend rows $out ; lappend rowids $r
@@ -426,7 +426,7 @@ proc ::ddoc::addRow {id} {
     if {[catch {
         if {[::store::readonly [lindex [split $D($id,mk) .] 0]]} { error "This database is open read-only." }
         ::store::appendRow $D($id,mk) {} {}
-    } err]} { note $id "✖  $err" bad ; return }
+    } err]} { note $id "\u2716  $err" bad ; return }
     reload $id
     ::grid::selectLast $f.g
     ::app::dataChanged 0
@@ -444,7 +444,7 @@ proc ::ddoc::deleteRows {id} {
     if {[catch {
         if {[::store::readonly [lindex [split $D($id,mk) .] 0]]} { error "This database is open read-only." }
         ::store::deleteRows $D($id,mk) $ids
-    } err]} { note $id "✖  $err" bad ; return }
+    } err]} { note $id "\u2716  $err" bad ; return }
     reload $id
     ::app::dataChanged 0
 }

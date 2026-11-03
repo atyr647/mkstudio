@@ -90,7 +90,7 @@ proc ::app::pendingTotal {} {
 proc ::app::updatePending {} {
     set n [pendingTotal]
     if {$n > 0} {
-        .sb.pend configure -text "●  $n unsaved change[expr {$n == 1 ? {} : {s}}]" -foreground $::theme::c(warn)
+        .sb.pend configure -text "\u25CF  $n unsaved change[expr {$n == 1 ? {} : {s}}]" -foreground $::theme::c(warn)
     } else { .sb.pend configure -text "" }
     foreach b {commit rollback} { .tb.$b state [expr {$n > 0 ? "!disabled" : "disabled"}] }
 }
@@ -110,7 +110,7 @@ proc ::app::busy {flag} {
 
 proc ::app::cancel {} {
     variable busyFlag
-    if {$busyFlag} { set ::mkql::cancel 1 ; setStatus "Cancelling…" warn }
+    if {$busyFlag} { set ::mkql::cancel 1 ; setStatus "Cancelling\u2026" warn }
 }
 
 # ============================================================================
@@ -254,7 +254,7 @@ proc ::app::buildStatus {} {
     frame .sb -borderwidth 0 -highlightthickness 0 -height 26
     ::theme::reg .sb {%w configure -background $::theme::c(accentDim)}
     foreach n {dot msg pend pos} { label .sb.$n -borderwidth 0 -font MkSmall }
-    .sb.dot configure -text "●" -padx 12
+    .sb.dot configure -text "\u25CF" -padx 12
     foreach n {dot msg pend pos} {
         ::theme::reg .sb.$n [list %w configure -background $::theme::c(accentDim) -foreground $::theme::c(fg)]
     }
@@ -622,7 +622,7 @@ proc ::app::newSample {} {
     afterDbChange
     ::explorer::expandDb $tag
     setStatus "Sample database '$tag' created: employees (with a skills subview), departments, products, orders (with a lines subview)." ok
-    set text "-- Sample database. Press F5 to run the whole script, or select a statement and press F5.\nSELECT TOP 10 name, title, salary\nFROM employees\nORDER BY salary DESC;\n\nSELECT dept, COUNT(*) AS people, ROUND(AVG(salary), 0) AS avg_salary\nFROM employees\nGROUP BY dept\nORDER BY avg_salary DESC;\n\n-- skills is a subview (a nested table in every row).\n-- Double-click a ▸ cell in the grid to open it.\nSELECT id, name, skills FROM employees WHERE skills >= 3;"
+    set text "-- Sample database. Press F5 to run the whole script, or select a statement and press F5.\nSELECT TOP 10 name, title, salary\nFROM employees\nORDER BY salary DESC;\n\nSELECT dept, COUNT(*) AS people, ROUND(AVG(salary), 0) AS avg_salary\nFROM employees\nGROUP BY dept\nORDER BY avg_salary DESC;\n\n-- skills is a subview (a nested table in every row).\n-- Double-click a \u25B8 cell in the grid to open it.\nSELECT id, name, skills FROM employees WHERE skills >= 3;"
     set id [newQuery $text $tag 1]
 }
 
@@ -925,7 +925,7 @@ proc ::app::exportCsv {} {
 proc ::app::parseCsv {text} {
     set rows {} ; set row {} ; set field "" ; set inq 0 ; set i 0
     set n [string length $text]
-    if {[string index $text 0] eq "﻿"} { set i 1 }
+    if {[string index $text 0] eq "\uFEFF"} { set i 1 }
     while {$i < $n} {
         set ch [string index $text $i]
         if {$inq} {
@@ -960,7 +960,7 @@ proc ::app::importCsv {} {
     if {$m ne "" && [dict exists $m path] && [lsearch -exact $targets [dict get $m path]] >= 0} { set def [dict get $m path] }
     set r [::ui::formResult [::ui::form "Import CSV" [list \
         [list target "Import into view" combo $def $targets] \
-        {header "First row contains column names" check 1}] "Choose File…" "" \
+        {header "First row contains column names" check 1}] "Choose File\u2026" "" \
         "Columns are matched to the view's columns by name. Rows are added in memory; Commit to save."]]
     if {$r eq ""} return
     set file [tk_getOpenFile -title "Choose CSV file" \
@@ -1014,7 +1014,7 @@ proc ::app::importCsv {} {
 # ============================================================================
 proc ::app::about {} {
     variable version
-    ::ui::ask "About MK Studio" "MK Studio $version\n\nA workbench for Metakit databases, written entirely in Tcl/Tk and designed to live inside a starpack.\n\nTcl [info patchlevel]  ·  Tk [package present Tk]\nMetakit: [expr {[::store::available] ? {Mk4tcl available} : {Mk4tcl missing}}]" OK info
+    ::ui::ask "About MK Studio" "MK Studio $version\n\nA workbench for Metakit databases, written entirely in Tcl/Tk and designed to live inside a starpack.\n\nTcl [info patchlevel]  \u00B7  Tk [package present Tk]\nMetakit: [expr {[::store::available] ? {Mk4tcl available} : {Mk4tcl missing}}]" OK info
 }
 
 proc ::app::quit {} {

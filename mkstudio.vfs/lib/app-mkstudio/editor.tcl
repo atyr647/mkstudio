@@ -434,8 +434,8 @@ proc ::editor::findOpen {w} {
         ttk::frame $fb -style Raised.TFrame -padding {8 6}
         ttk::entry $fb.e -width 26 -textvariable ::editor::E($w,find)
         ttk::label $fb.n -text "" -style RaisedDim.TLabel -width 12 -anchor center
-        ttk::button $fb.prev -text "↑" -width 2 -style ToolRaised.TButton -command [list ::editor::findStep $w -1]
-        ttk::button $fb.next -text "↓" -width 2 -style ToolRaised.TButton -command [list ::editor::findStep $w 1]
+        ttk::button $fb.prev -text "\u2191" -width 2 -style ToolRaised.TButton -command [list ::editor::findStep $w -1]
+        ttk::button $fb.next -text "\u2193" -width 2 -style ToolRaised.TButton -command [list ::editor::findStep $w 1]
         ttk::button $fb.x -image [::icons::get closex] -style ToolRaised.TButton -command [list ::editor::findClose $w]
         pack $fb.e -side left
         pack $fb.n -side left -padx 6

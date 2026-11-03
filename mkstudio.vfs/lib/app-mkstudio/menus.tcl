@@ -110,7 +110,7 @@ proc ::menus::build {m parent} {
         pack propagate $r 0
         label $r.m -width 2 -font MkUI -borderwidth 0 -anchor center
         label $r.l -text [entryLabel $m $i] -font MkUI -borderwidth 0 -anchor w
-        label $r.c -text [expr {$type eq "cascade" ? "›" : ""}] -font MkUI -borderwidth 0 -width 2
+        label $r.c -text [expr {$type eq "cascade" ? "\u203A" : ""}] -font MkUI -borderwidth 0 -width 2
         set acc "" ; catch {set acc [$m entrycget $i -accelerator]}
         label $r.a -text $acc -font MkUI -borderwidth 0 -anchor e
         pack $r.m -side left -padx {6 2}
@@ -120,10 +120,10 @@ proc ::menus::build {m parent} {
         # check / radio marks
         if {$type eq "checkbutton"} {
             set var [$m entrycget $i -variable] ; set on [$m entrycget $i -onvalue]
-            if {[info exists ::$var] && [set ::$var] eq $on} { $r.m configure -text "✓" }
+            if {[info exists ::$var] && [set ::$var] eq $on} { $r.m configure -text "\u2713" }
         } elseif {$type eq "radiobutton"} {
             set var [$m entrycget $i -variable] ; set val [$m entrycget $i -value]
-            if {[info exists ::$var] && [set ::$var] eq $val} { $r.m configure -text "•" }
+            if {[info exists ::$var] && [set ::$var] eq $val} { $r.m configure -text "\u2022" }
         }
         pack $r -fill x
         lappend items $i

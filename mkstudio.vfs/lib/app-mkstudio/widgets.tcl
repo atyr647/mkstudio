@@ -179,7 +179,7 @@ proc ::ui::formOk {w fields validate} {
     foreach f $fields { dict set d [lindex $f 0] [string trim $::ui::F([lindex $f 0])] }
     if {$validate ne ""} {
         set msg [{*}$validate $d]
-        if {$msg ne ""} { $w.body.err configure -text "✖  $msg" ; return }
+        if {$msg ne ""} { $w.body.err configure -text "\u2716  $msg" ; return }
     }
     set ::ui::result [list ok $d]
 }
