@@ -13,11 +13,59 @@ on:
         description: 'Publish a release with this tag (must be v + the version in version.tcl); empty = just build and test'
         required: false
         default: ''
+      lock_soak:
+        description: 'true = also run the lock chaos soak on macOS and Linux (measures how often, if ever, two processes hold the write lock at once)'
+        required: false
+        default: 'false'
 
 permissions:
   contents: write   # only used to attach starpacks to a tagged release
 
 jobs:
+
+  # ---------------------------------------------------------------- manual: how safe is the write lock, measured
+  lock-soak:
+    if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.lock_soak == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      REAL_MK: '1'
+      MKS_CHAOS_KEEP: ${{ github.workspace }}/soak-logs
+    steps:
+      - uses: actions/checkout@v4
+      - name: The macOS kit built by the macos job (cached)
+        if: startsWith(matrix.os, 'macos')
+        uses: actions/cache/restore@v4
+        with:
+          path: kitcreator/tclkit-8.6.16
+          key: tclkit-${{ matrix.os }}-8.6.16-aqua-v2
+          fail-on-cache-miss: true
+      - name: Pick the kit
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then KIT="$GITHUB_WORKSPACE/kitcreator/tclkit-8.6.16"; else tools/fetch-runtimes.sh linux; KIT="$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.3-linux-x86_64"; fi
+          chmod +x "$KIT"; echo "KIT=$KIT" >> "$GITHUB_ENV"
+          uname -a; nproc 2>/dev/null || sysctl -n hw.ncpu
+      - name: A. shortened limits (1 s), nothing excused - the harshest setting
+        run: perl -e 'alarm 900; exec @ARGV' "$KIT" tests/soak_lock_chaos.tcl 10 15 | tee -a soak-A.txt
+      - name: B. real limits (5 s / 10 s), processes killed at random - what a user's machine does
+        run: MKS_CHAOS_REAL_LIMITS=1 perl -e 'alarm 1200; exec @ARGV' "$KIT" tests/soak_lock_chaos.tcl 15 20 | tee -a soak-B.txt
+      - name: C. real limits, and random processes frozen for 1.3 s at a time (starvation on demand)
+        run: MKS_CHAOS_REAL_LIMITS=1 MKS_CHAOS_STALL=1 perl -e 'alarm 1200; exec @ARGV' "$KIT" tests/soak_lock_chaos.tcl 15 20 | tee -a soak-C.txt
+      - name: Summary
+        if: always()
+        run: grep -H "SUMMARY\|VIOLATION" soak-*.txt || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soak-${{ matrix.os }}
+          path: |
+            soak-*.txt
+            soak-logs
+          if-no-files-found: ignore
 
   # ---------------------------------------------------------------- current Tcl/Tk runtimes for Linux and Windows
   # The prebuilt tclkits (Tcl/Tk 8.6.3, 2014, zlib 1.2.8) are old.  Current Tcl/Tk 8.6.16 + Metakit kits are built
