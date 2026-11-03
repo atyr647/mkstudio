@@ -11,7 +11,7 @@ Please try it on copies of databases you care about and report what you find.
 | Windows 10/11 (64-bit) | `MKStudio-<version>-windows-x64-setup.exe` | per-user installer, no administrator rights; or the single file `mkstudio-windows-x86_64.exe` |
 | macOS (Apple silicon) | `MKStudio-<version>-macos-arm64.dmg` | drag to Applications |
 | macOS (Intel) | `MKStudio-<version>-macos-x86_64.dmg` | drag to Applications |
-| Linux (x86-64) | `mkstudio_<version>_amd64.deb`, `MKStudio-<version>-linux-x86_64.tar.gz` | tarball installs to `~/.local` without root |
+| Linux (x86-64) | `mkstudio_<version>_amd64.deb` (GitHub shows the `~` of the version as a dot), `MKStudio-<version>-linux-x86_64.tar.gz` | tarball installs to `~/.local` without root |
 | any | `mkstudio-<platform>` | the bare program (what "Check for Updates" replaces itself with) |
 
 `SHA256SUMS` lists the checksum of every file.

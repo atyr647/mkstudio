@@ -493,9 +493,19 @@ jobs:
       - name: Checksums and notes
         run: |
           cd dist
+          # The macOS jobs uploaded their files with the folder name (dist/...), so after the download they sit one level down: the
+          # first release (v1.0.0-rc.1) went out WITHOUT the macOS files because of that.  Bring them up, and refuse to publish
+          # anything that lacks a platform.
+          find . -mindepth 2 -type f \( -name 'mkstudio-macos-*' -o -name 'MKStudio-*.dmg' \) -exec mv {} . \;
+          # GitHub rewrites '~' in an asset name to '.': give the file that name here, so SHA256SUMS matches what is downloaded
+          for f in *~*; do [ -e "$f" ] && mv "$f" "$(echo "$f" | tr '~' '.')"; done
           rm -f mkstudio-linux-x86_64.exe *.png
+          for f in mkstudio-linux-x86_64 mkstudio-windows-x86_64.exe mkstudio-macos-arm64 mkstudio-macos-x86_64; do
+            test -f "$f" || { echo "::error::missing $f"; exit 1; }
+          done
+          ls MKStudio-*-macos-arm64.dmg MKStudio-*-macos-x86_64.dmg MKStudio-*-windows-x64-setup.exe MKStudio-*-linux-x86_64.tar.gz mkstudio_*_amd64.deb
           # only release files; the in-app updater downloads SHA256SUMS next to the file it replaces
-          ls -l
+          ls -lR
           sha256sum mkstudio-* MKStudio-* mkstudio_* > SHA256SUMS
           cat SHA256SUMS
           cd ..
