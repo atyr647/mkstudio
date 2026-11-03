@@ -4,8 +4,20 @@ set here [file dirname [file normalize [info script]]]
 source $here/util.tcl
 puts "Tcl [info patchlevel]  kit: [info nameofexecutable]  encoding: [encoding system]"
 set ps $::env(SystemRoot)/System32/WindowsPowerShell/v1.0/powershell.exe
+puts "tmpdir=[tmpdir]  env TEMP=[expr {[info exists ::env(TEMP)] ? $::env(TEMP) : {-}}]  TMPDIR=[expr {[info exists ::env(TMPDIR)] ? $::env(TMPDIR) : {-}}]"
 set work [tmp mks_diag2] ; file delete -force $work ; file mkdir $work
+puts "work=$work exists=[file isdirectory $work] native=[file nativename $work]"
 set wn [file nativename $work]
+# PowerShell writing into ITS OWN idea of the temp folder (no path passes from Tcl at all): did it run, which version, any error?
+set probeFile $::env(TEMP)/mks_ps_probe.txt ; file delete -force $probeFile
+set script {try { $v = $PSVersionTable.PSVersion.ToString(); Set-Content -Path (Join-Path $env:TEMP 'mks_ps_probe.txt') -Value ('ran ' + $v + ' cwd=' + (Get-Location).Path + ' user=' + $env:USERNAME) } catch { Set-Content -Path (Join-Path $env:TEMP 'mks_ps_probe.txt') -Value ('ERROR ' + $_.Exception.Message) }}
+set rc [catch {exec $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $script 2>@1} out]
+puts "self-contained probe: rc=$rc file=[file exists $probeFile] [expr {[file exists $probeFile] ? [string trim [read [set h [open $probeFile r]]]] : {}}]"
+catch {close $h}
+# the same with a path from Tcl in a plain ASCII folder that certainly exists
+set plain $::env(TEMP)/mks_plain.txt ; file delete -force $plain
+set rc [catch {exec $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Set-Content -LiteralPath '[file nativename $plain]' -Value ok" 2>@1} out]
+puts "path from Tcl, directly in TEMP: rc=$rc file=[file exists $plain]  nativename=[file nativename $plain]"
 set n 0
 proc probe {label body} {
     global work n
