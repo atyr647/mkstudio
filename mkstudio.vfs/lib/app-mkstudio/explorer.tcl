@@ -29,14 +29,7 @@ proc ::explorer::create {win args} {
     ttk::frame $w -style Panel.TFrame
     ttk::frame $w.head -style Panel.TFrame -padding {14 10 8 6}
     ttk::label $w.head.l -text "OBJECT EXPLORER" -style Section.TLabel
-    ttk::button $w.head.refresh -image [::icons::get refresh] -style ToolPanel.TButton \
-        -command [list ::explorer::refresh]
-    ttk::button $w.head.collapse -text "\u2212" -width 2 -style ToolPanel.TButton \
-        -command [list ::explorer::collapseAll]
     pack $w.head.l -side left
-    pack $w.head.refresh $w.head.collapse -side right
-    ::tip::attach $w.head.refresh "Refresh (F5 in explorer)"
-    ::tip::attach $w.head.collapse "Collapse all"
 
     ttk::treeview $w.t -style Panel.Treeview -columns {detail} -show tree -selectmode browse \
         -yscrollcommand [list $w.v set]
@@ -92,6 +85,9 @@ proc ::explorer::refresh {} {
     array set M {}
     set root [addNode {} "Metakit Databases" server [llength [::store::tags]] [dict create kind root key root] 0]
     foreach tag [::store::tags] { addDb $root $tag }
+    if {![llength [::store::tags]]} {
+        addNode $root "Open a database..." open "" [dict create kind hint key hint] 0
+    }
     $t item $root -open 1
     restore $root $open $sel
     event generate $w <<ExplorerRefreshed>>
@@ -195,6 +191,7 @@ proc ::explorer::selected {} {
 
 proc ::explorer::onSelect {} {
     variable opts
+    if {[dict exists [selected] kind] && [dict get [selected] kind] eq "hint"} { after idle [list ::explorer::act openDB [selected]] ; return }
     if {$opts(-select) ne ""} { uplevel #0 [list {*}$opts(-select) [selected]] }
 }
 
@@ -204,8 +201,8 @@ proc ::explorer::onDouble {x y} {
     if {$item eq ""} return
     set m [meta $item]
     switch -- [dict get $m kind] {
-        col { act insertName $m }
-        db  { }
+        col  { act insertName $m }
+        view { act editRows $m ; return -code break }
     }
 }
 
@@ -227,53 +224,37 @@ proc ::explorer::onMenu {x y X Y} {
     ::theme::menu $mn
     switch -- [dict get $m kind] {
         root {
-            $mn add command -label "Open Database\u2026" -command [list ::explorer::act openDB $m]
-            $mn add command -label "New Database\u2026" -command [list ::explorer::act newDB $m]
-            $mn add command -label "New Sample Database\u2026" -command [list ::explorer::act newSample $m]
+            $mn add command -label "Open Database..." -command [list ::explorer::act openDB $m]
+            $mn add command -label "New Database..." -command [list ::explorer::act newDB $m]
+            $mn add command -label "New Sample Database..." -command [list ::explorer::act newSample $m]
         }
         db {
             $mn add command -label "New Query" -command [list ::explorer::act newQuery $m]
             $mn add separator
-            $mn add command -label "New View\u2026" -command [list ::explorer::act newView $m]
+            $mn add command -label "New View..." -command [list ::explorer::act newView $m]
             $mn add separator
             $mn add command -label "Commit Changes" -command [list ::explorer::act commitDB $m]
             $mn add command -label "Roll Back Changes" -command [list ::explorer::act rollbackDB $m]
             $mn add separator
             $mn add command -label "Close Database" -command [list ::explorer::act closeDB $m]
             $mn add command -label "Copy File Path" -command [list ::explorer::act copyPath $m]
-            $mn add command -label "Refresh" -command [list ::explorer::refresh]
         }
         views {
-            $mn add command -label "New View\u2026" -command [list ::explorer::act newView $m]
-            $mn add command -label "Refresh" -command [list ::explorer::refresh]
+            $mn add command -label "New View..." -command [list ::explorer::act newView $m]
         }
         view {
-            $mn add command -label "Select Top 1000 Rows" -command [list ::explorer::act selectTop $m]
             $mn add command -label "Edit Rows" -command [list ::explorer::act editRows $m]
             $mn add command -label "Design" -command [list ::explorer::act design $m]
+            $mn add command -label "Select Top 1000 Rows" -command [list ::explorer::act selectTop $m]
             $mn add separator
-            $mn add cascade -label "Script View as" -menu $mn.script
-            menu $mn.script -tearoff 0
-            ::theme::menu $mn.script
-            $mn.script add command -label "CREATE VIEW" -command [list ::explorer::act scriptCreate $m]
-            $mn.script add command -label "SELECT" -command [list ::explorer::act scriptSelect $m]
-            $mn.script add command -label "INSERT" -command [list ::explorer::act scriptInsert $m]
-            $mn.script add command -label "DESCRIBE" -command [list ::explorer::act scriptDescribe $m]
-            $mn add separator
-            $mn add command -label "Drop View\u2026" -accelerator Del -command [list ::explorer::act dropView $m]
+            $mn add command -label "Drop View..." -accelerator Del -command [list ::explorer::act dropView $m]
             $mn add command -label "Copy Name" -command [list ::explorer::act copyName $m]
-            $mn add command -label "Refresh" -command [list ::explorer::refresh]
         }
         col - sub {
             $mn add command -label "Insert Name into Query" -command [list ::explorer::act insertName $m]
-            if {[dict get $m kind] eq "sub"} {
-                $mn add command -label "Edit Subview Rows\u2026" -command [list ::explorer::act editSub $m]
-            }
             $mn add command -label "Copy Name" -command [list ::explorer::act copyName $m]
         }
-        default {
-            $mn add command -label "Refresh" -command [list ::explorer::refresh]
-        }
+        default { destroy $mn ; return }
     }
     tk_popup $mn $X $Y
 }

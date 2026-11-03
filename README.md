@@ -3,14 +3,24 @@
 A SQL-Server-Management-Studio-style workbench for **Metakit** databases, written
 entirely in Tcl/Tk and designed to live inside a **starpack** (one executable).
 
-* **Object Explorer** – databases -> views -> columns, with subviews nested; lazy-loaded, context menus
-* **Query windows** – tabbed editor, syntax highlighting, completion (`Ctrl+Space`), error underlining
-* **MKQL** – a SQL dialect shaped around Metakit (views, typed columns, *subviews*). See *Help -> MKQL Reference*
-* **Results grid** – multiple result tabs, sortable, copy / CSV export, double-click a `> N rows` cell to open the subview
-* **Edit Rows** – spreadsheet-style editing straight into the database, with type validation
-* **Designer** – add / rename / retype / drop columns and subviews; every change shown as MKQL
-* **Commit / Roll Back** – Metakit changes stay in memory until you commit (files are opened `-nocommit`)
-* Properties pane, dark and light themes, CSV import, script save/open
+* **Object Explorer** - databases -> views -> columns, subviews nested; double-click a view to edit its rows
+* **Edit Rows** - spreadsheet-style editing straight into the database, with friendly type validation; double-click a `> N rows` cell to open a subview
+* **Designer** - add, edit (rename / retype) and drop columns and subviews
+* **Query windows** - tabbed editor with highlighting and multiple result tabs
+* **Commit / Roll Back** - changes stay in memory until you commit (files are opened `-nocommit`)
+* Dark and light themes, CSV import / export, script save / open
+
+### The query language is pluggable
+
+The UI never parses SQL itself. The query window calls only these procs in `mkql.tcl`:
+
+    ::mkql::parseScript text   ->  list of {ast firstPos endPos statementText}   (errors carry -errorcode {MKQL SYNTAX pos len})
+    ::mkql::execStatement ast defaultDb  ->  {kind rowset cols .. types .. rows .. rowids .. drill .. source .. truncated 0}
+                                             or {kind message text ..}
+
+`mkql.tcl` is a small built-in stand-in dialect so the app is usable today. Replace those two
+procs with your standard-SQL-to-Metakit engine and nothing else needs to change. The data
+grid and designer talk to `store.tcl` directly and do not use the query language at all.
 
 ## Layout
 

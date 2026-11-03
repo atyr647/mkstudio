@@ -8,7 +8,7 @@ namespace eval ::app {
     variable qn 0
     variable cfg
     array set cfg {
-        theme dark recent {} geometry 1360x820 showEx 1 showPr 1 exWidth 290 prWidth 280
+        theme dark recent {} geometry 1360x820 showEx 1 showPr 0 exWidth 280 prWidth 280
         fontSize 11 lastDir ""
     }
     variable busyFlag 0
@@ -93,25 +93,24 @@ proc ::app::pendingTotal {} {
 proc ::app::updatePending {} {
     set n [pendingTotal]
     if {$n > 0} {
-        .sb.pend configure -text "●  $n uncommitted change[expr {$n == 1 ? {} : {s}}]" -foreground $::theme::c(warn)
-    } else {
-        .sb.pend configure -text ""
-    }
-    set files [llength [::store::tags]]
-    .sb.dbs configure -text "$files database[expr {$files == 1 ? {} : {s}}] open"
+        .sb.pend configure -text "●  $n unsaved change[expr {$n == 1 ? {} : {s}}]" -foreground $::theme::c(warn)
+    } else { .sb.pend configure -text "" }
+    foreach b {commit rollback} { .tb.$b state [expr {$n > 0 ? "!disabled" : "disabled"}] }
 }
+
 proc ::app::busy {flag} {
     variable busyFlag
     set busyFlag $flag
     if {$flag} {
         . configure -cursor watch
-        .tb.run state disabled ; .tb.stop state !disabled
-        setStatus "Executing query…" warn
+        .tb.run configure -text "Stop" -image [::icons::get stop]
+        setStatus "Running..." warn
     } else {
         . configure -cursor ""
-        .tb.run state !disabled ; .tb.stop state disabled
+        .tb.run configure -text "Execute" -image [::icons::get play]
     }
 }
+
 proc ::app::cancel {} {
     variable busyFlag
     if {$busyFlag} { set ::mkql::cancel 1 ; setStatus "Cancelling…" warn }
@@ -123,43 +122,34 @@ proc ::app::cancel {} {
 proc ::app::buildMenus {} {
     frame .mb -borderwidth 0 -highlightthickness 0
     ::theme::reg .mb {%w configure -background $::theme::c(bg)}
-    set defs {
-        file  "File"
-        edit  "Edit"
-        view  "View"
-        query "Query"
-        tools "Tools"
-        help  "Help"
-    }
-    foreach {k label} $defs {
+    foreach {k label} {file File edit Edit view View query Query help Help} {
         ttk::menubutton .mb.$k -text $label -style Menubar.TMenubutton -menu .mb.$k.m
         menu .mb.$k.m -tearoff 0 -postcommand [list ::app::menuState $k]
         ::theme::reg .mb.$k.m {::theme::menu %w}
         pack .mb.$k -side left
     }
-    label .mb.title -text "MK Studio" -font MkSmall -borderwidth 0
-    ::theme::reg .mb.title {%w configure -background $::theme::c(bg) -foreground $::theme::c(faint)}
-    pack .mb.title -side right -padx 14
 
     set m .mb.file.m
     $m add command -label "New Query" -accelerator "Ctrl+N" -command ::app::newQuery
-    $m add command -label "Open Script…" -command ::app::openScript
+    $m add command -label "Open Script..." -command ::app::openScript
     $m add command -label "Save Script" -accelerator "Ctrl+S" -command ::app::saveScript
-    $m add command -label "Save Script As…" -command {::app::saveScript 1}
     $m add separator
-    $m add command -label "Open Database…" -accelerator "Ctrl+O" -command ::app::openDB
-    $m add command -label "New Database…" -command ::app::newDB
-    $m add command -label "New Sample Database…" -command ::app::newSample
+    $m add command -label "Open Database..." -accelerator "Ctrl+O" -command ::app::openDB
     $m add cascade -label "Open Recent" -menu $m.recent
     menu $m.recent -tearoff 0
     ::theme::reg $m.recent {::theme::menu %w}
+    $m add command -label "New Database..." -command ::app::newDB
+    $m add command -label "New Sample Database..." -command ::app::newSample
     $m add command -label "Close Database" -command ::app::closeSelectedDB
+    $m add separator
+    $m add command -label "New View..." -command ::app::newView
+    $m add command -label "Import CSV into View..." -command ::app::importCsv
     $m add separator
     $m add command -label "Commit Changes" -accelerator "Ctrl+Shift+S" -command ::app::commit
     $m add command -label "Roll Back Changes" -command ::app::rollback
     $m add separator
     $m add command -label "Close Tab" -accelerator "Ctrl+W" -command ::app::closeCurrent
-    $m add command -label "Exit" -accelerator "Alt+F4" -command ::app::quit
+    $m add command -label "Exit" -command ::app::quit
 
     set m .mb.edit.m
     $m add command -label "Undo" -accelerator "Ctrl+Z" -command {::app::editEvent <<Undo>>}
@@ -171,55 +161,48 @@ proc ::app::buildMenus {} {
     $m add command -label "Select All" -accelerator "Ctrl+A" -command {::app::editEvent <<SelectAll>>}
     $m add separator
     $m add command -label "Toggle Comment" -accelerator "Ctrl+/" -command ::app::toggleComment
-    $m add command -label "Complete Name" -accelerator "Ctrl+Space" -command ::app::completeNow
 
     set m .mb.view.m
-    $m add checkbutton -label "Object Explorer" -accelerator F8 -variable ::app::cfg(showEx) -command {::app::applyPanes}
-    $m add checkbutton -label "Properties" -accelerator F4 -variable ::app::cfg(showPr) -command {::app::applyPanes}
-    $m add command -label "Show / Hide Results Pane" -accelerator "Ctrl+R" -command ::app::toggleResults
+    $m add checkbutton -label "Object Explorer" -accelerator F8 -variable ::app::cfg(showEx) -command ::app::applyPanes
+    $m add checkbutton -label "Properties" -accelerator F4 -variable ::app::cfg(showPr) -command ::app::applyPanes
+    $m add command -label "Show / Hide Results" -accelerator "Ctrl+R" -command ::app::toggleResults
     $m add separator
     $m add radiobutton -label "Dark Theme" -variable ::app::themeVar -value dark -command {::app::setTheme dark}
     $m add radiobutton -label "Light Theme" -variable ::app::themeVar -value light -command {::app::setTheme light}
     $m add separator
-    $m add command -label "Zoom In" -accelerator "Ctrl++" -command {::editor::zoom {} 1}
-    $m add command -label "Zoom Out" -accelerator "Ctrl+-" -command {::editor::zoom {} -1}
-    $m add command -label "Reset Zoom" -command ::editor::zoomReset
+    $m add command -label "Larger Text" -accelerator "Ctrl++" -command {::editor::zoom {} 1}
+    $m add command -label "Smaller Text" -accelerator "Ctrl+-" -command {::editor::zoom {} -1}
+    $m add command -label "Reset Text Size" -command ::editor::zoomReset
+    $m add separator
+    $m add command -label "Refresh Explorer" -accelerator F5 -command ::explorer::refresh
 
     set m .mb.query.m
     $m add command -label "Execute" -accelerator "F5" -command ::app::execute
-    $m add command -label "Parse" -accelerator "Ctrl+F5" -command ::app::parse
-    $m add command -label "Cancel Executing Query" -accelerator "Esc" -command ::app::cancel
+    $m add command -label "Cancel" -accelerator "Esc" -command ::app::cancel
     $m add separator
-    $m add command -label "Export Current Results as CSV…" -command ::app::exportCsv
-
-    set m .mb.tools.m
-    $m add command -label "Import CSV into View…" -command ::app::importCsv
-    $m add separator
-    $m add command -label "Edit Rows of Selected View" -command {::app::explorerAction editRows [::explorer::selected]}
-    $m add command -label "Design Selected View" -command {::app::explorerAction design [::explorer::selected]}
-    $m add command -label "Refresh Object Explorer" -command ::explorer::refresh
+    $m add command -label "Export Results as CSV..." -command ::app::exportCsv
 
     set m .mb.help.m
-    $m add command -label "MKQL Reference" -accelerator F1 -command ::app::openHelp
     $m add command -label "About MK Studio" -command ::app::about
 }
 
 proc ::app::menuState {k} {
-    # enable/disable items by context
     set hasDb [expr {[llength [::store::tags]] > 0}]
     set q [currentQuery]
     set pend [expr {[pendingTotal] > 0}]
+    proc ::app::_en {m item on} { $m entryconfigure $item -state [expr {$on ? "normal" : "disabled"}] }
     switch -- $k {
         file {
             set m .mb.file.m
-            foreach i {"Commit Changes" "Roll Back Changes"} { $m entryconfigure $i -state [expr {$pend ? "normal" : "disabled"}] }
-            $m entryconfigure "Close Database" -state [expr {$hasDb ? "normal" : "disabled"}]
-            $m entryconfigure "Save Script" -state [expr {$q ne "" ? "normal" : "disabled"}]
-            $m entryconfigure "Save Script As…" -state [expr {$q ne "" ? "normal" : "disabled"}]
+            _en $m "Commit Changes" $pend ; _en $m "Roll Back Changes" $pend
+            _en $m "Close Database" $hasDb ; _en $m "New View..." $hasDb ; _en $m "Import CSV into View..." $hasDb
+            _en $m "Save Script" [expr {$q ne ""}]
         }
         query {
             set m .mb.query.m
-            foreach i {Execute Parse} { $m entryconfigure $i -state [expr {$q ne "" ? "normal" : "disabled"}] }
+            _en $m Execute [expr {$q ne "" && !$::app::busyFlag}]
+            _en $m Cancel $::app::busyFlag
+            _en $m "Export Results as CSV..." [expr {$q ne ""}]
         }
     }
 }
@@ -251,55 +234,38 @@ proc ::app::tsep {n} {
 proc ::app::buildToolbar {} {
     ttk::frame .tb -padding {8 0}
     tbtn newq "New Query" docnew ::app::newQuery "New query window  (Ctrl+N)"
-    tbtn open "" open ::app::openDB "Open a Metakit database  (Ctrl+O)"
-    tbtn newdb "" dbnew ::app::newDB "Create a new Metakit database"
+    tbtn open "" open ::app::openDB "Open a database  (Ctrl+O)"
     tsep 1
     ttk::label .tb.dl -text "Database" -style Dim.TLabel
     ttk::combobox .tb.db -state readonly -width 16 -textvariable ::app::dbVar -takefocus 0
     pack .tb.dl -side left -padx {2 6}
     pack .tb.db -side left
     bind .tb.db <<ComboboxSelected>> {::app::dbPicked}
-    ::tip::attach .tb.db "Database used by the current query window"
+    ::tip::attach .tb.db "Database this query runs against"
     tsep 2
-    tbtn run "Execute" play ::app::execute "Execute the query, or the selected text  (F5)" Run.TButton
-    tbtn stop "" stop ::app::cancel "Cancel the running query  (Esc)"
-    .tb.stop state disabled
-    tbtn parse "" check {::app::parse} "Parse only - check the syntax  (Ctrl+F5)"
+    tbtn run "Execute" play ::app::runOrStop "Run the query, or just the selected text  (F5)" Run.TButton
     tsep 3
-    tbtn commit "Commit" commit ::app::commit "Write pending changes to disk  (Ctrl+Shift+S)"
+    tbtn commit "Commit" commit ::app::commit "Save pending changes to the file  (Ctrl+Shift+S)"
     tbtn rollback "Roll Back" rollback ::app::rollback "Discard pending changes"
-    tsep 4
-    tbtn refresh "" refresh ::explorer::refresh "Refresh Object Explorer"
-    # right side toggles
-    ttk::button .tb.theme -image [::icons::get theme] -style Tool.TButton -takefocus 0 -command ::app::toggleTheme
-    ttk::button .tb.pr -image [::icons::get panel_r] -style Tool.TButton -takefocus 0 -command {::app::togglePane showPr}
-    ttk::button .tb.ex -image [::icons::get panel_l] -style Tool.TButton -takefocus 0 -command {::app::togglePane showEx}
-    ttk::button .tb.rs -image [::icons::get panel_b] -style Tool.TButton -takefocus 0 -command ::app::toggleResults
-    pack .tb.theme .tb.pr .tb.rs .tb.ex -side right -padx 1 -pady 3
-    ::tip::attach .tb.theme "Switch between dark and light theme"
-    ::tip::attach .tb.pr "Show / hide Properties  (F4)"
-    ::tip::attach .tb.ex "Show / hide Object Explorer  (F8)"
-    ::tip::attach .tb.rs "Show / hide Results pane  (Ctrl+R)"
+}
+proc ::app::runOrStop {} {
+    variable busyFlag
+    if {$busyFlag} { cancel } else { execute }
 }
 
 proc ::app::buildStatus {} {
     frame .sb -borderwidth 0 -highlightthickness 0 -height 26
     ::theme::reg .sb {%w configure -background $::theme::c(accentDim)}
-    foreach {n anchor} {dot w msg w pend e dbs e run e pos e} {
-        label .sb.$n -borderwidth 0 -font MkSmall -anchor $anchor
-    }
+    foreach n {dot msg pend run pos} { label .sb.$n -borderwidth 0 -font MkSmall }
     .sb.dot configure -text "●" -padx 12
-    foreach n {dot msg pend dbs run pos} {
+    foreach n {dot msg pend run pos} {
         ::theme::reg .sb.$n [list %w configure -background $::theme::c(accentDim) -foreground $::theme::c(fg)]
     }
-    ::theme::reg .sb.dbs {%w configure -foreground $::theme::c(dim)}
     ::theme::reg .sb.run {%w configure -foreground $::theme::c(dim)}
     ::theme::reg .sb.pos {%w configure -foreground $::theme::c(dim)}
-    pack .sb.dot -side left
-    pack .sb.msg -side left
+    pack .sb.dot .sb.msg -side left
     pack .sb.pos -side right -padx 14
     pack .sb.run -side right -padx 8
-    pack .sb.dbs -side right -padx 8
     pack .sb.pend -side right -padx 8
     pack propagate .sb 0
     ::tip::attach .sb.pend "Changes are held in memory until you commit them  (Ctrl+Shift+S)"
@@ -332,30 +298,27 @@ proc ::app::buildWelcome {} {
     place $w.c -relx 0.5 -rely 0.42 -anchor center
     ttk::label $w.c.logo -image [::icons::logo] -style Surface.TLabel
     ttk::label $w.c.t -text "MK Studio" -style Huge.TLabel
-    ttk::label $w.c.s -text "A workbench for Metakit databases" -style SurfaceDim.TLabel
-    grid $w.c.logo -row 0 -column 0 -columnspan 2 -pady {0 8}
-    grid $w.c.t -row 1 -column 0 -columnspan 2
-    grid $w.c.s -row 2 -column 0 -columnspan 2 -pady {2 22}
+    ttk::label $w.c.s -text "Browse, query and edit Metakit databases" -style SurfaceDim.TLabel
+    grid $w.c.logo -pady {0 8}
+    grid $w.c.t
+    grid $w.c.s -pady {2 22}
     set r 3
     foreach {text cmd} {
-        "Open a database…"       ::app::openDB
-        "New sample database…"   ::app::newSample
+        "Open a database..."     ::app::openDB
+        "Try the sample database..." ::app::newSample
         "New query"              ::app::newQuery
-        "MKQL reference"         ::app::openHelp
     } {
         ttk::button $w.c.b$r -text $text -style Link.TButton -command $cmd -cursor hand2
-        grid $w.c.b$r -row $r -column 0 -columnspan 2 -sticky w -padx 90
+        grid $w.c.b$r -row $r -sticky w -padx 70
         incr r
     }
     ttk::label $w.c.rh -text "RECENT" -style Section.TLabel
-    $w.c.rh configure -background $::theme::c(surface)
-    grid $w.c.rh -row $r -column 0 -sticky w -padx 90 -pady {22 4}
+    grid $w.c.rh -row $r -sticky w -padx 70 -pady {22 4}
     ttk::frame $w.c.recent -style Surface.TFrame
-    grid $w.c.recent -row [expr {$r+1}] -column 0 -columnspan 2 -sticky w -padx 90
-    ttk::label $w.c.tip -text "Tip:  F5 runs a query  ·  double-click a ▸ subview cell to drill into it" -style SurfaceDim.TLabel
-    grid $w.c.tip -row [expr {$r+2}] -column 0 -columnspan 2 -pady {28 0}
+    grid $w.c.recent -row [expr {$r+1}] -sticky w -padx 70
     ::theme::reg $w.c.rh {%w configure -background $::theme::c(surface) -foreground $::theme::c(dim)}
 }
+
 proc ::app::refreshWelcome {} {
     variable cfg
     set f .main.center.docs.welcome.c.recent
@@ -444,17 +407,17 @@ proc ::app::tabSelected {id} { showDoc $id }
 proc ::app::docSelected {id} {
     variable dbVar
     updateDbCombo
-    if {[docType $id] eq "query"} {
+    set isQ [expr {[docType $id] eq "query"}]
+    if {$isQ} {
         set dbVar [::qdoc::db $id]
-        .tb.db state !disabled
         if {$dbVar eq "" && [llength [::store::tags]] == 1} { set dbVar [lindex [::store::tags] 0] }
+        .tb.db state !disabled
     } else {
         set dbVar ""
         .tb.db state disabled
     }
-    .tb.run state [expr {[docType $id] eq "query" && !$::app::busyFlag ? "!disabled" : "disabled"}]
-    .tb.parse state [expr {[docType $id] eq "query" ? "!disabled" : "disabled"}]
-    .sb.pos configure -text [expr {[docType $id] eq "query" ? [.sb.pos cget -text] : ""}]
+    .tb.run state [expr {$isQ || $::app::busyFlag ? "!disabled" : "disabled"}]
+    if {!$isQ} { .sb.pos configure -text "" }
 }
 
 proc ::app::updateDbCombo {} {
@@ -529,14 +492,6 @@ proc ::app::openDesign {mk title} {
     set A(path,$id) $mk
     return $id
 }
-proc ::app::openHelp {} {
-    variable A
-    foreach id [docs] { if {[docType $id] eq "help"} { showDoc $id ; return } }
-    set id [newId]
-    ::helpdoc::create $id [docFrame $id]
-    addDoc $id help "MKQL Reference" help
-}
-
 proc ::app::docEdited {id} {
     variable A
     set f [docFrame $id]
@@ -735,59 +690,22 @@ proc ::app::onExplorerSelect {meta} {
 }
 
 proc ::app::explorerAction {name m} {
-    variable A
-    set kind [expr {$m ne "" ? [dict get $m kind] : ""}]
     switch -- $name {
-        openDB   openDB
-        newDB    newDB
+        openDB    openDB
+        newDB     newDB
         newSample newSample
-        newQuery { newQuery "" [dict get $m tag] }
-        newView {
-            set tag [dict get $m tag]
-            newQuery "CREATE VIEW $tag.new_view (\n    id int,\n    name string,\n    notes (note string)   -- a subview: a nested table in every row\n);" $tag 0
-        }
-        closeDB  { closeDB [dict get $m tag] }
-        commitDB { commit [dict get $m tag] }
+        newQuery  { newQuery "" [dict get $m tag] }
+        newView   { newView [dict get $m tag] }
+        closeDB   { closeDB [dict get $m tag] }
+        commitDB  { commit [dict get $m tag] }
         rollbackDB { rollback [dict get $m tag] }
-        copyPath { clipboard clear ; clipboard append [::store::path [dict get $m tag]] ; setStatus "Path copied." ok }
-        selectTop {
-            newQuery "SELECT TOP 1000 *\nFROM [dict get $m path]" [dict get $m tag] 1
-        }
-        editRows { openData [dict get $m path] [dict get $m name] }
-        design   { openDesign [dict get $m path] [dict get $m name] }
-        editSub {
-            # subviews belong to a row; ask which row
-            set path [dict get $m path]
-            set r [::ui::formResult [::ui::form "Edit subview rows" [list [list row "Row number of [lindex [split $path .] end]" entry 0]] "Open" \
-                [list ::app::validateRow $path] "Every row has its own '[dict get $m name]' table. Choose which row's rows to edit."]]
-            if {$r eq ""} return
-            set row [dict get $r row]
-            openData "$path!$row.[dict get $m name]" "[lindex [split $path .] end]\[$row\].[dict get $m name]"
-        }
-        scriptCreate {
-            set path [dict get $m path]
-            set l [::store::layout $path]
-            newQuery "[scriptCreate [dict get $m tag] [dict get $m name] $l]" [dict get $m tag] 0
-        }
-        scriptSelect {
-            set cols {}
-            foreach c [::store::layout [dict get $m path]] { lappend cols "    [lindex $c 0]" }
-            newQuery "SELECT\n[join $cols ,\n]\nFROM [dict get $m path];" [dict get $m tag] 0
-        }
-        scriptInsert {
-            set cols {} ; set vals {}
-            foreach c [::store::layout [dict get $m path]] {
-                lassign $c n t
-                if {$t eq "V"} continue
-                lappend cols $n
-                lappend vals [expr {$t in {I L F D} ? "0" : "''"}]
-            }
-            newQuery "INSERT INTO [dict get $m path]\n    ([join $cols {, }])\nVALUES\n    ([join $vals {, }]);" [dict get $m tag] 0
-        }
-        scriptDescribe { newQuery "DESCRIBE [dict get $m path];" [dict get $m tag] 1 }
-        dropView { dropView $m }
-        dropSelected { if {$kind eq "view"} { dropView $m } }
-        copyName { clipboard clear ; clipboard append [dict get $m name] ; setStatus "Name copied." ok }
+        copyPath  { clipboard clear ; clipboard append [::store::path [dict get $m tag]] ; setStatus "Path copied." ok }
+        selectTop { newQuery "SELECT *\nFROM [dict get $m path]\nLIMIT 1000" [dict get $m tag] 1 }
+        editRows  { openData [dict get $m path] [dict get $m name] }
+        design    { openDesign [dict get $m path] [dict get $m name] }
+        dropView  { dropView $m }
+        dropSelected { if {$m ne "" && [dict get $m kind] eq "view"} { dropView $m } }
+        copyName  { clipboard clear ; clipboard append [dict get $m name] ; setStatus "Name copied." ok }
         insertName {
             set q [currentQuery]
             if {$q eq ""} { setStatus "Open a query window first." warn ; return }
@@ -795,43 +713,50 @@ proc ::app::explorerAction {name m} {
         }
     }
 }
+
+# create an empty view, then open it in the designer
+proc ::app::newView {{tag ""}} {
+    if {$tag eq ""} { set tag [targetTag] }
+    if {$tag eq ""} { setStatus "Open a database first." warn ; return }
+    if {[::store::readonly $tag]} { setStatus "'$tag' is open read-only." warn ; return }
+    set r [::ui::formResult [::ui::form "New view in '$tag'" [list \
+        {name "View name" entry ""} {first "First column" entry "id"} \
+        [list type "Type" combo Integer [::design::types]]] "Create" [list ::app::validateNewView $tag]]]
+    if {$r eq ""} return
+    set name [dict get $r name]
+    if {[catch {
+        ::store::createView $tag $name [list [list [dict get $r first] [::design::letter [dict get $r type]] {}]]
+    } err]} { ::ui::problem $err ; return }
+    dataChanged 1
+    openDesign $tag.$name $name
+}
+proc ::app::validateNewView {tag d} {
+    set n [dict get $d name]
+    if {$n eq ""} { return "Please enter a name." }
+    if {![regexp {^[A-Za-z_][A-Za-z0-9_]*$} $n]} { return "Use letters, digits and underscores, and don't start with a digit." }
+    if {[::store::hasView $tag $n]} { return "A view called '$n' already exists." }
+    if {![regexp {^[A-Za-z_][A-Za-z0-9_]*$} [dict get $d first]]} { return "Enter a valid first column name." }
+    return ""
+}
+
 proc ::app::validateRow {path d} {
     set row [dict get $d row]
     if {![string is integer -strict $row] || $row < 0} { return "Enter a row number (0, 1, 2, ...)." }
     if {$row >= [::store::size $path]} { return "That view only has [::store::size $path] rows." }
     return ""
 }
-proc ::app::scriptCreate {tag name layout} {
-    set lines {}
-    foreach c $layout {
-        lassign $c n t sub
-        if {$t eq "V"} {
-            lappend lines "    $n ([scriptSub $sub])"
-        } else {
-            lappend lines "    $n [string tolower [lindex [dict get {S string I int L long F float D double B bytes} $t] 0]]"
-        }
-    }
-    return "CREATE VIEW $tag.$name (\n[join $lines ,\n]\n);"
-}
-proc ::app::scriptSub {layout} {
-    set l {}
-    foreach c $layout {
-        lassign $c n t sub
-        if {$t eq "V"} { lappend l "$n ([scriptSub $sub])" } else {
-            lappend l "$n [dict get {S string I int L long F float D double B bytes} $t]"
-        }
-    }
-    return [join $l {, }]
-}
 proc ::app::dropView {m} {
-    set path [dict get $m path]
-    set r [::ui::ask "Drop view" "Drop view '[dict get $m name]' and its [commas [::store::size $path]] row(s)?\n\nThis is held in memory until you commit, and Roll Back can undo it." {Drop Cancel} stop]
-    if {$r ne "Drop"} return
     variable A
+    set path [dict get $m path]
+    set r [::ui::ask "Drop view" "Drop '[dict get $m name]' and its [commas [::store::size $path]] row(s)?\n\nYou can still undo this with Roll Back until you commit." {Drop Cancel} stop]
+    if {$r ne "Drop"} return
     foreach id [docs] {
         if {[docType $id] in {data design} && [string match "$path*" $A(path,$id)]} { closeDoc $id 1 }
     }
-    if {[catch {::mkql::run "DROP VIEW $path"} err]} { ::ui::problem $err ; return }
+    if {[catch {
+        if {[::store::readonly [dict get $m tag]]} { error "This database is open read-only." }
+        ::store::dropView [dict get $m tag] [dict get $m name]
+    } err]} { ::ui::problem $err ; return }
     dataChanged 1
     setStatus "View dropped." ok
 }
@@ -844,11 +769,6 @@ proc ::app::execute {} {
     if {$id eq ""} { setStatus "Open a query window first (Ctrl+N)." warn ; return }
     ::qdoc::execute $id
 }
-proc ::app::parse {} {
-    set id [currentQuery]
-    if {$id eq ""} return
-    ::qdoc::execute $id 1
-}
 proc ::app::toggleResults {} {
     set id [currentQuery]
     if {$id ne ""} { ::qdoc::toggleResults $id }
@@ -856,10 +776,6 @@ proc ::app::toggleResults {} {
 proc ::app::toggleComment {} {
     set id [currentQuery]
     if {$id ne ""} { ::editor::toggleComment [docFrame $id].ed }
-}
-proc ::app::completeNow {} {
-    set id [currentQuery]
-    if {$id ne ""} { ::editor::complete [docFrame $id].ed }
 }
 proc ::app::editEvent {ev} {
     set w [focus]
@@ -1018,7 +934,7 @@ proc ::app::importCsv {} {
         set map {}   ;# {csvIndex name type}
         set i 0
         foreach h $headers {
-            set d [::mkql::layoutLookup $layout [string trim $h]]
+            set d [::store::findCol $layout [string trim $h]]
             if {$d ne "" && [lindex $d 1] ne "V"} { lappend map [list $i [lindex $d 0] [lindex $d 1]] }
             incr i
         }
@@ -1033,7 +949,7 @@ proc ::app::importCsv {} {
                 lassign $e ci name type
                 set v [expr {$ci < [llength $row] ? [lindex $row $ci] : ""}]
                 if {$v eq "" && $type in {I L F D}} { set v 0 }
-                if {[catch {::mkql::coerce $name $type $v} cv]} { error "Row $rn: $cv" }
+                if {[catch {::store::coerce $name $type $v} cv]} { error "Row $rn: $cv" }
                 lappend vals $cv
             }
             lappend prepared $vals
@@ -1070,7 +986,6 @@ proc ::app::quit {} {
 # ============================================================================
 proc ::app::bindKeys {} {
     bind . <F5>             {::app::execute ; break}
-    bind . <Control-F5>     {::app::parse ; break}
     bind . <Control-e>      {::app::execute ; break}
     bind . <Escape>         {::app::cancel}
     bind . <Control-n>      {::app::newQuery ; break}
@@ -1081,7 +996,6 @@ proc ::app::bindKeys {} {
     bind . <Control-r>      {::app::toggleResults ; break}
     bind . <F8>             {::app::togglePane showEx ; break}
     bind . <F4>             {::app::togglePane showPr ; break}
-    bind . <F1>             {::app::openHelp ; break}
     bind . <Control-Tab>    {::app::cycleTab 1 ; break}
     bind . <Control-Shift-Tab> {::app::cycleTab -1 ; break}
     bind . <Control-ISO_Left_Tab> {::app::cycleTab -1 ; break}

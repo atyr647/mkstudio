@@ -3,7 +3,7 @@
 #   ::qdoc    query editor + results/messages            (SSMS "query window")
 #   ::ddoc    editable data grid for one view/subview    (SSMS "Edit Top 200 Rows")
 #   ::design  view designer                              (SSMS "Table Designer")
-#   ::helpdoc MKQL reference
+
 
 # ============================================================================
 #  Query document
@@ -289,53 +289,40 @@ proc ::qdoc::currentGrid {id} {
 }
 
 # ============================================================================
-#  Data document: editable grid over a view or subview
+#  Data document: editable grid over one view or subview
 # ============================================================================
 namespace eval ::ddoc {
     variable D
     array set D {}
+    variable maxRows 20000
 }
 
-# mk path "tag.view!3.sub"  ->  MKQL path "tag.view[3].sub"
-proc ::ddoc::mkqlPath {mk} {
+proc ::ddoc::docf {id} { return [::app::docFrame $id] }
+
+# "tag.view!3.sub"  ->  "view[3].sub"   (what the user sees on tabs)
+proc ::ddoc::label {mk} {
     regsub -all {!(\d+)\.} $mk {[\1].} p
     regsub -all {!(\d+)$} $p {[\1]} p
-    return $p
+    return [join [lrange [split $p .] 1 end] .]
 }
 
 proc ::ddoc::create {id f mk} {
     variable D
-    set D($id,mk) $mk ; set D($id,limit) 1000 ; set D($id,filter) ""
+    set D($id,mk) $mk
     ttk::frame $f -style Surface.TFrame
     ttk::frame $f.bar -style Surface.TFrame -padding {8 6}
     ttk::button $f.bar.add -text "Add Row" -image [::icons::get plus] -compound left \
         -style ToolSurface.TButton -command [list ::ddoc::addRow $id]
     ttk::button $f.bar.del -text "Delete" -image [::icons::get minus] -compound left \
         -style ToolSurface.TButton -command [list ::ddoc::deleteRows $id]
-    ttk::button $f.bar.ref -text "Refresh" -image [::icons::get refresh] -compound left \
-        -style ToolSurface.TButton -command [list ::ddoc::reload $id]
-    ttk::separator $f.bar.s1 -orient vertical
-    ttk::label $f.bar.tl -text "Show" -style SurfaceDim.TLabel
-    ttk::combobox $f.bar.top -width 7 -state readonly -values {100 1000 5000 10000 All} \
-        -textvariable ::ddoc::D($id,limit)
-    ttk::label $f.bar.wl -text "Filter" -style SurfaceDim.TLabel
-    ttk::entry $f.bar.where -textvariable ::ddoc::D($id,filter) -width 40
-    ttk::button $f.bar.apply -text "Apply" -command [list ::ddoc::reload $id]
     ttk::label $f.bar.count -text "" -style SurfaceDim.TLabel
-    pack $f.bar.add $f.bar.del $f.bar.ref -side left -padx {0 2}
-    pack $f.bar.s1 -side left -fill y -padx 10
-    pack $f.bar.tl $f.bar.top -side left -padx {0 6}
-    pack $f.bar.wl $f.bar.where $f.bar.apply -side left -padx {8 0}
+    pack $f.bar.add $f.bar.del -side left -padx {0 2}
     pack $f.bar.count -side right -padx 8
-    ::tip::attach $f.bar.where "MKQL condition, e.g.  salary > 60000 AND name LIKE 'A%'"
-    bind $f.bar.where <Return> [list ::ddoc::reload $id]
-    bind $f.bar.top <<ComboboxSelected>> [list ::ddoc::reload $id]
 
     ::grid::create $f.g -editable 1 -commit [list ::ddoc::commit $id] \
         -drill [list ::ddoc::drill $id] -changed [list ::ddoc::updateCount $id]
     ttk::frame $f.msg -style Panel.TFrame -padding {12 5}
-    ttk::label $f.msg.l -text "Double-click a cell (or press F2) to edit. Changes are held in memory until you Commit." \
-        -style PanelDim.TLabel
+    ttk::label $f.msg.l -text "" -style PanelDim.TLabel
     pack $f.msg.l -side left
     pack $f.bar -side top -fill x
     pack $f.msg -side bottom -fill x
@@ -347,102 +334,122 @@ proc ::ddoc::create {id f mk} {
     return $f
 }
 
-proc ::ddoc::docf {id} { return [::app::docFrame $id] }
-
-proc ::ddoc::showError {id} {
-    variable D
-    set f [docf $id]
-    set err [expr {[info exists ::grid::G($f.g,lasterror)] ? $::grid::G($f.g,lasterror) : "Invalid value"}]
-    $f.msg.l configure -text "\u2716  $err" -foreground $::theme::c(bad)
-}
 proc ::ddoc::note {id text {kind dim}} {
     set f [docf $id]
     $f.msg.l configure -text $text -foreground [expr {$kind eq "bad" ? $::theme::c(bad) : $::theme::c(dim)}]
 }
+proc ::ddoc::showError {id} {
+    set f [docf $id]
+    note $id "✖  $::grid::G($f.g,lasterror)" bad
+}
+proc ::ddoc::hint {id} {
+    note $id "Double-click a cell to edit it. Changes stay in memory until you Commit."
+}
 
+# Read the view straight from the store into the grid's result format.
 proc ::ddoc::reload {id} {
-    variable D
+    variable D ; variable maxRows
     set f [docf $id]
     set mk $D($id,mk)
     if {[catch {::store::layout $mk} layout]} {
-        note $id "\u2716  This view no longer exists." bad
+        note $id "✖  This view no longer exists." bad
         return
     }
-    set sql "SELECT * FROM [mkqlPath $mk]"
-    if {[string trim $D($id,filter)] ne ""} { append sql " WHERE $D($id,filter)" }
-    if {$D($id,limit) ne "All"} { append sql " LIMIT $D($id,limit)" }
-    if {[catch {::mkql::run $sql} res]} {
-        note $id "\u2716  $res" bad
-        return
+    set cols {} ; set types {} ; set props {} ; set drill [dict create]
+    set i 0
+    foreach c $layout {
+        lassign $c n t
+        lappend cols $n ; lappend types $t
+        if {$t eq "V"} { dict set drill $i $n } else { lappend props $n }
+        incr i
     }
-    ::grid::load $f.g $res
-    note $id "Double-click a cell (or press F2) to edit. Changes are held in memory until you Commit."
+    set total [::store::size $mk]
+    set n [expr {min($total, $maxRows)}]
+    set raw [::store::rows $mk $props 0 $n]
+    set rows {} ; set rowids {}
+    set r 0
+    foreach vals $raw {
+        set out {} ; set k 0
+        foreach c $layout {
+            lassign $c name t
+            if {$t eq "V"} {
+                set cnt [::store::subSize $mk $r $name]
+                lappend out "▸ $cnt row[expr {$cnt == 1 ? {} : {s}}]"
+            } else { lappend out [lindex $vals $k] ; incr k }
+        }
+        lappend rows $out ; lappend rowids $r
+        incr r
+    }
+    ::grid::load $f.g [dict create cols $cols types $types rows $rows rowids $rowids drill $drill \
+        source $mk truncated 0 editable 1]
+    if {$total > $n} {
+        note $id "Showing the first [::app::commas $n] of [::app::commas $total] rows."
+    } else { hint $id }
 }
 
 proc ::ddoc::updateCount {id} {
     set f [docf $id]
     if {![winfo exists $f.g]} return
     set total [::store::size $::ddoc::D($id,mk)]
-    set shown [::grid::count $f.g]
-    $f.bar.count configure -text "[::app::commas $shown] of [::app::commas $total] rows"
+    $f.bar.count configure -text "[::app::commas $total] row[expr {$total == 1 ? {} : {s}}]"
 }
 
 proc ::ddoc::commit {id rowid col value} {
     variable D
     set mk $D($id,mk)
-    set d [::mkql::layoutLookup [::store::layout $mk] $col]
-    set v [::mkql::coerce [lindex $d 0] [lindex $d 1] $value]
-    ::mkql::checkWritable [lindex [split $mk .] 0]
+    if {[::store::readonly [lindex [split $mk .] 0]]} { error "This database is open read-only." }
+    set d [::store::findCol [::store::layout $mk] $col]
+    set v [::store::coerce [lindex $d 0] [lindex $d 1] $value]
     ::store::setCell $mk $rowid [lindex $d 0] $v
+    hint $id
     ::app::dataChanged 0
 }
 
 proc ::ddoc::drill {id rowid sub} {
     variable D
     set mk $D($id,mk)
-    ::app::openData "$mk!$rowid.$sub" "[join [lrange [split [mkqlPath $mk] .] 1 end] .]\[$rowid\].$sub"
+    ::app::openData "$mk!$rowid.$sub" "[label $mk]\[$rowid\].$sub"
 }
 
 proc ::ddoc::addRow {id} {
     variable D
     set f [docf $id]
-    set mk $D($id,mk)
     if {[catch {
-        ::mkql::checkWritable [lindex [split $mk .] 0]
-        set idx [::store::appendRow $mk {} {}]
-    } err]} { note $id "\u2716  $err" bad ; return }
-    if {$D($id,limit) ne "All" && $idx >= $D($id,limit)} { set D($id,limit) All }
-    set D($id,filter) ""
+        if {[::store::readonly [lindex [split $D($id,mk) .] 0]]} { error "This database is open read-only." }
+        ::store::appendRow $D($id,mk) {} {}
+    } err]} { note $id "✖  $err" bad ; return }
     reload $id
     ::grid::selectLast $f.g
     ::app::dataChanged 0
-    ::app::setStatus "Row added \u2014 edit its cells, then Commit to save." ok
+    note $id "Row added. Double-click its cells to fill them in."
 }
 
 proc ::ddoc::deleteRows {id} {
     variable D
     set f [docf $id]
     set ids [::grid::selectedRowids $f.g]
-    if {![llength $ids]} { note $id "Select one or more rows to delete." ; return }
+    if {![llength $ids]} { note $id "Select one or more rows first." ; return }
     set n [llength $ids]
-    set r [::ui::ask "Delete rows" "Delete $n row[expr {$n == 1 ? {} : {s}}] from [mkqlPath $D($id,mk)]?\n\nThis is held in memory until you commit, and Roll Back can undo it." {Delete Cancel} stop]
+    set r [::ui::ask "Delete rows" "Delete $n row[expr {$n == 1 ? {} : {s}}]?\n\nYou can still undo this with Roll Back until you commit." {Delete Cancel} stop]
     if {$r ne "Delete"} return
     if {[catch {
-        ::mkql::checkWritable [lindex [split $D($id,mk) .] 0]
+        if {[::store::readonly [lindex [split $D($id,mk) .] 0]]} { error "This database is open read-only." }
         ::store::deleteRows $D($id,mk) $ids
-    } err]} { note $id "\u2716  $err" bad ; return }
+    } err]} { note $id "✖  $err" bad ; return }
     reload $id
     ::app::dataChanged 0
-    ::app::setStatus "$n row[expr {$n == 1 ? {} : {s}}] deleted." ok
 }
 
 # ============================================================================
-#  Designer
+#  Designer: the columns of a view
 # ============================================================================
 namespace eval ::design {
     variable X
     array set X {}
+    variable typeMap {String S Integer I Long L Float F Double D Bytes B}
 }
+
+proc ::design::docf {id} { return [::app::docFrame $id] }
 
 proc ::design::create {id f mk} {
     variable X
@@ -450,63 +457,33 @@ proc ::design::create {id f mk} {
     ttk::frame $f -style Surface.TFrame
     ttk::frame $f.bar -style Surface.TFrame -padding {8 6}
     foreach {b text icon cmd} {
-        addc "Add Column" plus addColumn
+        addc "Add Column"  plus    addColumn
         adds "Add Subview" subview addSubview
-        ren  "Rename" edit rename
-        typ  "Change Type" design retype
-        drop "Drop" trash dropColumn
+        edit "Edit"        edit    editColumn
+        drop "Drop"        trash   dropColumn
     } {
         ttk::button $f.bar.$b -text $text -image [::icons::get $icon] -compound left \
             -style ToolSurface.TButton -command [list ::design::$cmd $id]
         pack $f.bar.$b -side left -padx {0 2}
     }
-    ttk::label $f.bar.path -text "" -style SurfaceDim.TLabel
-    pack $f.bar.path -side right -padx 8
-
-    ttk::panedwindow $f.pw -orient vertical
-    ttk::frame $f.top -style Surface.TFrame
-    ttk::treeview $f.t -style Grid.Treeview -columns {type kind code} -show {tree headings} -selectmode browse
-    $f.t heading #0 -text "Column name" -anchor w
-    $f.t heading type -text "Data type" -anchor w
-    $f.t heading kind -text "Kind" -anchor w
-    $f.t heading code -text "Code" -anchor w
-    $f.t column #0 -width 260 -stretch 0
-    $f.t column type -width 140 -stretch 0
-    $f.t column kind -width 120 -stretch 0
-    $f.t column code -width 60 -stretch 1
+    ttk::treeview $f.t -style Grid.Treeview -columns {type} -show {tree headings} -selectmode browse
+    $f.t heading #0 -text "Column" -anchor w
+    $f.t heading type -text "Type" -anchor w
+    $f.t column #0 -width 300 -stretch 0
+    $f.t column type -width 160 -stretch 1
     ttk::scrollbar $f.v -orient vertical -command [list $f.t yview]
     $f.t configure -yscrollcommand [list $f.v set]
-    pack $f.v -in $f.top -side right -fill y
-    pack $f.t -in $f.top -side left -fill both -expand 1
-
-    ttk::frame $f.logf -style Surface.TFrame
-    ttk::label $f.logf.h -text "  EXECUTED STATEMENTS" -style Section.TLabel -padding {8 6}
-    text $f.logf.t -height 7 -font MkMono -borderwidth 0 -highlightthickness 0 -padx 12 -pady 8 \
-        -state disabled -wrap word
-    ::theme::reg $f.logf.t [list ::design::recolorLog %w]
-    pack $f.logf.h -side top -fill x
-    pack $f.logf.t -side top -fill both -expand 1
-    $f.pw add $f.top -weight 3
-    $f.pw add $f.logf -weight 1
+    ttk::frame $f.msg -style Panel.TFrame -padding {12 5}
+    ttk::label $f.msg.l -text "Structure changes stay in memory until you Commit." -style PanelDim.TLabel
+    pack $f.msg.l -side left
     pack $f.bar -side top -fill x
-    pack $f.pw -side top -fill both -expand 1
-    bind $f.t <<TreeviewSelect>> [list ::design::onSelect $id]
+    pack $f.msg -side bottom -fill x
+    pack $f.v -side right -fill y
+    pack $f.t -side left -fill both -expand 1
+    bind $f.t <Double-1> [list ::design::editColumn $id]
+    bind $f.t <Delete> [list ::design::dropColumn $id]
     refresh $id
-    log $id "-- Every change below runs as MKQL. Nothing is written to disk until you Commit."
     return $f
-}
-proc ::design::docf {id} { return [::app::docFrame $id] }
-proc ::design::recolorLog {t} {
-    $t configure -background $::theme::c(editor) -foreground $::theme::c(fg) \
-        -selectbackground $::theme::c(sel)
-    $t tag configure cmt -foreground $::theme::c(comment)
-    $t tag configure stmt -foreground $::theme::c(kw)
-    $t tag configure bad -foreground $::theme::c(bad)
-}
-proc ::design::log {id text {tag stmt}} {
-    set t [docf $id].logf.t
-    if {[string match --* $text]} { set tag cmt }
-    $t configure -state normal ; $t insert end "$text\n" $tag ; $t configure -state disabled ; $t see end
 }
 
 proc ::design::refresh {id} {
@@ -515,172 +492,106 @@ proc ::design::refresh {id} {
     set t $f.t
     set sel [$t selection]
     $t delete [$t children {}]
-    set mk $X($id,mk)
-    $f.bar.path configure -text [::ddoc::mkqlPath $mk]
-    if {[catch {::store::layout $mk} layout]} return
-    fillTree $t {} $layout {} 0
+    if {[catch {::store::layout $X($id,mk)} layout]} return
+    fillTree $t {} $layout {}
     if {$sel ne "" && [$t exists $sel]} { $t selection set $sel }
 }
-proc ::design::fillTree {t parent layout chain depth} {
+proc ::design::fillTree {t parent layout chain} {
     foreach c $layout {
         lassign $c n type sub
-        set id [join [concat $chain [list $n]] "/"]
+        set id [join [concat $chain [list $n]] /]
         $t insert $parent end -id $id -text " $n" -image [::icons::get col_$type] -open 1 \
-            -values [list [::store::typeName $type] [expr {$type eq "V" ? "subview" : "column"}] $type]
-        if {$type eq "V"} { fillTree $t $id $sub [concat $chain [list $n]] [expr {$depth+1}] }
+            -values [list [expr {$type eq "V" ? "Subview" : [::store::typeName $type]}]]
+        if {$type eq "V"} { fillTree $t $id $sub [concat $chain [list $n]] }
     }
 }
-proc ::design::selected {id} {
+proc ::design::note {id text {kind dim}} {
+    [docf $id].msg.l configure -text $text -foreground [expr {$kind eq "bad" ? $::theme::c(bad) : $::theme::c(dim)}]
+}
+
+# a top-level column the user has selected, or ""
+proc ::design::picked {id} {
     set sel [[docf $id].t selection]
-    if {$sel eq ""} { return "" }
+    if {$sel eq ""} { note $id "Select a column first." ; return "" }
+    if {[string first / $sel] >= 0} {
+        note $id "Columns inside a subview can't be changed here." ; return ""
+    }
     return $sel
 }
-proc ::design::onSelect {id} {}
 
-# run an MKQL statement and log it
-proc ::design::run {id sql} {
-    set path [::ddoc::mkqlPath $::design::X($id,mk)]
-    log $id "$sql;"
-    if {[catch {::mkql::run $sql} res]} {
-        log $id "-- error: $res" bad
-        ::ui::problem $res
-        return 0
-    }
-    log $id "-- [dict get $res text]"
+# apply a new layout and refresh everything
+proc ::design::apply {id script} {
+    variable X
+    set mk $X($id,mk)
+    if {[catch {
+        if {[::store::readonly [lindex [split $mk .] 0]]} { error "This database is open read-only." }
+        uplevel #0 $script
+    } err]} { ::ui::problem $err ; return 0 }
     refresh $id
     ::app::dataChanged 1
+    note $id "Done. Commit to keep the change, or Roll Back to undo it."
     return 1
 }
-proc ::design::q {name} { return "\"[string map {\" \"\"} $name]\"" }
-proc ::design::topLevelSelection {id} {
-    set sel [selected $id]
-    if {$sel eq ""} { ::ui::inform "Select a column" "Select a column in the list first." ; return "" }
-    if {[string first / $sel] >= 0} {
-        ::ui::inform "Nested column" "This column belongs to a subview. Open the parent view's subview in the data editor, or use ALTER VIEW from a query window." ; return ""
-    }
-    return $sel
+
+proc ::design::validate {id d} {
+    variable X
+    set n [dict get $d name]
+    if {$n eq ""} { return "Please enter a name." }
+    if {![regexp {^[A-Za-z_][A-Za-z0-9_]*$} $n]} { return "Use letters, digits and underscores, and don't start with a digit." }
+    if {[dict exists $d old] && [string equal -nocase $n [dict get $d old]]} { return "" }
+    if {[::store::findCol [::store::layout $X($id,mk)] $n] ne ""} { return "A column called '$n' already exists." }
+    return ""
 }
-proc ::design::typeChoices {} { return {String Integer Long Float Double Bytes} }
-proc ::design::typeWord {label} { return [string tolower $label] }
+proc ::design::types {} { variable typeMap ; return [dict keys $typeMap] }
+proc ::design::letter {label} { variable typeMap ; return [dict get $typeMap $label] }
 
 proc ::design::addColumn {id} {
     variable X
     set r [::ui::formResult [::ui::form "Add column" [list \
-        {name "Column name" entry ""} \
-        [list type "Data type" combo String [typeChoices]]] "Add Column" \
-        [list ::design::validateName $id]]]
+        {name "Name" entry ""} [list type "Type" combo String [types]]] "Add" \
+        [list ::design::validate $id]]]
     if {$r eq ""} return
-    run $id "ALTER VIEW [::ddoc::mkqlPath $X($id,mk)] ADD [q [dict get $r name]] [typeWord [dict get $r type]]"
+    set mk $X($id,mk)
+    apply $id [list ::store::restructure $mk [concat [::store::layout $mk] \
+        [list [list [dict get $r name] [letter [dict get $r type]] {}]]]]
 }
 proc ::design::addSubview {id} {
     variable X
     set r [::ui::formResult [::ui::form "Add subview" [list \
-        {name "Subview name" entry ""} \
-        {first "First column" entry "id"} \
-        [list type "Column type" combo Integer [typeChoices]]] "Add Subview" \
-        [list ::design::validateName $id] \
-        "A subview is a nested table: every row of this view gets its own list of rows."]]
+        {name "Subview name" entry ""} {first "First column" entry "id"} \
+        [list type "Type" combo Integer [types]]] "Add" [list ::design::validate $id] \
+        "A subview is a nested table: every row of this view holds its own list of rows."]]
     if {$r eq ""} return
-    run $id "ALTER VIEW [::ddoc::mkqlPath $X($id,mk)] ADD [q [dict get $r name]] ([q [dict get $r first]] [typeWord [dict get $r type]])"
+    set mk $X($id,mk)
+    apply $id [list ::store::restructure $mk [concat [::store::layout $mk] \
+        [list [list [dict get $r name] V [list [list [dict get $r first] [letter [dict get $r type]] {}]]]]]]
 }
-proc ::design::validateName {id d} {
-    set n [dict get $d name]
-    if {$n eq ""} { return "Please enter a name." }
-    if {![regexp {^[A-Za-z_][A-Za-z0-9_]*$} $n]} { return "Use letters, digits and underscores only (and don't start with a digit)." }
-    return ""
-}
-proc ::design::rename {id} {
+proc ::design::editColumn {id} {
     variable X
-    set sel [topLevelSelection $id] ; if {$sel eq ""} return
-    set r [::ui::formResult [::ui::form "Rename column" [list [list name "New name" entry $sel]] "Rename" \
-        [list ::design::validateName $id] \
-        "Metakit identifies a column by name and type, so renaming copies the data to a new column. The renamed column moves to the end of the layout."]]
+    set sel [picked $id] ; if {$sel eq ""} return
+    set mk $X($id,mk)
+    set d [::store::findCol [::store::layout $mk] $sel]
+    if {[lindex $d 1] eq "V"} { note $id "A subview can't be renamed. Add a new one and move its rows." ; return }
+    set r [::ui::formResult [::ui::form "Edit column" [list \
+        [list name "Name" entry $sel] \
+        [list type "Type" combo [::store::typeName [lindex $d 1]] [types]]] "Save" \
+        [list ::design::validateEdit $id $sel] \
+        "The data is copied into the changed column, which then moves to the end."]]
     if {$r eq ""} return
-    run $id "ALTER VIEW [::ddoc::mkqlPath $X($id,mk)] RENAME [q $sel] TO [q [dict get $r name]]"
+    set new [dict get $r name] ; set T [letter [dict get $r type]]
+    if {$new eq $sel && $T eq [lindex $d 1]} return
+    apply $id [list ::store::rebuildColumn $mk $sel $new $T]
 }
-proc ::design::retype {id} {
-    variable X
-    set sel [topLevelSelection $id] ; if {$sel eq ""} return
-    set cur [[docf $id].t set $sel type]
-    if {$cur eq "Subview"} { ::ui::inform "Subview" "A subview has no data type to change." ; return }
-    set r [::ui::formResult [::ui::form "Change data type" [list \
-        [list type "New type for '$sel'" combo $cur [typeChoices]]] "Change Type" "" \
-        "Values are converted where possible (text that isn't a number becomes 0). The column moves to the end of the layout."]]
-    if {$r eq ""} return
-    run $id "ALTER VIEW [::ddoc::mkqlPath $X($id,mk)] MODIFY [q $sel] [typeWord [dict get $r type]]"
-}
+proc ::design::validateEdit {id old d} { validate $id [dict merge $d [dict create old $old]] }
+
 proc ::design::dropColumn {id} {
     variable X
-    set sel [topLevelSelection $id] ; if {$sel eq ""} return
-    set a [::ui::ask "Drop column" "Drop column '$sel' and all of its data?\n\nThis is held in memory until you commit, and Roll Back can undo it." {Drop Cancel} stop]
-    if {$a ne "Drop"} return
-    run $id "ALTER VIEW [::ddoc::mkqlPath $X($id,mk)] DROP [q $sel]"
-}
-
-# ============================================================================
-#  Help / reference document
-# ============================================================================
-namespace eval ::helpdoc {}
-
-proc ::helpdoc::create {id f} {
-    ttk::frame $f -style Surface.TFrame
-    text $f.t -wrap word -font MkUI -borderwidth 0 -highlightthickness 0 -padx 40 -pady 24 \
-        -cursor arrow -spacing1 3 -spacing3 3 -yscrollcommand [list $f.v set]
-    ttk::scrollbar $f.v -orient vertical -command [list $f.t yview]
-    pack $f.v -side right -fill y
-    pack $f.t -side left -fill both -expand 1
-    ::theme::reg $f.t [list ::helpdoc::recolor %w]
-    set t $f.t
-    foreach {kind text} [content] {
-        switch -- $kind {
-            h1 { $t insert end "$text\n" h1 }
-            h2 { $t insert end "\n$text\n" h2 }
-            p  { $t insert end "$text\n" p }
-            c  { $t insert end "$text\n" code }
-        }
-    }
-    $t configure -state disabled
-    return $f
-}
-proc ::helpdoc::recolor {t} {
-    $t configure -background $::theme::c(surface) -foreground $::theme::c(fg) -selectbackground $::theme::c(sel) \
-        -selectforeground $::theme::c(selFg)
-    $t tag configure h1 -font MkHuge -foreground $::theme::c(fg) -spacing3 8
-    $t tag configure h2 -font MkTitle -foreground $::theme::c(accent) -spacing1 10
-    $t tag configure p -foreground $::theme::c(fg) -lmargin1 0 -lmargin2 0
-    $t tag configure code -font MkMono -foreground $::theme::c(str) -background $::theme::c(editor) \
-        -lmargin1 16 -lmargin2 16 -rmargin 16 -spacing1 1 -spacing3 1
-}
-proc ::helpdoc::content {} {
-    return {
-h1 "MKQL Reference"
-p "MKQL is a small SQL-style language built around Metakit's model: a datafile holds named views (tables); a view has typed columns; and a column can be a subview \u2014 a whole nested table stored inside every row."
-p "Run a script with F5 (or Ctrl+E). Select some text first to run only that. Statements are separated by semicolons. Ctrl+Space completes view and column names."
-
-h2 "Paths"
-p "A view is  view  or  db.view  (db is the database name shown in the explorer). A subview of one row is written with the row number:"
-c "employees\[3\].skills          -- subview of row 3\ndemo.orders\[0\].lines         -- qualified with the database"
-p "Every row also has a hidden  _rowid  column holding its position."
-
-h2 "Querying"
-c "SELECT * FROM employees;\nSELECT TOP 10 name, salary FROM employees ORDER BY salary DESC;\nSELECT dept, COUNT(*) AS people, AVG(salary) AS avg_pay\n  FROM employees\n  WHERE active = 1 AND name LIKE 'A%'\n  GROUP BY dept HAVING COUNT(*) > 2\n  ORDER BY avg_pay DESC LIMIT 5;\nSELECT DISTINCT status FROM orders;\nSELECT skill, level FROM employees\[0\].skills;"
-p "WHERE supports  = <> < <= > >=  AND OR NOT  LIKE (% and _)  IN (...)  BETWEEN x AND y  IS NULL (empty). A subview column used in an expression is its number of rows:"
-c "SELECT name FROM employees WHERE skills >= 3;"
-p "Aggregates: COUNT SUM AVG MIN MAX. Functions: UPPER LOWER LENGTH TRIM SUBSTR REPLACE CONCAT ROUND ABS FLOOR CEIL COALESCE NOW.  || joins text.  SELECT with no FROM works as a calculator."
-p "In a result grid, double-click a  \u25B8 N rows  cell to open that subview."
-
-h2 "Changing data"
-c "INSERT INTO products (sku, name, price) VALUES ('X-1', 'Test', 9.5), ('X-2', 'Two', 3);\nINSERT INTO employees\[0\].skills (skill, level) VALUES ('Go', 3);\nUPDATE products SET price = price * 1.1 WHERE stock < 20;\nDELETE FROM orders WHERE status = 'returned';"
-p "Changes live in memory. The explorer shows the database with a pending count; use Commit (Ctrl+Shift+S) to write to disk, or Roll Back to throw them away."
-
-h2 "Structure"
-c "CREATE VIEW notes (id int, body string, tags (tag string, weight float));\nALTER VIEW notes ADD pinned int;\nALTER VIEW notes RENAME body TO text;\nALTER VIEW notes MODIFY id long;\nALTER VIEW notes DROP pinned;\nDROP VIEW notes;"
-p "Column types: string, int, long, float, double, bytes. A column followed by a parenthesised list is a subview. Metakit identifies a column by name and type, so RENAME and MODIFY copy the data into a new column that ends up last in the layout."
-
-h2 "Inspecting"
-c "SHOW DATABASES;\nSHOW VIEWS;\nDESCRIBE employees;\nUSE demo;       -- default database for this query window\nCOMMIT;\nROLLBACK;"
-
-h2 "Keyboard"
-c "F5 / Ctrl+E      execute (selection if any)\nCtrl+F5          parse only\nEsc              cancel a running query\nCtrl+N           new query      Ctrl+O  open database\nCtrl+Shift+S     commit         Ctrl+S  save script\nCtrl+W           close tab      Ctrl+Tab  next tab\nF8 / F4          toggle explorer / properties\nCtrl+R           toggle results pane\nCtrl+/           comment lines  Ctrl+Space  complete\nCtrl + wheel     zoom editor"
-    }
+    set sel [picked $id] ; if {$sel eq ""} return
+    set r [::ui::ask "Drop column" "Drop '$sel' and all of its data?\n\nYou can still undo this with Roll Back until you commit." {Drop Cancel} stop]
+    if {$r ne "Drop"} return
+    set mk $X($id,mk)
+    set new {}
+    foreach c [::store::layout $mk] { if {[lindex $c 0] ne $sel} { lappend new $c } }
+    if {![llength $new]} { ::ui::problem "A view needs at least one column." ; return }
+    apply $id [list ::store::restructure $mk $new]
 }

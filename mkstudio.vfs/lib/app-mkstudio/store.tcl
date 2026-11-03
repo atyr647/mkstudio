@@ -284,6 +284,27 @@ proc ::store::copyColumn {path from to type} {
     }
 }
 
+# -- helpers for editing ------------------------------------------------------
+proc ::store::findCol {layout name} {
+    foreach c $layout { if {[string equal -nocase [lindex $c 0] $name]} { return $c } }
+    return ""
+}
+# Convert user-typed text to a value valid for the column type, or raise an error.
+proc ::store::coerce {col type v} {
+    switch -- $type {
+        I - L {
+            if {[string is wideinteger -strict [string trim $v]]} { return [string trim $v] }
+            if {[string is double -strict [string trim $v]] && [string trim $v] == int([string trim $v])} { return [expr {int([string trim $v])}] }
+            error "'$col' holds whole numbers, but '[string range $v 0 40]' isn't one."
+        }
+        F - D {
+            if {[string is double -strict [string trim $v]]} { return [string trim $v] }
+            error "'$col' holds numbers, but '[string range $v 0 40]' isn't one."
+        }
+    }
+    return $v
+}
+
 # -- a small sample database -------------------------------------------------
 proc ::store::createSample {path} {
     set tag [openFile $path -create]

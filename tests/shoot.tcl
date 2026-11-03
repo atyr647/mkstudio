@@ -57,6 +57,6 @@ switch -- $scenario {
         set id [::app::newQuery "SELECT id, name\nFROM employees\nWHERE salary >> 5000;" $tag 1]
         shot $out
     }
-    help { ::app::openHelp ; shot $out }
+
 }
 exit 0
