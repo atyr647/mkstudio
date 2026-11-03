@@ -50,13 +50,34 @@ certificate** - there is none behind this project - so each system asks you to c
 | System | File | First start |
 |---|---|---|
 | Windows 10/11 | `MKStudio-<version>-windows-x64-setup.exe` (per-user, no administrator rights; Start menu entry, uninstaller, optional desktop shortcut and "Open with" for `.mk` files) or the single file `mkstudio-windows-x86_64.exe` | SmartScreen: *More info > Run anyway* |
-| macOS | `MKStudio-<version>-macos-arm64.dmg` (Apple silicon) / `-x86_64.dmg` (Intel): drag to Applications | right-click the app > *Open* |
+| macOS | `MKStudio-<version>-macos-arm64.dmg` (Apple silicon) / `-x86_64.dmg` (Intel): drag to Applications | macOS 15 and later: try to open it once, then *System Settings > Privacy & Security > Open Anyway*; macOS 14 and earlier: right-click the app > *Open* |
 | Debian / Ubuntu | `mkstudio_<version>_amd64.deb` (`sudo apt install ./mkstudio_*.deb`) | |
 | other Linux | `MKStudio-<version>-linux-x86_64.tar.gz`, then `sh install.sh` (installs into `~/.local`, no root) | |
 
 `SHA256SUMS` lists every file. A checksum catches a damaged download, **not** a malicious one (whoever controls the GitHub
 account controls the checksums too) - download only from the project's own releases page. `mkstudio --version` prints the
 version; `mkstudio --selftest FILE` writes a one-line health check to FILE (CI uses it on every platform).
+
+### What "unsigned" costs you on macOS
+
+The app is not notarized (that needs a paid Apple Developer ID), so the first-start confirmation above is unavoidable, and
+the bundle is not sealed either. Consequences, as far as they are known (the macOS behaviour below is Apple's documented
+behaviour, not something tested here):
+
+- Nothing protects the program's code: a starpack's Tcl code is appended after the signed part of the executable, so it can be
+  changed without invalidating any signature. That is true of every starpack, on every system.
+- `codesign --verify` on the app reports a problem and `spctl --assess` rejects it; that is expected for any ad-hoc app and
+  would be rejected anyway without notarization.
+- The identity of an ad-hoc program changes with every build, so macOS may ask again for access to Documents, Desktop or
+  Downloads after an update.
+- Run it from /Applications (drag the app there from the disk image): from the Downloads folder macOS runs a quarantined app from a
+  temporary read-only copy.
+- Features that require a signed bundle (sandboxing, keychain sharing, Sparkle-style auto-update, some login-item
+  APIs) are unavailable; MK Studio uses none of them. The in-app updater therefore opens the release page instead of replacing
+  a `.app`.
+- Not known: whether a future macOS will insist on sealed bundles. A sealable layout exists (ship the unmodified runtime as the
+  executable and the application as a real folder inside the bundle); it would also allow signing and notarization if you ever get a
+  Developer ID.
 
 ### Updates
 

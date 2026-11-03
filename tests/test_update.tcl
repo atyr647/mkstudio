@@ -197,6 +197,68 @@ if {!$haveTool} { puts "  (no curl/wget/PowerShell here: download tests skipped)
         writebin [info nameofexecutable].new junk
         file delete -force $app
     }
+
+    # ---- the REAL thing: a real starpack replaces a program that is RUNNING (on every platform, Windows included) -----------------
+    # MKS_TEST_STARPACK names a finished starpack of this version.  The "old" program is a copy of the plain tclkit that runs this
+    # test, started and kept running (on Windows that locks its file: the case that decides whether self-update works there).
+    # The new one is downloaded from a feed on disk, checked against SHA256SUMS, started with --selftest and swapped in.
+    set sp [expr {[info exists ::env(MKS_TEST_STARPACK)] ? $::env(MKS_TEST_STARPACK) : ""}]
+    if {$sp eq "" || ![file isfile $sp] || !$haveSum} {
+        puts "  (the real self-update test needs MKS_TEST_STARPACK (a finished starpack) and a checksum program: skipped here)"
+    } else {
+        namespace eval ::starkit {}
+        set ::starkit::mode starpack
+        proc alive {pid} {
+            if {$::tcl_platform(platform) eq "windows"} { return [expr {![catch {exec tasklist /FI "PID eq $pid" /NH /FO CSV} o] && [string first "\"$pid\"" $o] >= 0}] }
+            return [expr {![catch {exec kill -0 $pid}]}]
+        }
+        set ext [expr {$::tcl_platform(platform) eq "windows" ? ".exe" : ""}]
+        set app [tmp upd_real] ; file delete -force $app ; file mkdir $app
+        set old $app/mkstudio$ext
+        # (not `file copy`: a running tclkit has itself mounted as a directory, `file copy` would copy its virtual contents)
+        if {$::tcl_platform(platform) eq "windows"} { exec cmd /c copy /Y /B [file nativename [info nameofexecutable]] [file nativename $old] } else { exec cp [info nameofexecutable] $old ; exec chmod 755 $old }
+        set h [open $app/hold.tcl w] ; puts $h "after 90000 exit\nvwait forever" ; close $h
+        set holdPid [exec $old $app/hold.tcl &]
+        for {set i 0} {$i < 100 && ![alive $holdPid]} {incr i} { after 50 }
+        ok real_old_program_is_running [alive $holdPid]
+        set oldHash [::update::sha256 $old] ; set spHash [::update::sha256 $sp]
+        ok real_old_and_new_differ [expr {$oldHash ne $spHash}]
+        if {$::tcl_platform(platform) eq "windows"} {
+            check real_windows_running_exe_cannot_be_deleted [catch {file delete $old}] 1          ;# the premise of this test
+            ok real_windows_running_exe_still_there [file exists $old]
+        }
+        # the feed: the real starpack under this platform's asset name, with its checksum
+        set exeName [::update::starpackAsset]
+        set rf [tmp upd_real_feed] ; file delete -force $rf ; file mkdir $rf
+        file copy -force $sp $rf/$exeName
+        set h [open $rf/SHA256SUMS w] ; puts $h "$spHash  $exeName" ; close $h
+        set h [open $rf/releases.json w]
+        puts $h "\[{\"tag_name\":\"v$::version::current\",\"draft\":false,\"prerelease\":true,\"body\":\"real\",\"html_url\":\"https://example.test/r\",\"assets\":\[{\"name\":\"$exeName\",\"browser_download_url\":\"[fileUrl $rf/$exeName]\"},{\"name\":\"SHA256SUMS\",\"browser_download_url\":\"[fileUrl $rf/SHA256SUMS]\"}\]}\]"
+        close $h
+        set ::env(MKS_UPDATE_API) [fileUrl $rf/releases.json]
+        set info [::update::check 0.0.1 1]
+        check real_check_finds_it [dict get $info version] $::version::current
+        set ::realSteps {}
+        set t0 [clock milliseconds]
+        set r [::update::install $info [list apply {{m} { lappend ::realSteps $m }}] $old]
+        puts "  real self-update of a running program: [expr {[clock milliseconds] - $t0}] ms ([llength $::realSteps] steps)"
+        check real_install_path [file normalize $r] [file normalize $old]
+        check real_new_program_in_place [::update::sha256 $old] $spHash
+        ok real_old_program_kept_as_dot_old [expr {[file exists $old.old] && [::update::sha256 $old.old] eq $oldHash}]
+        ok real_no_download_left [expr {![file exists $old.new]}]
+        ok real_the_running_old_process_is_unharmed [alive $holdPid]
+        # the program now at the path is the real starpack: it starts and says its version
+        set out $app/selftest.txt ; file delete $out
+        check real_new_program_starts [catch {exec $old --selftest $out}] 0
+        ok real_new_program_reports_its_version [expr {[file exists $out] && [string match "ok $::version::current mk4tcl yes*" [readall $out]]}] [expr {[file exists $out] ? [readall $out] : "no output"}]
+        # a second update over the .old left by the first (Windows: .old is the renamed running file - it must be replaceable)
+        set r2 [catch {::update::install $info "" $old} msg2]
+        check real_second_update_works $r2 0
+        if {$::tcl_platform(platform) eq "windows"} { catch {exec taskkill /F /PID $holdPid} } else { catch {exec kill $holdPid} }
+        for {set i 0} {$i < 100 && [alive $holdPid]} {incr i} { after 50 }
+        file delete -force $app $rf
+        unset ::env(MKS_UPDATE_API)
+    }
     file delete -force $feed
 }
 unset -nocomplain ::env(MKS_UPDATE_API)

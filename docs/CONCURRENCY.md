@@ -92,6 +92,17 @@ leave it alone.
 
 **Limits.** The lock is advisory: programs that don't follow it are not stopped. `O_EXCL` is reliable on local
 file systems and modern NFS; on exotic network file systems it may not be, in which case run one server instead.
+**Time limits and slow processes.** The two abandonment limits (5 s for an empty lock file, 10 s for the takeover guard) assume that a
+live process is never held up for that long at those two points - between creating the lock file and writing its pid into it,
+and while it holds the guard (judging a lock stale and deleting it, which includes asking the system whether a pid is alive).
+A process that *is* held up that long (starved on an overloaded machine, suspended, swapped out) is treated as dead and overtaken,
+and when it wakes up both believe they own the database. `tests/test_lock_crash.tcl` reproduces both cases on demand (a process
+stalled at exactly those points: limit shortened to 1 s -> overlap; the real limits -> no overlap). The chaos test runs with the
+limits shortened to 1 s, so on a very slow runner it can see this; processes whose acquisition took more than half the shortened
+limit are reported as SLOW and overlaps they take part in are counted as excused, not failed (set `MKS_CHAOS_STRICT=1` to see
+them all). Raising the real limits makes the window rarer, never zero; closing it needs a lock the operating system itself
+releases when the process dies (`flock`/`LockFileEx`), which Tcl cannot do from a plain file channel.
+
 A crashed owner leaves its lock behind until the next opener finds it stale (same host) - there is no timeout for
 remote owners, by design. The only time-based rules are the two abandonment limits above (5 s, 10 s), compared with the
 local file system clock.

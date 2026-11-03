@@ -218,6 +218,7 @@ proc ::store::takeLock {path} {
             close $mh
             lockStep mutex
             if {[lockHolder $path] eq ""} {
+                lockStep checked                             ;# (test hook: the stale verdict is in, nothing is deleted yet)
                 catch {file delete $lf}
                 lockStep deleted
                 set rc [catch {open $lf {WRONLY CREAT EXCL}} h]

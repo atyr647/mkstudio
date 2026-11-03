@@ -22,7 +22,8 @@ There is no code-signing certificate behind them. In practice:
 
 - **Windows** SmartScreen shows "Windows protected your PC" - choose *More info > Run anyway*.
 - **macOS** the program carries only the ad-hoc signature its Tcl runtime was built with (`codesign` refuses to sign a
-  starpack again, and the app bundle is not sealed); the first time, right-click the app > *Open* and confirm.
+  starpack again, and the app bundle is not sealed); the first time, on macOS 15 and later: try to open it, then *System Settings > Privacy & Security >
+  Open Anyway*; on macOS 14 and earlier: right-click the app > *Open*. What "not sealed" costs is listed in the README.
 - **Linux** nothing to confirm.
 - The checksums catch a damaged download, **not** a malicious one: if someone took over the project's GitHub account they could
   publish matching checksums. Download from the project's own releases page only.

@@ -93,6 +93,11 @@ jobs:
         run: tools/ext/tclkit-8.6.3-linux-x86_64 tests/verify_payload.tcl dist/*
       - name: Launch the Linux starpack
         run: tests/smoke_starpack.sh
+      - name: Real self-update - the real starpack replaces a running program (Tcl 8.6 and 8.5)
+        run: |
+          for kit in tools/ext/tclkit-8.6.3-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+            MKS_TEST_STARPACK="$PWD/dist/mkstudio-linux-x86_64" REAL_MK=1 $kit tests/run.tcl tests/test_update.tcl
+          done
       - name: --version and --selftest of the Linux starpack
         run: |
           v=$(grep -o 'current [0-9][^ ]*' mkstudio.vfs/lib/app-mkstudio/version.tcl | cut -d' ' -f2)
@@ -135,7 +140,7 @@ jobs:
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
             # forcing data to disk starts PowerShell twice per commit: only the durability test does it for real
             D=0; [ "$t" = test_durability ] && D=1
-            MKS_TEST_TIMEOUT=480 MKS_DURABLE=$D MKS_EXPECT_FLUSH=1 MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$(cygpath -w "$log")" timeout 540 "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
+            MKS_TEST_STARPACK="$(cygpath -w "$PWD/dist/mkstudio-windows-x86_64.exe")" MKS_TEST_TIMEOUT=480 MKS_DURABLE=$D MKS_EXPECT_FLUSH=1 MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$(cygpath -w "$log")" timeout 540 "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
           done
           exit $fail
@@ -283,6 +288,9 @@ jobs:
           v=$(grep -o 'current [0-9][^ ]*' mkstudio.vfs/lib/app-mkstudio/version.tcl | cut -d' ' -f2)
           test "$("./$OUT" --version)" = "$v"
           "./$OUT" --selftest "$RUNNER_TEMP/st.txt"; cat "$RUNNER_TEMP/st.txt"; grep -q "^ok $v mk4tcl yes" "$RUNNER_TEMP/st.txt"
+
+      - name: Real self-update - the real starpack replaces a running program
+        run: MKS_TEST_STARPACK="$PWD/$OUT" "$KIT" tests/run.tcl tests/test_update.tcl
 
       - name: Build and test the .app and .dmg
         timeout-minutes: 10

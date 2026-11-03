@@ -2,7 +2,7 @@
 # Build "MK Studio.app" and a .dmg from a macOS starpack (run on a Mac):
 #   packaging/macos/make-dmg.sh <version> <starpack> <outdir>
 # The app carries only the ad-hoc signature of the tclkit (no Apple developer certificate), so on first start macOS asks you to confirm:
-# right-click the app > Open.  The README says so.
+# macOS 15+: System Settings > Privacy & Security > Open Anyway (macOS 14-: right-click > Open).  The README says so.
 set -e
 VER=$1 ; BIN=$2 ; OUT=$3
 [ -n "$VER" ] && [ -f "$BIN" ] && [ -n "$OUT" ] || { echo "usage: $0 <version> <starpack> <outdir>"; exit 1; }
