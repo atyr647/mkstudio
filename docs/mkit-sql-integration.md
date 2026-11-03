@@ -1,46 +1,42 @@
 # mkit-sql and MK Studio: what was checked, what was found
 
-Checked against `atyr647/mkit-sql` at `fa3f77d` and this repository. Everything below was measured or run, not read off
+Checked against `atyr647/mkit-sql` at `fa3f77d` (benchmark) and `210c3b7` (protocol, contract, integration) and this repository. Everything below was measured or run, not read off
 a description. The mkit-sql checkout was only read; nothing was changed or pushed there.
 
 ## 1. Do the two still fit? Yes
 
 mkit-sql's own `tests/studio_contract.tcl` (38 checks) and `tests/studio_integration.tcl` (16 checks) pass against this
-checkout (Tcl 8.6.3, real Metakit), and so does `tests/locking.tcl` with `MKSTUDIO_DIR` set (55 checks). The CI job
+checkout (Tcl 8.6.3, real Metakit), and so does `tests/locking.tcl` with `MKSTUDIO_DIR` set (75 checks at `210c3b7`). The CI job
 `interop` in `.github/workflows/build.yml` re-runs them on every push (non-blocking, because the other repository can
 change on its own).
 
-## 2. Lock protocol: one real defect in each implementation, now converged
+## 2. Lock protocol: one real defect in both implementations (still in mkit-sql), and a correction of mine
 
-The two lock implementations had drifted apart:
+**A correction first.** `docs/CONCURRENCY.md` at `3853497` defined the protocol as `pid host [role [endpoint]]`, mutex
+`<db>.lock.guard`, abandonment 5 s / 10 s. mkit-sql (now `210c3b7`) implemented exactly that "to the letter". In
+`670fc86` I then changed MK Studio on my own to `pid host start [role [endpoint]]`, `.lock.takeover` and 10 s / 30 s,
+because I had compared against an older mkit-sql checkout. That would have broken the agreement: a lock mkit-sql wrote
+with a role (`pid host server tcp://...`) would have read, on MK Studio's side, as a start time that does not match -
+"pid reused" - and **a live server's lock would have been taken over**. It is reverted: MK Studio follows the published
+protocol again, and reuses mkit-sql's pid-reuse test (a process that started after the lock file was written is not its
+owner), which needs no change to the line format. The CI `interop` job caught the mismatch when it ran against mkit-sql's
+newer code.
 
-| | MK Studio (before) | mkit-sql |
-|---|---|---|
-| third field of the lock line | `role` | process start time |
-| takeover mutex file | `<db>.lock.guard` | `<db>.lock.takeover` |
-| empty-lock abandonment | 5 s | 10 s |
-| mutex abandonment | 10 s | 30 s |
-| reused-pid detection | none | start time (Linux) |
-
-Consequences that were real: an MK Studio lock carrying a role would have been read by mkit-sql as a start time that
-doesn't match -> "pid reused" -> **a live server's lock taken over**; and the two implementations did not exclude each
-other during a takeover. MK Studio now writes `pid host start [role [endpoint]]`, uses `.lock.takeover` and the same
-limits; `docs/CONCURRENCY.md` is the protocol. `tests/test_lock_protocol.tcl` (with `MKITSQL_DIR`) races processes of both
-implementations, and checks that each respects the other's lock and mutex.
-
-**The defect (both implementations).** In `takeLock`, after a failed exclusive create the code does
-`if {![file exists $lf]} { return "" }` ("could not create it for another reason"). When a competitor deletes the stale
-lock *between* the failed create and that check, the file is gone, the function returns "no lock needed" and the process
-opens the database **without a lock** - alongside the competitor that just took it. Reproduced by racing six processes for
-a stale lock: MK Studio: 2 winners in 1 of 40 rounds (and in roughly 1 of 6 runs of the 3-round test); mkit-sql: 2-3 winners in 3 of 60 rounds. Fix: only a folder that
-refuses to create files (permission / read-only) means "run unlocked"; a vanished file means retry. MK Studio is fixed and
-has a deterministic regression test (a hook deletes the lock at exactly that moment). The same fix for mkit-sql is in
-`docs/mkit-sql-takelock.patch` (7 lines in `mkitsql/db.tcl`): with it 60 stale-lock rounds were clean and mkit-sql's own
-`tests/locking.tcl` still passes (55 checks).
+**The defect (both implementations).** In `takeLock`, after a failed exclusive create the code treats "the file is not
+there" as "this folder cannot hold a lock" and returns "no lock needed" (mkit-sql: `if {[catch {::file lstat $lf st}]}
+{ return "" }`). When a competitor deletes the stale lock *between* the failed create and that check, the process opens the
+database **without a lock**, alongside the competitor that just took it. Reproduced by racing six processes for a stale
+lock: MK Studio 2 winners in 1 of 40 rounds; mkit-sql 2-3 winners in 3 of 60 rounds at `fa3f77d` and 1 of 60 at
+`210c3b7`. Fix: only a folder that refuses to create files means "run unlocked"; a vanished file means retry. MK Studio is
+fixed with a deterministic regression test (a hook deletes the lock at exactly that moment). The fix for mkit-sql is in
+`docs/mkit-sql-takelock.patch` (6 lines in `mkitsql/db.tcl`, against `210c3b7`): with it 60 stale-lock rounds were
+clean and mkit-sql's own `tests/locking.tcl` still passes (75 checks).
 
 Other findings: both implementations treated a *zombie* (killed, not yet collected by its parent) as a live owner on
 Linux (`/proc/<pid>` still exists; MK Studio now checks the state letter - mkit-sql's `pidAlive` should too), and on
 macOS/BSD `kill -0` fails with "not permitted" for a live process of another user (MK Studio treats that as alive).
+`tests/test_lock_crash.tcl` kills a process at every step of acquiring, taking over and releasing and runs a chaos loop;
+it is worth running against mkit-sql's implementation too (replace `lock_crash_child.tcl`'s `store::` calls).
 
 ## 3. Bulk mutation: two algorithms, same results, MK Studio's is as fast or faster
 

@@ -127,6 +127,7 @@ and holds while it has the file open for writing.
 - a lock left behind by a crashed process is recognised (its pid is gone) and taken over, so a crash never locks you out;
   a lock from another machine (a network share) is respected, since its liveness can't be checked;
 - a long-lived owner such as a server announces itself (`role`, `endpoint`) so clients are told who to talk to;
+- a process that started after the lock file was written (a reused pid) is not its owner; a zombie is not running;
 - a process only ever removes *its own* lock.
 
 `tests/test_lock_protocol.tcl` checks this against hand-written independent implementations of the protocol and races six
@@ -136,8 +137,8 @@ then runs a chaos loop (eight processes, random SIGKILLs, mutual exclusion check
 acquisitions per run). Between them they found three real defects, all fixed: several processes could each "take over"
 the same stale lock; a process whose stale lock was deleted by a competitor at the wrong instant carried on *without any
 lock* (this one is also in mkit-sql - see [`docs/mkit-sql-integration.md`](docs/mkit-sql-integration.md) and the 7-line
-patch there); and a zombie (killed, not yet collected) counted as a live owner. The two implementations had also drifted
-apart (third field, mutex name, limits) and are now one protocol.
+patch there); and a zombie (killed, not yet collected) counted as a live owner. mkit-sql implements the same published protocol;
+an attempt of mine to change it unilaterally (`670fc86`) was caught by the interop job and reverted.
 
 The lock only protects cooperating programs - others that open the file ignore it - and relies on `O_EXCL`, which is
 reliable on local file systems and modern NFS. Read-only folders skip the lock. Derived data (sorted orders, column

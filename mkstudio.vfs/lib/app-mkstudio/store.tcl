@@ -73,15 +73,15 @@ proc ::store::makeTag {path} {
 # engine, a server...) - the full protocol is in docs/CONCURRENCY.md.  In short: Metakit does no locking
 # (measured: tests/test_crash_safety.tcl - a reader can see a half-written commit, two writers can
 # overwrite each other), so a writer owns "<file>.lock" for as long as it has the file open for
-# writing.  The file holds  "<pid> <host> ?<role> ?<endpoint>??"  and is created atomically (O_EXCL).
+# writing.  The file holds  "<pid> <host> [<role> [<endpoint>]]"  and is created atomically (O_EXCL).
 # A lock whose process is dead (same host) is stale and is taken over, so a crash never locks a
 # database for good; a lock from another host is always respected.  Programs that don't follow the
 # protocol are not stopped - it is advisory.
 namespace eval ::store {
     # how long an empty/garbled lock file, and a takeover mutex, may sit there before they count as abandoned
-    # (protocol constants - 10 s and 30 s; only tests shorten them)
-    variable emptyStale [expr {[info exists ::env(MKS_LOCK_EMPTY_STALE)] ? $::env(MKS_LOCK_EMPTY_STALE) : 10}]
-    variable mutexStale [expr {[info exists ::env(MKS_LOCK_MUTEX_STALE)] ? $::env(MKS_LOCK_MUTEX_STALE) : 30}]
+    # (protocol constants - 5 s and 10 s; only tests shorten them)
+    variable emptyStale [expr {[info exists ::env(MKS_LOCK_EMPTY_STALE)] ? $::env(MKS_LOCK_EMPTY_STALE) : 5}]
+    variable mutexStale [expr {[info exists ::env(MKS_LOCK_MUTEX_STALE)] ? $::env(MKS_LOCK_MUTEX_STALE) : 10}]
     variable lockRole ""       ;# a long-lived owner says what it is, e.g. "server" ...
     variable lockEndpoint ""   ;# ... and where clients should talk to it, e.g. "tcp://host:5433"
 }
@@ -114,38 +114,39 @@ proc ::store::procState {pid} {
     if {[catch {set h [open /proc/$pid/stat r] ; set d [read $h] ; close $h}]} { return "" }
     return [lindex [string range $d [expr {[string last ")" $d] + 2}] end] 0]
 }
-# a token that changes when a pid is reused (field 22 of /proc/<pid>/stat); "" where there is no such thing
-proc ::store::procStart {pid} {
+# epoch second at which a local process started (Linux: /proc/<pid>/stat field 22 and /proc/stat btime), "" where unknown
+proc ::store::procStartTime {pid} {
     if {[catch {set h [open /proc/$pid/stat r] ; set d [read $h] ; close $h}]} { return "" }
     set rest [string range $d [expr {[string last ")" $d] + 2}] end]
-    return [lindex $rest 19]
+    set ticks [lindex $rest 19]
+    if {![string is integer -strict $ticks]} { return "" }
+    if {[catch {set h [open /proc/stat r] ; set st [read $h] ; close $h}] || ![regexp {btime (\d+)} $st -> btime]} { return "" }
+    return [expr {$btime + $ticks / 100}]
 }
-# "<pid> <host> <start> [<role> [<endpoint>]]"  (start is "-" where unknown; role "-" when only an endpoint is given)
+# "<pid> <host> [<role> [<endpoint>]]"  (role "-" when only an endpoint is given)
 proc ::store::lockText {} {
     variable lockRole ; variable lockEndpoint
-    set st [procStart [pid]]
-    set t "[pid] [thisHost] [expr {$st eq {} ? {-} : $st}]"
+    set t "[pid] [thisHost]"
     if {$lockRole ne "" || $lockEndpoint ne ""} { append t " [expr {$lockRole eq {} ? {-} : $lockRole}]" }
     if {$lockEndpoint ne ""} { append t " $lockEndpoint" }
     return $t
 }
 proc ::store::readLock {path} {
     set lf [lockPath $path]
-    if {[catch {set h [open $lf r] ; set d [string trim [read $h]] ; close $h}]} { return "" }
-    lassign [split $d " "] pid host start role endpoint
-    return [dict create pid $pid host $host start [expr {$start eq "-" ? "" : $start}] \
-        role [expr {$role eq "-" ? "" : $role}] endpoint $endpoint text $d]
+    if {[catch {set h [open $lf r] ; set d [string trim [read $h 512]] ; close $h}]} { return "" }
+    lassign [split $d " "] pid host role endpoint
+    return [dict create pid $pid host $host role [expr {$role eq "-" ? "" : $role}] endpoint $endpoint text $d]
 }
 
 # What is the state of the lock on this database?  A dict:
 #   state    free | ours | stale | held       ("held": a live (or remote) other process owns it)
-#   pid host start role endpoint               (when there is a lock file)
+#   pid host role endpoint                     (when there is a lock file)
 proc ::store::lockInfo {path} {
     set l [readLock $path]
     if {![file exists [lockPath $path]]} { return [dict create state free] }
     if {$l eq ""} { return [dict create state free] }            ;# unreadable / vanished meanwhile
     set state held
-    set pid [dict get $l pid] ; set host [dict get $l host] ; set start [dict get $l start]
+    set pid [dict get $l pid] ; set host [dict get $l host]
     if {![string is integer -strict $pid] || $host eq ""} {
         # empty or garbled: its creator is probably between creating and writing it; if it stays that
         # way for a while the creator died and the lock is stale
@@ -156,9 +157,10 @@ proc ::store::lockInfo {path} {
         if {![pidAlive $pid]} {
             set state stale
         } else {
-            # alive - but is it the process that wrote the lock, or a newer one that got the same pid?
-            set now [procStart $pid]
-            if {$start ne "" && $now ne "" && $now ne $start} { set state stale }
+            # alive - but is it the process that wrote the lock, or a newer one that got the same pid?  (Linux: a
+            # process that started AFTER the lock file was last written cannot be its owner.)
+            set started [procStartTime $pid]
+            if {$started ne "" && ![catch {file mtime [lockPath $path]} mt] && $started > $mt + 2} { set state stale }
         }
     }
     return [dict merge $l [dict create state $state]]
@@ -184,18 +186,18 @@ proc ::store::lockStep {name} { variable lockHook ; if {$lockHook ne ""} { {*}$l
 # Create the lock file atomically (O_EXCL) so two processes starting at once cannot both win.
 # Returns the text written, "" when no lock could be made (read-only folder: carry on unlocked), or
 # raises STORE LOCKED when somebody else owns it.  Replacing a stale lock happens under a mutex file
-# (<file>.lock.takeover), inside which the lock is judged again, deleted and re-created, so processes
+# (<file>.lock.guard), inside which the lock is judged again, deleted and re-created, so processes
 # that all see the same stale lock cannot delete each other's fresh one: exactly one wins.  The mutex
-# name and the 30 s abandonment rule are part of the protocol (mkit-sql uses the same).
+# name and the 10 s abandonment rule are part of the protocol (docs/CONCURRENCY.md; mkit-sql implements the same).
 proc ::store::takeLock {path} {
     set lf [lockPath $path] ; set mine [lockText]
-    for {set attempt 0} {$attempt < 6} {incr attempt} {
+    for {set attempt 0} {$attempt < 60} {incr attempt} {
         if {![catch {open $lf {WRONLY CREAT EXCL}} h]} {
             lockStep created
             puts -nonewline $h $mine ; close $h
             lockStep written
             # tidy up a takeover mutex abandoned by a crashed process
-            if {![catch {file mtime $lf.takeover} mt] && [clock seconds] - $mt > $::store::mutexStale} { catch {file delete $lf.takeover} }
+            if {![catch {file mtime $lf.guard} mt] && [clock seconds] - $mt > $::store::mutexStale} { catch {file delete $lf.guard} }
             return $mine
         }
         lockStep create-failed
@@ -208,7 +210,7 @@ proc ::store::takeLock {path} {
         }
         set holder [lockHolder $path]
         if {$holder ne ""} { lockedError $path $holder }
-        set mx $lf.takeover
+        set mx $lf.guard
         if {![catch {open $mx {WRONLY CREAT EXCL}} mh]} {
             close $mh
             lockStep mutex
@@ -222,7 +224,7 @@ proc ::store::takeLock {path} {
         } elseif {![catch {file mtime $mx} mt] && [clock seconds] - $mt > $::store::mutexStale} {
             catch {file delete $mx}                         ;# a takeover that crashed
         } else {
-            after 25
+            after 40                                         ;# someone else is replacing the lock: give it a moment (~2.4 s in all)
         }
     }
     return -code error -errorcode [list STORE LOCKED 0 unknown "" ""] \

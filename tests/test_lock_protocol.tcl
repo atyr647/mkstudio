@@ -21,9 +21,7 @@ proc rawread {} { global db ; set h [open $db.lock r] ; set d [read $h] ; close 
 # ---- 1. the file we write is what the spec says -------------------------------------------------
 fresh
 set t [store::openFile $db]
-check lock_content_format [regexp {^(\d+) (\S+) (\S+)$} [rawread] -> p h st] 1
-ok lock_start_token [expr {$st eq "-" || [string is integer -strict $st]}] $st
-check lock_start_matches_process [expr {$st eq "-" || $st eq [store::procStart [pid]]}] 1
+check lock_content_format [regexp {^(\d+) (\S+)$} [rawread] -> p h] 1
 check lock_pid  $p [pid]
 check lock_host $h $host
 check lock_info_ours [dict get [store::lockInfo $db] state] ours
@@ -41,7 +39,7 @@ set t [store::openFile $db -readonly]
 ok foreign_readonly_allowed [expr {[store::lockedByOther $t] ne ""}]
 store::closeFile $t
 check foreign_lock_untouched [rawread] "999 some-other-machine"
-rawlock "999 some-other-machine - server tcp://db.example:5433"
+rawlock "999 some-other-machine server tcp://db.example:5433"
 catch {store::openFile $db} msg opts
 ok role_in_message [expr {[string first "server" $msg] >= 0 && [string first "tcp://db.example:5433" $msg] >= 0}] $msg
 check role_in_errorcode [lrange [dict get $opts -errorcode] 4 5] {server tcp://db.example:5433}
@@ -50,11 +48,11 @@ file delete $db.lock
 # ---- 3. stale locks (same host, dead process) are taken over -----------------------------------------
 rawlock "999999 $host"
 set t [store::openFile $db]
-check stale_taken_over [regexp "^[pid] $host \\S+\$" [rawread]] 1
+check stale_taken_over [regexp "^[pid] $host\$" [rawread]] 1
 store::closeFile $t
-rawlock "999999 $host - server tcp://gone:1"
+rawlock "999999 $host server tcp://gone:1"
 set t [store::openFile $db]
-check stale_with_role_taken_over [regexp "^[pid] $host \\S+\$" [rawread]] 1
+check stale_with_role_taken_over [regexp "^[pid] $host\$" [rawread]] 1
 store::closeFile $t
 # empty lock: its creator may be mid-write, so respect it - until it is clearly abandoned
 rawlock ""
@@ -65,22 +63,22 @@ ok empty_old_taken_over [string match "[pid] *" [rawread]]
 store::closeFile $t
 # a takeover mutex abandoned by a crash does not block
 rawlock "999999 $host"
-set h [open $db.lock.takeover w] ; close $h ; file mtime $db.lock.takeover [expr {[clock seconds] - 60}]
+set h [open $db.lock.guard w] ; close $h ; file mtime $db.lock.guard [expr {[clock seconds] - 60}]
 set t [store::openFile $db]
 ok abandoned_mutex_ignored [string match "[pid] *" [rawread]]
 store::closeFile $t
-ok mutex_cleaned_up [expr {![file exists $db.lock.takeover]}]
+ok mutex_cleaned_up [expr {![file exists $db.lock.guard]}]
 
-# a process that got the pid of the dead writer is not the writer (Linux: start time from /proc)
+# a process that got the pid of the dead writer is not the writer (Linux: it started after the lock was written)
 if {[file exists /proc/self/stat]} {
     set other [exec sleep 60 &]
     after 100
-    rawlock "$other $host 1"
+    rawlock "$other $host"
+    file mtime $db.lock [expr {[clock seconds] - 3600}]            ;# the lock is an hour old, the process just started
     check reused_pid_is_stale [dict get [store::lockInfo $db] state] stale
-    rawlock "$other $host [store::procStart $other]"
+    rawlock "$other $host"                                         ;# a lock written just now by a process that is running
+    file mtime $db.lock [expr {[clock seconds] + 5}]
     check same_process_is_held [dict get [store::lockInfo $db] state] held
-    rawlock "$other $host -"
-    check unknown_start_is_held [dict get [store::lockInfo $db] state] held
     catch {exec kill $other}
     file delete $db.lock
 }
@@ -118,8 +116,7 @@ file delete $db.lock
 fresh
 set ::store::lockRole server ; set ::store::lockEndpoint tcp://localhost:5433
 set t [store::openFile $db]
-set st [store::procStart [pid]] ; if {$st eq ""} { set st - }
-check role_written [rawread] "[pid] $host $st server tcp://localhost:5433"
+check role_written [rawread] "[pid] $host server tcp://localhost:5433"
 set ::store::lockRole "" ; set ::store::lockEndpoint ""
 set go [tmp lock_go] ; file delete $go
 set res [tmp lock_res_0] ; file delete $res
@@ -205,7 +202,7 @@ if {[info exists ::env(MKITSQL_DIR)] && [file exists $::env(MKITSQL_DIR)/mkitsql
     close [open $go w]
     for {set i 0} {$i < 300 && ![file exists $res]} {incr i} { after 20 }
     after 200
-    check mkitsql_lock_has_three_fields [llength [split [string trim [rawread]] " "]] 3
+    ok mkitsql_lock_names_its_owner [regexp {^\d+ \S+} [string trim [rawread]]]
     set e [catch {store::openFile $db} msg opts]
     check we_respect_mkitsql_lock $e 1
     check mkitsql_holder_pid_reported [string is integer -strict [lindex [dict get $opts -errorcode] 2]] 1
@@ -214,15 +211,15 @@ if {[info exists ::env(MKITSQL_DIR)] && [file exists $::env(MKITSQL_DIR)/mkitsql
     foreach impl {studio mkitsql} {
         fresh
         rawlock "999999 $host"
-        set h [open $db.lock.takeover w] ; close $h                      ;# someone else is mid-takeover
+        set h [open $db.lock.guard w] ; close $h                      ;# someone else is mid-takeover
         set go [tmp lock_go_z] ; file delete $go ; set res [tmp lock_res_z] ; file delete $res
         exec $kit $here/[expr {$impl eq "studio" ? "lock_child.tcl" : "lock_child_mkitsql.tcl"}] $db $res $go 100 &
         close [open $go w]
-        for {set i 0} {$i < 300 && ![file exists $res]} {incr i} { after 20 }
+        for {set i 0} {$i < 750 && ![file exists $res]} {incr i} { after 20 }      ;# (they wait a few seconds for the guard)
         after 100
         set h [open $res r] ; set line [string trim [read $h]] ; close $h
         ok "${impl}_waits_for_the_others_takeover_mutex" [expr {![string match WIN* $line]}] $line
-        file delete $db.lock.takeover
+        file delete $db.lock.guard
     }
 } else { puts "  (set MKITSQL_DIR to a mkit-sql checkout to test interoperability)" }
 

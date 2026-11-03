@@ -42,22 +42,22 @@ A killed process never leaves a torn file (also measured), but concurrent access
 
 The lock is a file next to the database: `<database>.lock` (for `sales.mk`, `sales.mk.lock`). MK Studio and
 mkit-sql implement it independently and are tested against each other (`tests/test_lock_protocol.tcl` with
-`MKITSQL_DIR` set races processes of both implementations).
+`MKITSQL_DIR` set races processes of both implementations). **This text is the protocol; change it only together with
+every implementation** (an earlier revision of MK Studio changed the line format and the mutex name on its own while
+mkit-sql was adopting the published ones - reverted; see `docs/mkit-sql-integration.md`).
 
 **Content** - one line of text, space separated:
 
-    <pid> <host> <start> [<role> [<endpoint>]]
+    <pid> <host> [<role> [<endpoint>]]
 
 | field | meaning |
 |---|---|
 | `pid` | process id of the owner (decimal) |
 | `host` | name of the machine the owner runs on (`info hostname`) |
-| `start` | the owner's process start time token (Linux: field 22 of `/proc/<pid>/stat`) so a *reused* pid is not mistaken for the owner; `-` (or empty) where the system has no such thing |
 | `role` | optional: what the owner is, e.g. `server`; `-` means none (when only `endpoint` follows) |
 | `endpoint` | optional: where to reach it, e.g. `tcp://db.example:5433` |
 
-Readers must ignore fields they don't know (older writers wrote only `pid host`). Writers on Linux must write a real
-`start` token: a reader there compares it with the live process and calls a mismatch "pid reused = stale".
+Readers must ignore fields they don't know.
 
 **Acquire** (a writer, before opening the database for writing):
 
@@ -66,25 +66,24 @@ Readers must ignore fields they don't know (older writers wrote only `pid host`)
 2. If the create failed, look at why:
    - **no file exists any more** - a competitor deleted the stale lock between your create and your look. **Retry.**
      Only a folder that will not let you create files at all (read-only, no permission) means "carry on without a
-     lock". (Treating a vanished file as "read-only folder" let two processes both think they owned the database;
-     found by `tests/test_lock_protocol.tcl`, and present in mkit-sql too - see `docs/mkit-sql-integration.md`.)
+     lock". (Treating a vanished file as "read-only folder" lets two processes both think they own the database. It was
+     found by `tests/test_lock_protocol.tcl` in MK Studio and is also in mkit-sql - patch:
+     `docs/mkit-sql-takelock.patch`.)
    - **the file exists** - read and classify it:
      - **held** - another live process owns it, or it names another *host* (liveness of a remote process can't be
        checked, so it is always respected). Do not write. Report `pid host role endpoint` to the user.
-     - **stale** - same host and the pid is not running (a *zombie* - killed but not yet collected by its parent -
-       is not running); or the pid runs but its start time differs from `start` (pid reused); or the file is empty or
-       garbled and older than 10 seconds (its creator died between creating and writing it).
+     - **stale** - same host and the pid is not running (a *zombie* - killed but not yet collected by its parent - is
+       not running); or the pid runs but started after the lock file was written (Linux: pid reused); or the file is
+       empty or garbled and older than **5 seconds** (its creator died between creating and writing it).
      - **ours** - same pid and host (left by an earlier run of this very process).
-3. **Take over** a stale/ours lock under the mutex file `<database>.lock.takeover`, so that processes that all see
-   the same stale lock cannot each delete the winner's fresh one:
-   1. create the mutex exclusively; if it exists, wait a moment (~25 ms) and start over; a mutex older than
-      **30 seconds** was abandoned by a crash and is deleted;
-   2. with the mutex held, **classify the lock again**; only if it is still stale/ours (or gone): delete it and
-      create `<database>.lock` exclusively, write your line;
-   3. delete the mutex. Exactly one process wins; the others loop back to step 1 and find a live owner.
-   Both implementations use the same mutex name, so they exclude each other; a process that cannot get the lock
-   after a few rounds reports "starting at the same moment, please repeat".
-4. When your create succeeds, you may delete a takeover mutex older than 30 s that a crashed process left.
+3. **Take over** a stale/ours lock under the guard file `<database>.lock.guard`, so that processes that all see the
+   same stale lock cannot each delete the winner's fresh one:
+   1. create the guard exclusively; if it exists, wait (~40 ms) and try again for about two seconds; a guard older
+      than **10 seconds** was abandoned by a crash and is deleted;
+   2. with the guard held, **classify the lock again**; only if it is still stale/ours (or gone) delete it (an
+      implementation may create the new lock before or after releasing the guard);
+   3. delete the guard. Exactly one process wins; the others find a live owner. A process that cannot get the lock
+      after waiting reports "starting at the same moment, please repeat".
 
 **Release** (on close): delete `<database>.lock` *only if it still holds exactly what you wrote*. If it was replaced,
 leave it alone.
@@ -94,8 +93,8 @@ leave it alone.
 **Limits.** The lock is advisory: programs that don't follow it are not stopped. `O_EXCL` is reliable on local
 file systems and modern NFS; on exotic network file systems it may not be, in which case run one server instead.
 A crashed owner leaves its lock behind until the next opener finds it stale (same host) - there is no timeout for
-remote owners, by design. The only time-based rules are the two abandonment limits above, compared with the local
-file system clock.
+remote owners, by design. The only time-based rules are the two abandonment limits above (5 s, 10 s), compared with the
+local file system clock.
 
 ## API (`store.tcl`)
 
@@ -137,9 +136,9 @@ file system clock.
 
 `tests/test_lock_protocol.tcl`: the lock file format; a lock written by a foreign implementation is respected
 (and left untouched), including `role`/`endpoint` in the message and error code; stale, empty-and-old and
-abandoned-mutex locks are taken over (also reused pids, zombies, and processes of other users); close never removes someone
+abandoned-guard locks are taken over (also reused pids, zombies, and processes of other users); close never removes someone
 else's lock; **six processes racing** for a free lock and for the same stale lock - exactly one wins every round (with the
-mutex removed, or with a vanished lock treated as unlockable, the same test fails). With `MKITSQL_DIR` set, half of the
+guard removed, or with a vanished lock treated as unlockable, the same test fails). With `MKITSQL_DIR` set, half of the
 racers are mkit-sql's implementation. `tests/test_lock_crash.tcl` kills a process at every step of acquiring, taking over
 and releasing (created, written, holding the mutex, between delete and create, after release) and then runs a chaos loop:
 eight processes take the lock repeatedly while the test SIGKILLs random ones; no two live processes ever hold it at once
