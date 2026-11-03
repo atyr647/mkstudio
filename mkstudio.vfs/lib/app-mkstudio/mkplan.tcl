@@ -345,6 +345,8 @@ proc ::mkql::planWhere {mk layout where} {
     variable pushdown
     if {$where eq ""} { return [list all 1] }
     if {!$pushdown} { return [list all 0] }
+    # strict equivalence: skipping rows must not hide an error the plain scan would raise
+    if {[raises $where $layout]} { return [list all 0] }
     set conds {} ; set exact 1 ; set inSpec {}
     foreach c [flattenAnd $where] {
         set r [pushConj $c $layout]
@@ -647,7 +649,13 @@ proc ::mkql::runSelect {p} {
         if {!$skip && $where ne ""} { set S(pred) [compilePred $where pred] }
         set S(proj) [compileList $selAsts proj]
         set topk 0
-        if {$shortcuts && $skip && !$distinct && $limit ne "" && [llength $order]} {
+        set safe 1
+        foreach a $selAsts { if {[raises $a $layout]} { set safe 0 ; break } }
+        foreach o $order {
+            set e [lindex $o 0]
+            if {[lindex $e 0] ne "outcol" && [raises $e $layout]} { set safe 0 ; break }
+        }
+        if {$shortcuts && $safe && $skip && !$distinct && $limit ne "" && [llength $order]} {
             set o0 [lindex $order 0] ; set e [lindex $o0 0]
             # ORDER BY an output column that is just a stored column (alias or position) counts too
             if {[lindex $e 0] eq "alias"} {
@@ -761,4 +769,118 @@ proc ::mkql::runSelect {p} {
         set recs $recs2
     }
     return $recs
+}
+
+# ============================================================================
+#  Can evaluating an expression raise an error?
+# ============================================================================
+# Pushdown, top-k and lazy results look at FEWER rows than the plain scan.  That is invisible
+# exactly when no expression that would have been evaluated on the skipped rows can fail, so
+# those paths are only taken when this analysis proves it ("strict equivalence": same rows,
+# same values, same success or failure as the simple executor).  Anything not provably safe
+# makes the query take the plain path.
+
+# a value that is certainly a number (stored number column, number literal, safe arithmetic)
+proc ::mkql::numKnown {ast layout} {
+    switch -- [lindex $ast 0] {
+        num { return [isnum [lindex $ast 1]] }
+        str { return [isnum [lindex $ast 1]] }
+        col {
+            set n [lindex $ast 1]
+            if {$n eq "_rowid"} { return 1 }
+            set t [colType $layout $n]
+            return [expr {$t in {I L F D V}}]
+        }
+        neg { return [expr {![raises $ast $layout] && [numKnown [lindex $ast 1] $layout]}] }
+        bin {
+            if {[lindex $ast 1] ni {+ - *}} { return 0 }
+            return [expr {![raises $ast $layout]}]
+        }
+        fn {
+            if {[raises $ast $layout]} { return 0 }
+            return [expr {[lindex $ast 1] in {ABS ROUND FLOOR CEIL LENGTH LEN}}]
+        }
+    }
+    return 0
+}
+proc ::mkql::intKnown {ast layout} {
+    switch -- [lindex $ast 0] {
+        num - str { return [string is wideinteger -strict [string trim [lindex $ast 1]]] }
+        col {
+            set n [lindex $ast 1]
+            return [expr {$n eq "_rowid" || [colType $layout $n] in {I L V}}]
+        }
+    }
+    return 0
+}
+proc ::mkql::raises {ast layout} {
+    # a constant that evaluates cleanly can never fail later
+    if {[isConstAst $ast]} { return [catch {ev $ast {}}] }
+    switch -- [lindex $ast 0] {
+        col - alias - outcol - aggref { return 0 }
+        agg { return 1 }
+        neg { return [expr {[raises [lindex $ast 1] $layout] || ![numKnown [lindex $ast 1] $layout]}] }
+        not - isnull { return [raises [lindex $ast 1] $layout] }
+        and - or - cmp {
+            set a [expr {[lindex $ast 0] eq "cmp" ? 2 : 1}]
+            return [expr {[raises [lindex $ast $a] $layout] || [raises [lindex $ast [expr {$a + 1}]] $layout]}]
+        }
+        like { return [expr {[raises [lindex $ast 1] $layout] || [raises [lindex $ast 2] $layout]}] }
+        in {
+            if {[raises [lindex $ast 1] $layout]} { return 1 }
+            foreach a [lindex $ast 2] { if {[raises $a $layout]} { return 1 } }
+            return 0
+        }
+        between {
+            foreach k {1 2 3} { if {[raises [lindex $ast $k] $layout]} { return 1 } }
+            return 0
+        }
+        bin {
+            lassign $ast _ op a b
+            if {[raises $a $layout] || [raises $b $layout]} { return 1 }
+            switch -- $op {
+                || { return 0 }
+                + - * { return [expr {![numKnown $a $layout] || ![numKnown $b $layout]}] }
+                / {
+                    # needs a number over a non-zero constant
+                    lassign [constOf $b] ok v
+                    return [expr {![numKnown $a $layout] || !$ok || ![isnum $v] || [tonum $v] == 0}]
+                }
+                % {
+                    lassign [constOf $b] ok v
+                    return [expr {![intKnown $a $layout] || !$ok || ![string is wideinteger -strict [string trim $v]] || [tonum $v] == 0}]
+                }
+            }
+            return 1
+        }
+        fn {
+            lassign $ast _ name args
+            set n [llength $args]
+            foreach a $args { if {[raises $a $layout]} { return 1 } }
+            switch -- $name {
+                UPPER - LOWER - LENGTH - LEN - TRIM { return [expr {$n != 1}] }
+                REPLACE { return [expr {$n != 3}] }
+                CONCAT - COALESCE - IFNULL - NOW { return 0 }
+                SUBSTR - SUBSTRING {
+                    if {$n < 2 || $n > 3} { return 1 }
+                    foreach a [lrange $args 1 end] {
+                        lassign [constOf $a] ok v
+                        if {!$ok || ![string is integer -strict $v]} { return 1 }
+                    }
+                    return 0
+                }
+                ABS - FLOOR - CEIL { return [expr {$n != 1 || ![numKnown [lindex $args 0] $layout]}] }
+                ROUND {
+                    if {$n < 1 || $n > 2 || ![numKnown [lindex $args 0] $layout]} { return 1 }
+                    if {$n == 2} {
+                        lassign [constOf [lindex $args 1]] ok v
+                        if {!$ok || ![string is integer -strict $v]} { return 1 }
+                    }
+                    return 0
+                }
+            }
+            return 1
+        }
+    }
+    return 1
 }

@@ -392,10 +392,75 @@ proc ::store::setCell {path idx prop value} {
     touchPath $path
 }
 
-# Delete rows by index. Deleting from the highest index down keeps the rest valid.
+# ---- bulk mutation ---------------------------------------------------------------------------
+# Metakit stores each column contiguously, so rewriting a variable-length value or deleting a row
+# shifts everything after it: measured ~2-4 ms per change on 500,000 rows, while APPENDING costs
+# ~3 us per row.  Past about a thousand changes it is therefore faster to rebuild the affected tail
+# of the view: copy it (with the changes applied) into a scratch view, truncate the view, and append
+# the copy back.  The result is identical to making the changes one by one.
+namespace eval ::store {
+    variable rebuildFloor 1000   ;# changes (or separate delete runs) from which rebuilding wins
+}
+
+# Copy rows from..to-1 of `src` onto the end of `dst` (same layout), subviews included.
+# `drop` is a dict of source row indices to leave out; `mods` maps a source row index to a
+# list {prop value ...} of replacement values.
+proc ::store::copyRows {src dst layout from to drop mods} {
+    set props {} ; set subs {}
+    foreach c $layout {
+        if {[lindex $c 1] eq "V"} { lappend subs $c } else { lappend props [lindex $c 0] }
+    }
+    for {set first $from} {$first < $to} {incr first 2000} {
+        set count [expr {min(2000, $to - $first)}]
+        set rows [fetch $src $props $first $count]
+        set i $first
+        foreach vals $rows {
+            if {[dict exists $drop $i]} { incr i ; continue }
+            if {[dict exists $mods $i]} {
+                foreach {p v} [dict get $mods $i] { set k [lsearch -exact $props $p] ; if {$k >= 0} { lset vals $k $v } }
+            }
+            set args {}
+            foreach p $props v $vals { lappend args $p $v }
+            set cur [mk::row append $dst {*}$args]
+            foreach c $subs {
+                lassign $c name t sub
+                set n [mk::view size $src!$i.$name]
+                if {$n > 0} { copyRows $src!$i.$name $cur.$name $sub 0 $n {} {} }
+            }
+            incr i
+        }
+    }
+}
+
+# Rebuild the tail of `path` starting at its first affected row: append the transformed copy of
+# rows lo..n-1 AFTER the existing last row, then remove the old tail in a single ranged delete.
+# One copy, no scratch view, and until that last step the original rows are untouched - if the
+# copy fails the view is cut back to its old size and nothing has changed.
+proc ::store::rebuildRows {path drop mods} {
+    set layout [layout $path]
+    set n [mk::view size $path]
+    set lo $n
+    foreach i [concat [dict keys $drop] [dict keys $mods]] { if {$i < $lo} { set lo $i } }
+    if {$lo >= $n} return
+    if {[catch {
+        copyRows $path $path $layout $lo $n $drop $mods
+    } msg opts]} {
+        catch {mk::view size $path $n}
+        return -options $opts $msg
+    }
+    mk::row delete $path!$lo [expr {$n - $lo}]
+    touchPath $path
+}
+proc ::store::hasVarColumns {layout} {
+    foreach c $layout { if {[lindex $c 1] in {S B V}} { return 1 } }
+    return 0
+}
+
+# Delete rows by index (any order; duplicates ignored).
 proc ::store::deleteRows {path indices} {
-    # Every delete shifts the rest of the view, so consecutive rows go in ONE call (a run of 10,000
-    # rows is a single delete); runs are removed from the end so the indices stay valid.
+    variable rebuildFloor
+    # Consecutive rows go in ONE call (a run of 10,000 rows is a single delete); runs are
+    # removed from the end so the indices stay valid.
     set idx [lsort -integer -unique $indices]
     set runs {}
     set start "" ; set prev ""
@@ -405,9 +470,42 @@ proc ::store::deleteRows {path indices} {
         set start $i ; set prev $i
     }
     if {$start ne ""} { lappend runs [list $start [expr {$prev - $start + 1}]] }
+    if {[llength $runs] >= $rebuildFloor && [hasVarColumns [layout $path]]} {
+        set drop [dict create]
+        foreach i $idx { dict set drop $i 1 }
+        rebuildRows $path $drop {}
+        return
+    }
     foreach r [lreverse $runs] {
         lassign $r first count
         if {$count == 1} { mk::row delete $path!$first } else { mk::row delete $path!$first $count }
+    }
+    touchPath $path
+}
+
+# Apply many cell changes at once.  `changes` maps a row index to {prop value ...}.  `tick`, when
+# given, is called as  {*}$tick n  every 500 changes made one by one (it may raise to cancel).
+proc ::store::updateRows {path changes {tick {}}} {
+    variable rebuildFloor
+    if {![dict size $changes]} return
+    set varWrite 0
+    set layout [layout $path]
+    dict for {i kv} $changes {
+        foreach {p v} $kv {
+            set d [findCol $layout $p]
+            if {$d ne "" && [lindex $d 1] in {S B}} { set varWrite 1 }
+        }
+        if {$varWrite} break
+    }
+    if {$varWrite && [dict size $changes] >= $rebuildFloor} {
+        rebuildRows $path {} $changes
+        return
+    }
+    set n 0
+    foreach i [lsort -integer [dict keys $changes]] {
+        if {$tick ne ""} { if {$n % 500 == 0} { {*}$tick $n } }
+        foreach {p v} [dict get $changes $i] { mk::set $path!$i $p $v }
+        incr n
     }
     touchPath $path
 }

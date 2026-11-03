@@ -1252,6 +1252,8 @@ proc ::mkql::execInsert {st defaultDb} {
     return [msg "($n row[expr {$n == 1 ? {} : {s}}] inserted into $label)" $n]
 }
 
+proc ::mkql::tickWrite {n} { tick $n "written rows" }
+
 proc ::mkql::execUpdate {st defaultDb} {
     variable cancel
     lassign $st _ path sets where
@@ -1279,21 +1281,23 @@ proc ::mkql::execUpdate {st defaultDb} {
             set asts {} ; foreach s $bsets { lappend asts [lindex $s 2] }
             set sp [compileList $asts setvals]
         }
+        set changes [dict create]
         foreach r $rows {
-            tick $n "updated rows"
+            tick $n "evaluated rows"
             set i [lindex $r end]
             # evaluate everything first, then write, so SET a=b, b=a behaves
-            set newvals {}
+            set kv {}
             foreach s $bsets v [$sp $r] {
                 lassign $s col type e
-                lappend newvals [coerce $col $type $v]
+                set v [coerce $col $type $v]
+                # skip writes that change nothing: in Metakit a string write shifts the rest of the column
+                if {[::store::cell $mk $i $col] ne $v} { lappend kv $col $v }
             }
-            # skip writes that change nothing: in Metakit a string write shifts the rest of the column
-            foreach s $bsets v $newvals {
-                if {[::store::cell $mk $i [lindex $s 0]] ne $v} { ::store::setCell $mk $i [lindex $s 0] $v }
-            }
+            if {[llength $kv]} { dict set changes $i $kv }
             incr n
         }
+        # one call: in place for a few rows, a rebuild of the view's tail for thousands (store.tcl)
+        ::store::updateRows $mk $changes ::mkql::tickWrite
     } msg opts]
     genEnd
     if {$err} { return -options $opts $msg }

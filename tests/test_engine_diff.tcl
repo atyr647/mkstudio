@@ -4,7 +4,8 @@
 # limits) run through the optimised executor (pushdown, compiled expressions, streaming
 # aggregates, top-k) and through the ORIGINAL row-at-a-time executor kept in
 # tests/mkql_reference.tcl.  Results must be identical: columns, types, rows, row ids, flags -
-# or both must raise an error.  UPDATE and DELETE are checked against the reference too.
+# or both must raise an error (strict equivalence: a fast path is only used when it can be proved
+# not to hide an error; which offending row is reported may differ).  UPDATE and DELETE are checked against the reference too.
 #
 #   MKS_FUZZ   number of random queries per data set (default 1500)
 #   MKS_SEED   random seed (default 1)
@@ -25,6 +26,18 @@ proc check {name ok {detail ""}} {
 proc pick {l} { lindex $l [expr {int(rand() * [llength $l])}] }
 proc chance {p} { expr {rand() < $p} }
 
+proc firstDiff {got want} {
+    set n [expr {max([llength $got], [llength $want])}]
+    for {set i 0} {$i < $n} {incr i} {
+        if {[lindex $got $i] ne [lindex $want $i]} { return "  first difference at row $i:\n    got  [string range [lindex $got $i] 0 300]\n    want [string range [lindex $want $i] 0 300]" }
+    }
+    return ""
+}
+proc snapshot {tag size} {
+    set out {}
+    for {set k 0} {$k < [store::size $tag.t]} {incr k} { lappend out [store::captureRow $tag.t $k] }
+    return $out
+}
 proc lmap_col {rows} { set o {} ; foreach r $rows { lappend o [lindex $r 0] } ; return $o }
 
 # ---- data ---------------------------------------------------------------------------------------
@@ -35,10 +48,10 @@ proc build {path n} {
     global cvocab bvocab avocab
     file delete $path
     set t [store::openFile $path -create]
-    store::createView $t t {{id I {}} {a I {}} {b D {}} {c S {}} {l L {}} {e S {}} {s V {{x S {}}}}}
+    store::createView $t t {{id I {}} {a I {}} {b D {}} {c S {}} {l L {}} {e S {}} {f F {}} {bin B {}} {s V {{x S {}}}}}
     for {set i 0} {$i < $n} {incr i} {
-        set r [store::appendRow $t.t {id a b c l e} [list $i [pick $::avocab] [pick $::bvocab] [pick $::cvocab] \
-            [pick {0 5000000000 -3 7 7 100}] [expr {[chance 0.7] ? "" : "e$i"}]]]
+        set r [store::appendRow $t.t {id a b c l e f bin} [list $i [pick $::avocab] [pick $::bvocab] [pick $::cvocab] \
+            [pick {0 5000000000 -3 7 7 100}] [expr {[chance 0.7] ? "" : "e$i"}] [pick {0.5 1.25 -3.5 100}] [binary format c3 [list [expr {int(rand()*256)}] 0 [expr {int(rand()*256)}]]]]]
         for {set k 0} {$k < int(rand() * 4)} {incr k} { store::appendRow $t.t!$r.s {x} [list s$k] }
     }
     return $t
@@ -179,15 +192,6 @@ proc compareQuery {sql db} {
     # (which row raises first may differ once rows are skipped or fetched in another order, so only
     # "both fail" is required, not the same message)
     if {$a && $b} { incr errBoth ; incr ::pass ; return }
-    if {$b && !$a} {
-        # Pushdown narrows the rows before the full WHERE runs, so a row that could only have raised an
-        # error is never looked at.  Accept that, but only if switching pushdown off gives the reference's error.
-        set ::mkql::pushdown 0 ; set ::mkql::shortcuts 0
-        set stmt [lindex [mkql::parseScript $sql] 0 0]
-        set again [catch {mkql::execStatement $stmt $db} rc]
-        set ::mkql::pushdown 1 ; set ::mkql::shortcuts 1
-        if {$again} { incr ::suppressed ; incr ::pass ; return }
-    }
     if {$a != $b} { check "error-mismatch: $sql" 0 "  fast ([expr {$a ? {error} : {ok}}]): [string range $ra 0 200]\n   ref ([expr {$b ? {error} : {ok}}]): [string range $rb 0 200]" ; return }
     set x [normalise $ra] ; set y [normalise $rb]
     check "result: $sql" [expr {$x eq $y}] "  fast: [string range $x 0 300]\n   ref: [string range $y 0 300]"
@@ -206,36 +210,61 @@ foreach {size} {0 1 40 300 1200} {
     }
     puts "  size $size: [expr {$pass - $before}] queries identical"
 
-    # --- DELETE / UPDATE against the reference's idea of "matching rows" ---
-    for {set i 0} {$i < 25 && $size > 0} {incr i} {
-        set w [pred [expr {[chance 0.3] ? 2 : 0}]]
-        if {[chance 0.5]} { set w "[pred 0] AND [pred 0]" }
-        set sel "SELECT _rowid FROM t WHERE $w"
-        lassign [runBoth $sel $tag] a ra b rb
-        if {$a || $b} { continue }
-        set ids [lsort -integer [lmap_col [dict get $rb rows]]]
-        # DELETE
-        set all {} ; for {set k 0} {$k < [store::size $tag.t]} {incr k} { lappend all [store::cell $tag.t $k id] }
-        set want {}
-        set idset [dict create] ; foreach k $ids { dict set idset $k 1 }
-        for {set k 0} {$k < [llength $all]} {incr k} { if {![dict exists $idset $k]} { lappend want [lindex $all $k] } }
-        if {[catch {mkql::run "DELETE FROM t WHERE $w" $tag} err]} { check "delete ran: $w" 0 $err ; store::rollback $tag ; continue }
-        set got {} ; for {set k 0} {$k < [store::size $tag.t]} {incr k} { lappend got [store::cell $tag.t $k id] }
-        check "delete: $w" [expr {$got eq $want}] "  got [llength $got] rows, want [llength $want]"
-        store::rollback $tag
-        # UPDATE
-        set oldA {} ; for {set k 0} {$k < [store::size $tag.t]} {incr k} { lappend oldA [store::cell $tag.t $k a] }
-        if {[catch {mkql::run "UPDATE t SET a = a + 100 WHERE $w" $tag} err]} { check "update ran: $w" 0 $err ; store::rollback $tag ; continue }
-        set wantA {} ; set k 0
-        foreach v $oldA { lappend wantA [expr {[dict exists $idset $k] ? $v + 100 : $v}] ; incr k }
-        set gotA {} ; for {set k 0} {$k < [store::size $tag.t]} {incr k} { lappend gotA [store::cell $tag.t $k a] }
-        check "update: $w" [expr {$gotA eq $wantA}] ""
-        store::rollback $tag
+    # --- DELETE / UPDATE: the table afterwards must equal an independent model, byte for byte ---
+    # (every column type incl. bytes, floats and subview rows), through the in-place path AND through the
+    # rebuild path that store.tcl uses for bulk changes (forced here by lowering its threshold).
+    set rows0 {} ; for {set k 0} {$k < [store::size $tag.t]} {incr k} { lappend rows0 [store::captureRow $tag.t $k] }
+    foreach floor {1000 1} {
+        set ::store::rebuildFloor $floor
+        for {set i 0} {$i < 20 && $size > 0} {incr i} {
+            set w [pred [expr {[chance 0.3] ? 2 : 0}]]
+            if {[chance 0.5]} { set w "[pred 0] AND [pred 0]" }
+            lassign [runBoth "SELECT _rowid FROM t WHERE $w" $tag] a ra b rb
+            if {$a || $b} { continue }
+            set idset [dict create] ; foreach k [lmap_col [dict get $rb rows]] { dict set idset $k 1 }
+            # DELETE
+            set want {} ; set k 0
+            foreach r $rows0 { if {![dict exists $idset $k]} { lappend want $r } ; incr k }
+            if {[catch {mkql::run "DELETE FROM t WHERE $w" $tag} err]} { check "delete ran: $w" 0 $err ; store::rollback $tag ; continue }
+            set snap [snapshot $tag $size]
+            check "delete (floor $floor): $w" [expr {$snap eq $want}] "  [llength $snap] rows, want [llength $want]\n[firstDiff $snap $want]"
+            store::rollback $tag
+            # UPDATE of a number, a string and a float column
+            set want {} ; set k 0
+            foreach r $rows0 {
+                if {[dict exists $idset $k]} {
+                    set v [dict get $r vals]
+                    dict set v a [expr {[dict get $v a] + 100}]
+                    dict set v e "[dict get $v c]!"
+                    dict set r vals $v
+                }
+                lappend want $r ; incr k
+            }
+            if {[catch {mkql::run "UPDATE t SET a = a + 100, e = c || '!' WHERE $w" $tag} err]} { check "update ran: $w" 0 $err ; store::rollback $tag ; continue }
+            set snap [snapshot $tag $size]
+            check "update (floor $floor): $w" [expr {$snap eq $want}] [firstDiff $snap $want]
+            store::rollback $tag
+        }
+    }
+    set ::store::rebuildFloor 1000
+    # several bulk changes in ONE transaction: in place vs rebuilt must end in the same table
+    for {set i 0} {$i < 15 && $size > 0} {incr i} {
+        set stmts [list "DELETE FROM t WHERE [pred 0]" "UPDATE t SET e = c || '#', a = a * 2 WHERE [pred 0]" \
+            "DELETE FROM t WHERE [pred 0] AND [pred 0]" "UPDATE t SET e = 'zz' WHERE [pred 0]"]
+        set res {}
+        foreach floor {1000 1} {
+            set ::store::rebuildFloor $floor
+            set failed 0
+            foreach st $stmts { if {[catch {mkql::run $st $tag}]} { set failed 1 ; break } }
+            lappend res [expr {$failed ? "error" : [snapshot $tag $size]}]
+            store::rollback $tag
+        }
+        set ::store::rebuildFloor 1000
+        check "chain of bulk changes: [join $stmts {; }]" [expr {[lindex $res 0] eq [lindex $res 1]}] "  in-place and rebuilt tables differ"
     }
     store::closeFile $tag
 }
 
-puts "  $suppressed queries succeeded where the reference raised an error on a row the fast path never needed (pushdown / top-k)"
 puts "  $errBoth of the queries raised an error in both executors"
 puts "$pass passed, $fail failed"
 exit [expr {$fail ? 1 : 0}]
