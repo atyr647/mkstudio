@@ -83,6 +83,24 @@ if {[file exists /proc/self/stat]} {
     file delete $db.lock
 }
 # a live process of ANOTHER user is alive even though it cannot be signalled
+# a liveness probe that fails for another reason than "no such process" must not make a live owner look dead
+if {$::tcl_platform(platform) ne "windows"} {
+    rename exec real_exec
+    proc exec {args} { global fakeExec ; if {[lindex $args 0] eq "kill"} { error $fakeExec } ; return [uplevel 1 [list real_exec {*}$args]] }
+    set fakeExec "couldn't execute \"kill\": resource temporarily unavailable"
+    check probe_cannot_run_counts_as_alive [store::killProbe 12345] 1
+    set fakeExec "couldn't fork child process: not enough memory"
+    check probe_fork_failure_counts_as_alive [store::killProbe 12345] 1
+    set fakeExec "kill: 12345: No such process"
+    check probe_no_such_process_is_dead [store::killProbe 12345] 0
+    set fakeExec "kill: (12345) - No such process"
+    check probe_busybox_wording_is_dead [store::killProbe 12345] 0
+    set fakeExec "kill: 1: Operation not permitted"
+    check probe_not_permitted_is_alive [store::killProbe 1] 1
+    rename exec {} ; rename real_exec exec
+    check probe_real_dead_pid [store::killProbe 2000000000] 0
+    check probe_real_live_pid [store::killProbe [pid]] 1
+}
 if {$::tcl_platform(platform) ne "windows"} { check other_users_process_is_alive [store::pidAlive 1] 1 }       ;# (init: owned by root, not ours to signal)
 
 # a competitor deletes the stale lock between our failed create and our look at the file: we must RETRY and

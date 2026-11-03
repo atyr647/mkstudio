@@ -16,6 +16,8 @@ set emptyStale [expr {[info exists ::env(MKS_LOCK_EMPTY_STALE)] ? $::env(MKS_LOC
 set slowMs [expr {int($emptyStale * 500)}]
 while {![file exists $stop]} {
     set t0 [clock milliseconds]
+    set ::path {}
+    set ::store::lockHook {apply {{name} { lappend ::path $name }}}
     if {[catch {store::openFile $db} tag]} {
         if {[clock milliseconds] - $t0 > $slowMs} { logline "SLOW [pid] [expr {[clock milliseconds] - $t0}]" }
         after [expr {1 + int(rand() * 8)}] ; continue
@@ -27,11 +29,11 @@ while {![file exists $stop]} {
     # marker from one is overwritten by the next owner, which is not a violation.)
     set marker $db.inside
     set h [open $marker w] ; puts -nonewline $h [pid] ; close $h
-    logline "WIN [pid]"
+    logline "WIN [pid] path=[join $::path ,] ms=[expr {[clock milliseconds] - $t0}]"
     after [expr {2 + int(rand() * 25)}]
     set seen ""
     catch {set h [open $marker r] ; set seen [string trim [read $h]] ; close $h}
-    if {$seen ne [pid]} { logline "VIOLATION [pid] found $seen inside with it" }
+    if {$seen ne [pid]} { logline "VIOLATION [pid] found $seen inside with it (my acquisition: [join $::path ,])" }
     file delete $marker
     store::closeFile $tag
 }

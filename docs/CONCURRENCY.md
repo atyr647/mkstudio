@@ -100,7 +100,16 @@ and when it wakes up both believe they own the database. `tests/test_lock_crash.
 stalled at exactly those points: limit shortened to 1 s -> overlap; the real limits -> no overlap). The chaos test runs with the
 limits shortened to 1 s, so on a very slow runner it can see this; processes whose acquisition took more than half the shortened
 limit are reported as SLOW and overlaps they take part in are counted as excused, not failed (set `MKS_CHAOS_STRICT=1` to see
-them all). Raising the real limits makes the window rarer, never zero; closing it needs a lock the operating system itself
+them all). **A second cause, found later and not fully explained.** On macOS-Intel the chaos test reported overlaps twice (CI runs 41666721839-era and
+41704209676) - the second time with *no* process slow enough to excuse it, so the starvation reading above cannot be the whole
+story. What was found by reading the code: on systems without /proc `store::pidAlive` asked `kill -0` and counted every failure
+as "dead", including a `kill` that could not even be started (fork failed, out of resources). A live owner could then lose its
+lock to a second process. Now only "no such process" counts as dead (`store::killProbe`; the same for a Windows `tasklist` that
+cannot run) and the probe is unit-tested with simulated failures. Whether that was the cause of the macOS overlaps is **not
+established**: the chaos processes now log the path each acquisition took (created, written / mutex, checked, deleted ...), so the
+next overlap shows which route it came by. Treat the lock as best-effort mutual exclusion on macOS until that is settled.
+
+Raising the real limits makes the window rarer, never zero; closing it needs a lock the operating system itself
 releases when the process dies (`flock`/`LockFileEx`), which Tcl cannot do from a plain file channel.
 
 A crashed owner leaves its lock behind until the next opener finds it stale (same host) - there is no timeout for

@@ -91,7 +91,8 @@ proc ::store::pidAlive {pid} {
     if {![string is integer -strict $pid] || $pid <= 0} { return 0 }
     if {$pid == [pid]} { return 1 }
     if {$::tcl_platform(platform) eq "windows"} {
-        if {[catch {exec tasklist /FI "PID eq $pid" /NH /FO CSV} out]} { return 0 }
+        # (tasklist that cannot run is not evidence that the process is gone: never take a lock away on a guess)
+        if {[catch {exec tasklist /FI "PID eq $pid" /NH /FO CSV} out]} { return 1 }
         return [expr {[string first "\"$pid\"" $out] >= 0}]
     }
     if {[file isdirectory /proc/self]} {
@@ -99,16 +100,22 @@ proc ::store::pidAlive {pid} {
         # a zombie (killed, but its parent has not collected it yet) still has a /proc entry - it is not running
         return [expr {[procState $pid] ni {Z X x}}]
     }
-    # elsewhere: kill -0 fails both for "no such process" and for "not yours to signal" - the latter is alive
-    if {[catch {exec kill -0 $pid} msg]} {
-        return [expr {[string match -nocase "*permitted*" $msg] || [string match -nocase "*EPERM*" $msg]}]
-    }
+    # elsewhere: ask kill.  Only "no such process" means dead.  "Not permitted" (not ours to signal) is alive, and so is an
+    # answer that is no answer - kill could not even be started (fork failed, out of resources on a loaded machine).  The
+    # earlier version counted every failure as "dead": a live owner could then lose its lock to a second process.
+    if {![killProbe $pid]} { return 0 }
     # it can be signalled - but a killed process nobody has collected yet (a zombie) is not running
     if {[catch {exec ps -o stat= -p $pid} st]} {
         # ps could not tell (the process may have just been collected): ask kill again
-        return [expr {![catch {exec kill -0 $pid}]}]
+        return [killProbe $pid]
     }
     return [expr {![string match Z* [string trim $st]]}]
+}
+# 1 = alive or unknown, 0 = kill says there is no such process
+proc ::store::killProbe {pid} {
+    if {![catch {exec kill -0 $pid} msg]} { return 1 }
+    if {[string match -nocase "*No such process*" $msg] || [string match -nocase "*ESRCH*" $msg]} { return 0 }
+    return 1
 }
 proc ::store::thisHost {} { if {[catch {info hostname} h]} { return unknown } ; return $h }
 
