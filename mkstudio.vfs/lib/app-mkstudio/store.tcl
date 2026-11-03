@@ -148,10 +148,12 @@ proc ::store::procStartTime {pid} {
     }
     set value ""
     if {$::tcl_platform(platform) eq "windows"} {
-        set ps [winTool powershell]
-        if {$ps ne "" && ![catch {exec $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "\$p=Get-Process -Id $pid -ErrorAction Stop; ([DateTimeOffset]\$p.StartTime).ToUnixTimeSeconds()" 2>@1} out]} {
-            if {[string is integer -strict [string trim $out]]} { set value [string trim $out] }
-        }
+        set tmpf [file join [expr {[info exists ::env(TEMP)] ? $::env(TEMP) : {C:/Windows/Temp}}] mks-start-[pid]-$pid.tmp]
+        file delete -force $tmpf
+        set q '[string map {' ''} [file nativename $tmpf]]'
+        lassign [psRun "\$p=Get-Process -Id $pid -ErrorAction Stop; Set-Content -LiteralPath $q -Value ((\[DateTimeOffset\]\$p.StartTime).ToUnixTimeSeconds())"] ran ok out
+        if {$ok && ![catch {set h [open $tmpf r] ; set out [string trim [read $h]] ; close $h}] && [string is integer -strict $out]} { set value $out }
+        file delete -force $tmpf
     } else {
         if {![catch {exec ps -o etime= -p $pid} out]} {
             # [[dd-]hh:]mm:ss
@@ -546,30 +548,54 @@ proc ::store::syncDisk {args} {
     return 1
 }
 namespace eval ::store { variable psOk -1 }
+# base64 of a byte string (pure Tcl: no 8.6-only `binary encode`)
+proc ::store::base64 {bytes} {
+    set tbl ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/
+    set out "" ; set n [string length $bytes]
+    for {set i 0} {$i < $n} {incr i 3} {
+        binary scan [string range $bytes $i [expr {$i + 2}]] c* v
+        set a [expr {[lindex $v 0] & 255}] ; set b [expr {[llength $v] > 1 ? [lindex $v 1] & 255 : 0}] ; set c [expr {[llength $v] > 2 ? [lindex $v 2] & 255 : 0}]
+        set x [expr {($a << 16) | ($b << 8) | $c}]
+        append out [string index $tbl [expr {($x >> 18) & 63}]] [string index $tbl [expr {($x >> 12) & 63}]]
+        append out [expr {[llength $v] > 1 ? [string index $tbl [expr {($x >> 6) & 63}]] : "="}] [expr {[llength $v] > 2 ? [string index $tbl [expr {$x & 63}]] : "="}]
+    }
+    return $out
+}
+# The argument list that runs a PowerShell script on Windows, or {} when PowerShell is not there.
+#   * NOT straight from this program: a Windows GUI program (the tclkit) has no console, Tcl starts console programs without
+#     one for such a program, and PowerShell then does nothing at all - exit status 0, no output, no effect (measured on real
+#     Windows runners, both with the 2014 and the current runtime).  That made the first version of the disk flush a no-op.
+#     cmd.exe makes itself a console and PowerShell, started by it, runs.
+#   * the script travels as -EncodedCommand (UTF-16 in base64): no quoting rules, no code page, any file name intact.
+# PowerShell's output cannot be read back that way (there is no console to capture); a script that must report something writes
+# a file.  The exit status does come back (a script error is a non-zero status).
+proc ::store::psCommand {script} {
+    set ps [winTool powershell] ; set cmd [winTool cmd]
+    if {$ps eq "" || $cmd eq ""} { return {} }
+    return [list $cmd /c [file nativename $ps] -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand [base64 [encoding convertto unicode $script]]]
+}
+# {ran ok output}: ran = 0 when PowerShell could not even be started; ok = 1 when the script finished without an error
+proc ::store::psRun {script} {
+    set argv [psCommand $script]
+    if {![llength $argv]} { return [list 0 0 "PowerShell was not found"] }
+    set rc [catch {exec {*}$argv 2>@1} out opts]
+    if {$rc && [lindex [dict get $opts -errorcode] 0] ne "CHILDSTATUS"} { return [list 0 0 $out] }
+    return [list 1 [expr {!$rc}] $out]
+}
 proc ::store::syncWindows {args} {
     variable psOk
     if {$psOk == 0} { return 0 }
     set files {}
     foreach p $args { if {[file isfile $p]} { lappend files [file nativename $p] } }
     if {![llength $files]} { return 1 }
-    # The names go into the command text as single-quoted PowerShell strings (a quote inside a name is doubled): the command
-    # line reaches PowerShell as Unicode.  They used to travel in an environment variable, which does not carry an accented
-    # letter ("C:\Users\Jos\u00e9\data.mk") intact - the flush then silently did nothing for such a database.
+    # The names are single-quoted PowerShell strings inside the script (a quote in a name is doubled).
     set quoted {}
     foreach f $files { lappend quoted '[string map {' ''} $f]' }
     set script "foreach(\$f in @([join $quoted ,])){ \$s=\[IO.File\]::Open(\$f,'Open','ReadWrite','ReadWrite'); try{ \$s.Flush(\$true) } finally{ \$s.Dispose() } }"
-    set ok 0 ; set started 0
-    foreach exe [list [winTool powershell]] {
-        if {$exe eq ""} continue
-        if {[catch {exec $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $script 2>@1} out opts]} {
-            # "couldn't execute": no such program (try the next, and remember if neither exists); a program that ran and
-            # failed (a file another program keeps locked) only fails THIS flush
-            if {[lindex [dict get $opts -errorcode] 0] eq "CHILDSTATUS"} { set started 1 }
-            continue
-        }
-        set ok 1 ; set started 1 ; break
-    }
-    if {!$started} { set psOk 0 } else { set psOk 1 }
+    lassign [psRun $script] ran ok out
+    # not started at all (no PowerShell / no cmd): never try again.  Started and failed (a file another program keeps locked):
+    # only THIS flush failed.
+    set psOk $ran
     return $ok
 }
 # What a commit can fall back to: the file as it is now.  Three situations:
@@ -611,7 +637,7 @@ proc ::store::endCommit {path} {
         if {$neutral} { syncDisk $rec }
     }
     set gone [expr {![catch {file delete $rec}] && ![file exists $rec]}]
-    if {$gone} { syncDisk $path } elseif {!$neutral} {
+    if {!$gone && !$neutral} {
         # the data IS saved, but the record still describes the state before it and would undo it the next time the file is
         # opened for writing.  Say so rather than let a later open quietly take the data back.
         error "The changes were saved, but the leftover file\n$rec\ncould not be removed or updated (another program may be holding it). Close that program and delete the file, or the next open will undo this save."

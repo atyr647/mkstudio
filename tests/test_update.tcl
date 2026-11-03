@@ -219,7 +219,7 @@ if {!$haveTool} { puts "  (no curl/wget/PowerShell here: download tests skipped)
         set old "$app/mkstudio (1)$ext"
         # (not `file copy`: a running tclkit has itself mounted as a directory, `file copy` would copy its virtual contents)
         if {$::tcl_platform(platform) eq "windows"} {
-            exec powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Copy-Item -LiteralPath [::update::psq [file nativename [info nameofexecutable]]] -Destination [::update::psq [file nativename $old]] -Force"
+            exec {*}[::update::psCommand "Copy-Item -LiteralPath [::update::psq [file nativename [info nameofexecutable]]] -Destination [::update::psq [file nativename $old]] -Force"]
             ok real_copy_landed_under_the_accented_name [file exists $old] $old
         } else { exec cp [info nameofexecutable] $old ; exec chmod 755 $old }
         set h [open $app/hold.tcl w] ; puts $h "after 90000 exit\nvwait forever" ; close $h
@@ -312,6 +312,15 @@ ok helper_puts_the_old_one_back [string match "*Move-Item -LiteralPath \$old -De
 ok helper_starts_the_new_one_on_request [string match "*Start-Process -FilePath \$exe*" $hc]
 ok helper_never_uses_the_shell_or_env [expr {![string match "*cmd*" $hc] && ![string match "*env:*" $hc]}]
 check psq_doubles_quotes [::update::psq "a'b"] "'a''b'"
+# base64 (the transport for PowerShell scripts): known answers
+foreach {in want} {"" "" a YQ== ab YWI= abc YWJj abcd YWJjZA== "Hello, World!" SGVsbG8sIFdvcmxkIQ==} {
+    check "base64_[string length $in]_$in" [::update::base64 $in] $want
+}
+# a PowerShell script is sent UTF-16 in base64 - an accented name needs no quoting at all
+set enc [::update::base64 [encoding convertto unicode "'café'"]]
+check psc_encoding_of_an_accented_name $enc YwBhAGYA6QA=
+ok psc_encoding_is_plain_ascii [regexp {^[A-Za-z0-9+/=]+$} $enc]
+if {$::tcl_platform(platform) ne "windows"} { check psc_none_off_windows [::update::psCommand "x"] {} }
 # the system's own copy of a Windows tool, never one found next to the program or in the current folder
 if {$::tcl_platform(platform) ne "windows"} { check wintool_unused_on_unix [::update::winTool curl] "" }
 if {$::tcl_platform(platform) eq "windows"} {

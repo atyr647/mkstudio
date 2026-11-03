@@ -29,6 +29,21 @@ if {$::tcl_platform(platform) eq "windows"} {
     # CI sets MKS_EXPECT_FLUSH on a runner that has PowerShell: there the flush must really have happened
     if {[info exists ::env(MKS_EXPECT_FLUSH)]} { check sync_windows_flushed $r 1 }
     set t0 [clock milliseconds] ; store::syncDisk $f ; puts "  one flush takes [expr {[clock milliseconds] - $t0}] ms"
+    # PowerShell started straight from a Windows GUI program does nothing at all (exit status 0, no effect) - the first version of
+    # this flush was a no-op for that reason and every check above still passed.  So: prove that a script really RUNS.
+    set pm [tmp dur_ps_ran.txt] ; file delete -force $pm
+    lassign [store::psRun "Set-Content -LiteralPath '[string map {' ''} [file nativename $pm]]' -Value ran"] ran ok out
+    check powershell_started $ran 1
+    check powershell_finished_ok $ok 1
+    ok powershell_really_executed_the_script [file exists $pm] "no marker file: PowerShell did not run"
+    file delete -force $pm
+    lassign [store::psRun "exit 3"] ran ok out ; check powershell_exit_status_comes_back $ok 0
+    lassign [store::psRun "throw 'boom'"] ran ok out ; check powershell_script_error_is_a_failure $ok 0
+    set st [store::procStartTime [pid]]
+    ok windows_process_start_time_is_found [expr {$st ne "" && abs([clock seconds] - $st) < 36000}] "got <$st>"
+    # the flush itself: a file held open by another handle is flushed, a file that does not exist is not an error
+    set t0 [clock milliseconds] ; lassign [store::psRun "Start-Sleep -Milliseconds 1"] a b c
+    puts "  PowerShell round trip: [expr {[clock milliseconds] - $t0}] ms"
     # a file that is open in another program (Metakit holds the database open) can still be flushed
     set hh [open $f r+b]
     check sync_windows_while_open [store::syncDisk $f] $r

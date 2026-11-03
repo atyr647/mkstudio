@@ -75,6 +75,28 @@ proc ::update::winTool {name} {
     }
     return ""
 }
+# The argument list that runs a PowerShell script on Windows ({} when it cannot).  NOT straight from this program: a Windows GUI
+# program has no console, Tcl starts console programs without one for it, and PowerShell then does nothing at all (exit status
+# 0, no output, no effect - measured on real runners).  cmd.exe makes itself a console and the PowerShell it starts runs.  The
+# script travels as -EncodedCommand (UTF-16 in base64): no quoting, no code page, any file name intact.  Output cannot be read
+# back (no console to capture); a script that must report writes a file.  (Same as ::store::psCommand: this file stands alone.)
+proc ::update::base64 {bytes} {
+    set tbl ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/
+    set out "" ; set n [string length $bytes]
+    for {set i 0} {$i < $n} {incr i 3} {
+        binary scan [string range $bytes $i [expr {$i + 2}]] c* v
+        set a [expr {[lindex $v 0] & 255}] ; set b [expr {[llength $v] > 1 ? [lindex $v 1] & 255 : 0}] ; set c [expr {[llength $v] > 2 ? [lindex $v 2] & 255 : 0}]
+        set x [expr {($a << 16) | ($b << 8) | $c}]
+        append out [string index $tbl [expr {($x >> 18) & 63}]] [string index $tbl [expr {($x >> 12) & 63}]]
+        append out [expr {[llength $v] > 1 ? [string index $tbl [expr {($x >> 6) & 63}]] : "="}] [expr {[llength $v] > 2 ? [string index $tbl [expr {$x & 63}]] : "="}]
+    }
+    return $out
+}
+proc ::update::psCommand {script} {
+    set ps [winTool powershell] ; set cmd [winTool cmd]
+    if {$ps eq "" || $cmd eq ""} { return {} }
+    return [list $cmd /c [file nativename $ps] -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -EncodedCommand [base64 [encoding convertto unicode $script]]]
+}
 # which transfer program will be used ("" = none)
 proc ::update::transport {} {
     foreach t {curl wget} { if {[tool $t] ne ""} { return $t } }
@@ -100,11 +122,10 @@ proc ::update::download {url file {timeoutMs 180000}} {
             set cmd [list [tool wget] -q -T 60 -U [userAgent] -O $file.part $url]
         }
         powershell {
-            # (everything goes in the command text, single-quoted: an environment variable does not carry non-ASCII intact)
+            # (everything is in the script, single-quoted; PowerShell is started the way psCommand says)
             set q {' ''}
             set script "\[Net.ServicePointManager\]::SecurityProtocol=\[Net.SecurityProtocolType\]::Tls12; \$ProgressPreference='SilentlyContinue'; Invoke-WebRequest -UseBasicParsing -Uri '[string map $q $url]' -OutFile '[string map $q [file nativename $file.part]]' -UserAgent '[string map $q [userAgent]]'"
-            set exe [tool powershell]
-            set cmd [list $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $script]
+            set cmd [psCommand $script]
         }
     }
     lassign [run $cmd $timeoutMs] ok out
@@ -456,9 +477,9 @@ proc ::update::helperCommand {exe} {
         "}"] " "]
 }
 proc ::update::stageWindows {exe new} {
-    set ps [winTool powershell]
-    if {$ps eq ""} { error "PowerShell was not found, which is needed to start the update helper" }
-    if {[catch {exec $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command [helperCommand $exe] > NUL 2> NUL &} err]} {
+    set argv [psCommand [helperCommand $exe]]
+    if {![llength $argv]} { error "PowerShell was not found, which is needed to start the update helper" }
+    if {[catch {exec {*}$argv > NUL 2> NUL &} err]} {
         error "the update helper could not be started: [string range $err 0 200]"
     }
     return $exe.new
