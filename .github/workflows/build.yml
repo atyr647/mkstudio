@@ -158,13 +158,18 @@ jobs:
           # (2) a repository checkout (not a release tarball) needs kitsh's generated files
           bash build/pre.sh
 
-          # Metakit is old C++: ask the compiler for a language level it accepts
+          # Metakit is old C++ and kitsh uses K&R-style C parameter lists.  autoconf 2.72
+          # adds -std=gnu23 (where those are errors), and the later -std wins, so pin C99.
           export CXXFLAGS="-std=c++11 -Wno-register -Wno-deprecated -w"
-          export CFLAGS="-w"
+          export CFLAGS="-w -std=gnu99"
           if ! ./kitcreator ${TCL_VERSION}; then
             echo "::error::KitCreator failed"
-            for p in zlib tcl tclvfs tk itcl mk4tcl kitsh; do
-              [ -f "$p/build.log" ] && { echo "::group::$p/build.log (last 70 lines)"; tail -70 "$p/build.log"; echo "::endgroup::"; }
+            # Tk tries macosx, unix, win, ... in turn, so the LAST error is a Windows one; show the FIRST
+            echo "::group::tk/build.log - first errors"
+            grep -n -m6 -i -B3 -A6 'error\|No such file\|not found' tk/build.log | head -90 || true
+            echo "::endgroup::"
+            for p in zlib kitsh; do
+              [ -f "$p/build.log" ] && { echo "::group::$p/build.log (last 40 lines)"; tail -40 "$p/build.log"; echo "::endgroup::"; }
             done
             exit 1
           fi
