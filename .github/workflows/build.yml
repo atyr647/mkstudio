@@ -132,7 +132,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: kitcreator/tclkit-${{ env.TCL_VERSION }}
-          key: tclkit-${{ matrix.os }}-${{ env.TCL_VERSION }}-v1
+          key: tclkit-${{ matrix.os }}-${{ env.TCL_VERSION }}-aqua-v2
 
       - name: Build a current tclkit (Tcl/Tk + Metakit) with KitCreator
         if: steps.cache.outputs.cache-hit != 'true'
@@ -162,7 +162,9 @@ jobs:
           # adds -std=gnu23 (where those are errors), and the later -std wins, so pin C99.
           export CXXFLAGS="-std=c++11 -Wno-register -Wno-deprecated -w"
           export CFLAGS="-w -std=gnu99"
-          if ! ./kitcreator ${TCL_VERSION}; then
+          # Tk builds the X11 flavour unless told otherwise (no X11 headers on Apple silicon runners,
+          # and an X server would be needed to run it anyway): ask for the native Aqua Tk.
+          if ! ./kitcreator ${TCL_VERSION} --enable-aqua=yes; then
             echo "::error::KitCreator failed"
             # Tk tries macosx, unix, win, ... in turn, so the LAST error is a Windows one; show the FIRST
             echo "::group::tk/build.log - first errors"
