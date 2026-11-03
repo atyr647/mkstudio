@@ -1,38 +1,48 @@
-# Diagnostic (Windows): how does a non-ASCII character reach PowerShell from this Tcl?  Run through tests/run.tcl.
-# Prints, never fails.  Tells which transport (command text, environment variable, stdin script file) is intact.
+# Diagnostic (Windows): does PowerShell started from this (GUI-subsystem) Tcl run at all, and how does a non-ASCII character
+# reach it?  Everything PowerShell finds out is written to a file with an ASCII name and read back here, because a GUI program
+# has no console to capture.  Prints, never fails.      tclkit tests/run.tcl tests/diag_win_unicode.tcl
 set here [file dirname [file normalize [info script]]]
 source $here/util.tcl
-puts "Tcl [info patchlevel]  encoding system: [encoding system]  platform: $::tcl_platform(platform)"
-set ps [expr {[file isfile $::env(SystemRoot)/System32/WindowsPowerShell/v1.0/powershell.exe] ? "$::env(SystemRoot)/System32/WindowsPowerShell/v1.0/powershell.exe" : "powershell"}]
-set e "café"
-# 1. in the command text
-set rc [catch {exec $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "\[int\]\[char\]'é'" 2>@1} out]
-puts "command text : rc=$rc out=[string trim $out]   (233 = intact)"
-set rc [catch {exec $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "'$e'.Length; (\[int\[\]\]\[char\[\]\]'$e') -join ','" 2>@1} out]
-puts "command text, word : rc=$rc out=[string map {\n { | }} [string trim $out]]   (4 | 99,97,102,233)"
-# 2. in an environment variable
-set ::env(MKS_DIAG) $e
-set rc [catch {exec $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command {(\[int[]\]\[char[]\]$env:MKS_DIAG) -join ','} 2>@1} out]
-puts "env variable : rc=$rc out=[string trim $out]"
-set rc [catch {exec $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command {($env:MKS_DIAG.ToCharArray() | ForEach-Object { [int]$_ }) -join ','} 2>@1} out]
-puts "env variable, loop : rc=$rc out=[string trim $out]"
-# 3. a script file (UTF-8 with BOM) given with -File
-set d [tmp "diag café (1)"] ; file delete -force $d ; file mkdir $d
-puts "Tcl made the folder: [file isdirectory $d]   names in temp: [llength [glob -nocomplain -directory [tmpdir] {diag caf*}]]"
-set h [open $d/s.ps1 wb] ; puts -nonewline $h "\xef\xbb\xbf" ; puts -nonewline $h [encoding convertto utf-8 "(\[int\[\]\]\[char\[\]\]'$e') -join ','"] ; close $h
-set rc [catch {exec $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $d/s.ps1 2>@1} out]
-puts "-File (UTF-8 BOM): rc=$rc out=[string trim $out]"
-# 4. does PowerShell see the folder Tcl made?  and does Tcl see what PowerShell makes?
-set q "'[string map {' ''} [file nativename $d]]'"
-set rc [catch {exec $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Test-Path -LiteralPath $q" 2>@1} out]
-puts "PowerShell sees Tcl's folder (path in command text): rc=$rc out=[string trim $out]"
-set rc [catch {exec $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "New-Item -ItemType File -Force -Path ($q + '\\made.txt') | Out-Null" 2>@1} out]
-puts "PowerShell made a file there: rc=$rc out=[string trim $out]   Tcl sees it: [file exists $d/made.txt]   folder lists: [glob -nocomplain -tails -directory $d *]"
-set rc [catch {exec $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "Get-ChildItem -LiteralPath [string map {' ''} \"'[file nativename [tmpdir]]'\"] | ForEach-Object { \$_.Name } " 2>@1} out]
-puts "temp folder as PowerShell lists it: [string map {\n { | }} [string trim [string range $out 0 600]]]"
-# 5. Tcl-side: is the name really U+00E9 on disk? (a wide-API build lists it back with the same code point)
-foreach n [glob -nocomplain -tails -directory [tmpdir] {diag caf*}] { set codes {} ; foreach c [split $n {}] { lappend codes [scan $c %c] } ; puts "Tcl lists: [join $codes ,]" }
-file delete -force $d
+puts "Tcl [info patchlevel]  encoding system: [encoding system]"
+set ps $::env(SystemRoot)/System32/WindowsPowerShell/v1.0/powershell.exe
+puts "powershell.exe exists: [file isfile $ps]"
+set work [tmp mks_diag] ; file delete -force $work ; file mkdir $work
+set wn [file nativename $work]
+proc psrun {label script} {
+    global ps
+    set rc [catch {exec $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $script 2>@1} out opts]
+    puts "$label: rc=$rc errorcode=[expr {$rc ? [dict get $opts -errorcode] : {-}}] captured=[string map {\n { | }} [string trim [string range $out 0 200]]]"
+}
+proc readf {f} { if {![file exists $f]} { return "(no file)" } ; set h [open $f rb] ; set d [read $h] ; close $h ; return [string map {\r {} \n { | }} [string trim $d]] }
+# 1. does it run at all?
+psrun "run check" "Set-Content -LiteralPath '$wn\\ran.txt' -Value 'ran'"
+puts "  ran.txt: [readf $work/ran.txt]"
+# 2. what does a character in the command text arrive as?
+psrun "command text" "(\[int\[\]\]\[char\[\]\]'café') -join ',' | Set-Content -LiteralPath '$wn\\cmdtext.txt'"
+puts "  cmdtext.txt: [readf $work/cmdtext.txt]   (99,97,102,233 = intact)"
+# 3. in an environment variable
+set ::env(MKS_DIAG) "café"
+psrun "env variable" "(\$env:MKS_DIAG.ToCharArray() | ForEach-Object { \[int\]\$_ }) -join ',' | Set-Content -LiteralPath '$wn\\env.txt'"
+puts "  env.txt: [readf $work/env.txt]"
 unset ::env(MKS_DIAG)
+# 4. a folder with an accented name made by Tcl: does PowerShell see it, and can it put a file there?
+set d $work/upd\ real\ (1)\ café ; file mkdir $d
+set dn [file nativename $d]
+psrun "folder seen" "Test-Path -LiteralPath '$dn' | Set-Content -LiteralPath '$wn\\seen.txt'"
+puts "  seen.txt: [readf $work/seen.txt]"
+psrun "file made there" "Set-Content -LiteralPath '$dn\\made.txt' -Value 'x'"
+puts "  Tcl sees made.txt: [file exists $d/made.txt]   Tcl lists the folder: [glob -nocomplain -tails -directory $d *]"
+psrun "copy a file there" "Copy-Item -LiteralPath '$wn\\ran.txt' -Destination '$dn\\copy (1).txt' -Force"
+puts "  Tcl sees 'copy (1).txt': [file exists "$d/copy (1).txt"]   folder now: [glob -nocomplain -tails -directory $d *]"
+# 5. what PowerShell lists in our work folder, as code points
+psrun "listing" "Get-ChildItem -LiteralPath '$wn' -Directory | ForEach-Object { (\[int\[\]\]\[char\[\]\]\$_.Name) -join ',' } | Set-Content -LiteralPath '$wn\\listing.txt'"
+puts "  PowerShell's name for the folder: [readf $work/listing.txt]"
+set codes {} ; foreach n [glob -nocomplain -tails -directory $work -types d *] { foreach c [split $n {}] { lappend codes [scan $c %c] } ; lappend codes | }
+puts "  Tcl's name for the folder       : [join $codes ,]"
+# 6. the same through a pipe opened by Tcl (what ::update::run uses)
+set ch [open |[list $ps -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "'piped'" 2>@1] rb]
+set got [read $ch] ; catch {close $ch}
+puts "open | pipe captured: [string trim $got]"
+file delete -force $work
 puts "0 passed, 0 failed"
 exit 0
