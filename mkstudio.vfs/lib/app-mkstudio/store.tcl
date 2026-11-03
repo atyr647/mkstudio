@@ -104,8 +104,11 @@ proc ::store::pidAlive {pid} {
         return [expr {[string match -nocase "*permitted*" $msg] || [string match -nocase "*EPERM*" $msg]}]
     }
     # it can be signalled - but a killed process nobody has collected yet (a zombie) is not running
-    if {![catch {exec ps -o stat= -p $pid} st] && [string match Z* [string trim $st]]} { return 0 }
-    return 1
+    if {[catch {exec ps -o stat= -p $pid} st]} {
+        # ps could not tell (the process may have just been collected): ask kill again
+        return [expr {![catch {exec kill -0 $pid}]}]
+    }
+    return [expr {![string match Z* [string trim $st]]}]
 }
 proc ::store::thisHost {} { if {[catch {info hostname} h]} { return unknown } ; return $h }
 

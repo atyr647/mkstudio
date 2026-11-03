@@ -83,7 +83,7 @@ if {[file exists /proc/self/stat]} {
     file delete $db.lock
 }
 # a live process of ANOTHER user is alive even though it cannot be signalled
-check other_users_process_is_alive [store::pidAlive 1] 1
+if {$::tcl_platform(platform) ne "windows"} { check other_users_process_is_alive [store::pidAlive 1] 1 }       ;# (init: owned by root, not ours to signal)
 
 # a competitor deletes the stale lock between our failed create and our look at the file: we must RETRY and
 # take the lock (this once made a process carry on "unlocked", i.e. two owners)
