@@ -211,6 +211,13 @@ jobs:
           dist/mkstudio-linux-x86_64 --selftest "$RUNNER_TEMP/st.txt"
           cat "$RUNNER_TEMP/st.txt"; grep -q "^ok $v mk4tcl yes" "$RUNNER_TEMP/st.txt"
 
+      - name: Live update check - the real GitHub release feed, real download, real checksum, real starpack
+        run: |
+          for try in 1 2 3; do
+            REAL_MK=1 tools/ext/tclkit-8.6.16-linux-x86_64 tests/run.tcl tests/test_update_live.tcl && break
+            [ $try = 3 ] && exit 1; echo "(attempt $try failed; the network may be busy - trying again)"; sleep 20
+          done
+
       - uses: actions/upload-artifact@v4
         with:
           name: starpacks
@@ -266,6 +273,19 @@ jobs:
           ./dist/mkstudio-windows-x86_64.exe --selftest "$(cygpath -w "$RUNNER_TEMP/st.txt")"
           for i in $(seq 1 30); do [ -s "$RUNNER_TEMP/st.txt" ] && break; sleep 1; done
           cat "$RUNNER_TEMP/st.txt"; grep -q "^ok $v mk4tcl yes" "$RUNNER_TEMP/st.txt"
+
+      - name: Live update check - the real GitHub release feed, real download, real checksum, real starpack
+        timeout-minutes: 12
+        run: |
+          log="$RUNNER_TEMP/live.log"
+          for try in 1 2 3; do
+            rm -f "$log"
+            MKS_TEST_TIMEOUT=300 MKS_TEST_LOG="$(cygpath -w "$log")" timeout 360 "$KIT" tests/run.tcl tests/test_update_live.tcl || true
+            tail -1 "$log" 2>/dev/null | grep -q ' 0 failed' && break
+            echo "(attempt $try failed)"; cat "$log" 2>/dev/null; sleep 20
+          done
+          cat "$log"
+          tail -1 "$log" | grep -q ' 0 failed'
 
       - name: Launch the Windows starpack
         timeout-minutes: 5
@@ -399,6 +419,14 @@ jobs:
 
       - name: Real self-update - the real starpack replaces a running program
         run: MKS_TEST_STARPACK="$PWD/$OUT" "$KIT" tests/run.tcl tests/test_update.tcl
+
+      - name: Live update check - the real GitHub release feed, real download, real checksum, real starpack
+        timeout-minutes: 12
+        run: |
+          for try in 1 2 3; do
+            perl -e 'alarm 360; exec @ARGV' "$KIT" tests/run.tcl tests/test_update_live.tcl && break
+            [ $try = 3 ] && exit 1; echo "(attempt $try failed)"; sleep 20
+          done
 
       - name: Build and test the .app and .dmg
         timeout-minutes: 10
