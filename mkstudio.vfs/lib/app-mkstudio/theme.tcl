@@ -19,7 +19,8 @@ namespace eval ::theme {
         warn #e2b04a    bad #f06b6b       stripe #1b1f26    headBg #20242d
         gutter #4d5565  curline #1d222c   kw #7aa8ff        str #e6b36b
         num #9ed6a4     fn #c79bff        type #5fd0c0      op #93a0b5
-        comment #667186 errbg #4a2226
+        comment #667186 errbg #4a2226  badHover #f48686
+        find #4d4220    findCur #9a7a1c
     }
     set palettes(light) {
         bg #eceef2      panel #f5f6f9     surface #ffffff   editor #ffffff
@@ -29,7 +30,8 @@ namespace eval ::theme {
         warn #a86f00    bad #c93a3a       stripe #f6f8fb    headBg #eef0f5
         gutter #a3abbb  curline #f1f5fd   kw #1f5fd1        str #b0561a
         num #1b7f3b     fn #7a3fc9        type #0d7f77      op #5d6677
-        comment #8a93a3 errbg #fbdcdc
+        comment #8a93a3 errbg #fbdcdc  badHover #b02f2f
+        find #fdf0c2    findCur #f5c84c
     }
 }
 
@@ -129,6 +131,12 @@ proc ::theme::styles {} {
     ttk::style configure Section.TLabel -background $c(panel) -foreground $c(dim) -font MkSmall
     ttk::style configure Status.TLabel -background $c(accentDim) -foreground $c(fg) -font MkSmall
     ttk::style configure StatusDim.TLabel -background $c(accentDim) -foreground $c(dim) -font MkSmall
+    ttk::style configure Error.TLabel -background $c(surface) -foreground $c(bad)
+    ttk::style configure Raised.TLabel -background $c(raised) -foreground $c(fg)
+    ttk::style configure RaisedDim.TLabel -background $c(raised) -foreground $c(dim) -font MkSmall
+    ttk::style configure ToolRaised.TButton -background $c(raised) -foreground $c(fg) -padding {6 2} \
+        -borderwidth 0 -focusthickness 0
+    ttk::style map ToolRaised.TButton -background [list pressed $c(border) active $c(hover)]
     ttk::style configure Link.TLabel -background $c(surface) -foreground $c(accent)
 
     # buttons ----------------------------------------------------------------
@@ -156,19 +164,17 @@ proc ::theme::styles {} {
         -borderwidth 0 -focusthickness 0 -font MkUIBold
     ttk::style map Run.TButton -background [list pressed $c(border) active $c(hover) disabled $c(bg)] \
         -foreground [list disabled $c(faint)]
+    ttk::style configure Danger.TButton -background $c(bad) -foreground #ffffff -padding {14 6} \
+        -borderwidth 0 -focusthickness 0 -font MkUIBold
+    ttk::style map Danger.TButton -background [list pressed $c(bad) active $c(badHover)]
     ttk::style configure Link.TButton -background $c(surface) -foreground $c(accent) -padding {2 2} \
         -borderwidth 0 -focusthickness 0 -anchor w
     ttk::style map Link.TButton -background [list active $c(surface)] -foreground [list active $c(kw)]
-    ttk::style configure Menubar.TMenubutton -background $c(bg) -foreground $c(fg) -padding {10 5} \
-        -borderwidth 0 -arrowsize 0 -focusthickness 0
-    ttk::style layout Menubar.TMenubutton {
-        Menubutton.border -sticky nswe -children {
-            Menubutton.padding -sticky nswe -children { Menubutton.label -sticky nswe }
-        }
-    }
-    ttk::style map Menubar.TMenubutton -background [list active $c(hover) pressed $c(hover)]
 
     # checks, entries ----------------------------------------------------------
+    ttk::style configure Surface.TCheckbutton -background $c(surface) -foreground $c(fg) \
+        -indicatorbackground $c(editor) -indicatorforeground $c(accent) -focusthickness 0
+    ttk::style map Surface.TCheckbutton -background [list active $c(surface)]
     ttk::style configure TCheckbutton -background $c(bg) -indicatorbackground $c(editor) \
         -indicatorforeground $c(accent) -focusthickness 0
     ttk::style configure TEntry -fieldbackground $c(editor) -foreground $c(fg) -bordercolor $c(border) \

@@ -18,6 +18,8 @@ namespace eval ::explorer {
     variable opts
     variable w ""
     variable counter 0
+    variable filter ""
+    variable filterAfter ""
 }
 
 proc ::explorer::create {win args} {
@@ -30,6 +32,13 @@ proc ::explorer::create {win args} {
     ttk::frame $w.head -style Panel.TFrame -padding {14 10 8 6}
     ttk::label $w.head.l -text "OBJECT EXPLORER" -style Section.TLabel
     pack $w.head.l -side left
+    ttk::frame $w.search -style Panel.TFrame -padding {10 0 10 8}
+    ttk::entry $w.search.e -textvariable ::explorer::filter
+    pack $w.search.e -fill x
+    ::ui::placeholder $w.search.e ::explorer::filter "Filter views"
+    bind $w.search.e <KeyRelease> {::explorer::filterChanged}
+    bind $w.search.e <Escape> {set ::explorer::filter "" ; ::explorer::filterChanged}
+    ::tip::attach $w.search.e "Show only views whose name contains this text  (Esc clears)"
 
     ttk::treeview $w.t -style Panel.Treeview -columns {detail} -show tree -selectmode browse \
         -yscrollcommand [list $w.v set]
@@ -37,8 +46,10 @@ proc ::explorer::create {win args} {
     $w.t column #0 -stretch 1 -minwidth 120
     $w.t column detail -stretch 0 -width 92 -anchor e
     pack $w.head -side top -fill x
+    pack $w.search -side top -fill x
     pack $w.v -side right -fill y
     pack $w.t -side left -fill both -expand 1
+    ::ui::hoverTree $w.t
     ::theme::reg $w.t {::explorer::recolor %w}
 
     bind $w.t <<TreeviewOpen>>   [list ::explorer::onOpen]
@@ -130,6 +141,26 @@ proc ::explorer::expandDb {tag} {
     }
 }
 
+proc ::explorer::matchingViews {tag} {
+    variable filter
+    set out {}
+    foreach v [::store::views $tag] {
+        if {$filter eq "" || [string first [string tolower $filter] [string tolower $v]] >= 0} { lappend out $v }
+    }
+    return $out
+}
+proc ::explorer::filterChanged {} {
+    variable filterAfter
+    if {$filterAfter ne ""} { after cancel $filterAfter }
+    set filterAfter [after 120 ::explorer::applyFilter]
+}
+proc ::explorer::applyFilter {} {
+    variable filter ; variable filterAfter
+    set filterAfter ""
+    refresh
+    if {$filter ne ""} { foreach t [::store::tags] { expandDb $t } }
+}
+
 proc ::explorer::collapseAll {} {
     variable w
     foreach item [$w.t children {}] {
@@ -147,12 +178,14 @@ proc ::explorer::populate {item} {
     switch -- [dict get $m kind] {
         db {
             set tag [dict get $m tag]
-            addNode $item "Views" folder [llength [::store::views $tag]] \
+            set n [llength [::store::views $tag]]
+            set k [llength [matchingViews $tag]]
+            addNode $item "Views" folder [expr {$k == $n ? $n : "$k of $n"}] \
                 [dict create kind views tag $tag key views:$tag] 1
         }
         views {
             set tag [dict get $m tag]
-            foreach v [::store::views $tag] {
+            foreach v [matchingViews $tag] {
                 set path $tag.$v
                 addNode $item $v table [::store::size $path] \
                     [dict create kind view tag $tag name $v path $path key view:$path] 1
@@ -270,7 +303,7 @@ proc ::explorer::onMenu {x y X Y} {
         }
         default { destroy $mn ; return }
     }
-    tk_popup $mn $X $Y
+    ::menus::post $mn $X $Y
 }
 
 # ---- data for the Properties pane --------------------------------------------------------

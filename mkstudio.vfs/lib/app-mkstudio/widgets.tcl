@@ -59,18 +59,23 @@ proc ::ui::center {w {parent .}} {
     wm geometry $w +[expr {max($x,0)}]+[expr {max($y,0)}]
 }
 
-# Build a modal dialog skeleton.  Returns the body frame; buttons go into $w.bar.
+# Build a modal dialog skeleton:  $w.head (title), $w.body (content), $w.bar (buttons).
 proc ::ui::modal {title} {
     variable seq
     set w .dlg[incr seq]
-    toplevel $w -background $::theme::c(surface)
+    toplevel $w -background $::theme::c(surface) -highlightthickness 1 \
+        -highlightbackground $::theme::c(border) -highlightcolor $::theme::c(border)
     wm title $w $title
     wm transient $w .
     wm resizable $w 0 0
-    ttk::frame $w.body -style Surface.TFrame -padding {22 20 22 8}
-    ttk::frame $w.bar -style Raised.TFrame -padding {16 12}
-    pack $w.body -fill both -expand 1
-    pack $w.bar -fill x
+    ttk::label $w.head -text $title -style Title.TLabel -padding {24 20 24 0}
+    ttk::frame $w.body -style Surface.TFrame -padding {24 12 24 20}
+    ttk::frame $w.line -style Line.TFrame -height 1
+    ttk::frame $w.bar -style Panel.TFrame -padding {16 12}
+    pack $w.head -side top -fill x
+    pack $w.bar -side bottom -fill x
+    pack $w.line -side bottom -fill x
+    pack $w.body -side top -fill both -expand 1
     return $w
 }
 
@@ -89,90 +94,129 @@ proc ::ui::run {w {focus ""}} {
     return $::ui::result
 }
 
-# ask "Title" "Message" {Yes No Cancel}  ->  the label clicked ("" if closed).
-# The first button is the default (accent) button.
+# Destructive verbs get the red button style.
+proc ::ui::buttonStyle {label primary} {
+    if {!$primary} { return TButton }
+    if {$label in {Delete Drop Discard "Roll Back" "Don't Save"}} { return Danger.TButton }
+    return Accent.TButton
+}
+
+# ask "Title" "Message" {Primary Other Cancel} ?icon?  ->  the label clicked ("" if closed).
+# Buttons are laid out left to right as given; the first is the default.
 proc ::ui::ask {title message {buttons {OK}} {icon ""}} {
     set w [modal $title]
     if {$icon ne ""} {
-        ttk::label $w.body.i -image [::icons::get $icon] -style Surface.TLabel
-        pack $w.body.i -side left -anchor n -padx {0 16}
+        ttk::label $w.body.i -image [::icons::big $icon] -style Surface.TLabel
+        grid $w.body.i -row 0 -column 0 -sticky n -padx {0 18}
     }
-    ttk::label $w.body.m -text $message -style Surface.TLabel -wraplength 420 -justify left
-    pack $w.body.m -side left -fill both -expand 1
+    ttk::label $w.body.m -text $message -style Surface.TLabel -wraplength 400 -justify left
+    grid $w.body.m -row 0 -column 1 -sticky nw
     set first ""
     set i 0
-    foreach b [lreverse $buttons] {
-        set style [expr {$i == [expr {[llength $buttons]-1}] ? "Accent.TButton" : "TButton"}]
-        ttk::button $w.bar.b$i -text $b -style $style -command [list set ::ui::result $b]
-        pack $w.bar.b$i -side right -padx {8 0}
-        if {$style eq "Accent.TButton"} { set first $w.bar.b$i }
+    foreach b $buttons {
+        set btn $w.bar.b$i
+        ttk::button $btn -text $b -width 10 -style [buttonStyle $b [expr {$i == 0}]] \
+            -command [list set ::ui::result $b]
+        if {$i == 0} { set first $btn }
         incr i
     }
+    # right-align the row of buttons, preserving their order
+    for {set j [expr {$i - 1}]} {$j >= 0} {incr j -1} { pack $w.bar.b$j -side right -padx {8 0} }
     bind $w <Return> [list set ::ui::result [lindex $buttons 0]]
     return [run $w $first]
 }
-proc ::ui::inform {title message} { ask $title $message OK help }
-proc ::ui::problem {message {title "MK Studio"}} { ask $title $message OK stop }
+proc ::ui::inform {title message} { ask $title $message OK info }
+proc ::ui::problem {message {title "Something went wrong"}} { ask $title $message OK error }
 
-# form "Title" {{key "Label" entry default} {key "Label" combo default {values}} {key "Label" check 0}} ?okText?
-# Returns a dict of values, or "" when cancelled.  A trailing validator
-# script (optional) is called with the dict and returns "" or an error message.
+# form "Title" {{key "Label" entry default} {key "Label" combo default {values}} {key "Label" check 0}} ?okText? ?validate? ?intro?
+# Returns {ok dict} or "" when cancelled (use ::ui::formResult to unwrap).  The
+# validator is called with the dict and returns "" or a message shown in the dialog.
 proc ::ui::form {title fields {okText OK} {validate ""} {intro ""}} {
     variable result
     set w [modal $title]
     set row 0
     if {$intro ne ""} {
         ttk::label $w.body.intro -text $intro -style SurfaceDim.TLabel -wraplength 380 -justify left
-        grid $w.body.intro -row $row -column 0 -columnspan 2 -sticky w -pady {0 12}
+        grid $w.body.intro -row $row -column 0 -columnspan 2 -sticky w -pady {0 14}
         incr row
     }
     set first ""
     array unset ::ui::F
     foreach f $fields {
         lassign $f key label kind default values
-        ttk::label $w.body.l$key -text $label -style Surface.TLabel
-        grid $w.body.l$key -row $row -column 0 -sticky w -padx {0 14} -pady 5
         set ::ui::F($key) $default
-        switch -- $kind {
-            combo {
-                ttk::combobox $w.body.e$key -textvariable ::ui::F($key) -values $values -state readonly -width 28
+        if {$kind eq "check"} {
+            ttk::checkbutton $w.body.e$key -variable ::ui::F($key) -text $label -style Surface.TCheckbutton
+            grid $w.body.e$key -row $row -column 0 -columnspan 2 -sticky w -pady {8 4}
+        } else {
+            ttk::label $w.body.l$key -text $label -style Surface.TLabel
+            grid $w.body.l$key -row $row -column 0 -sticky w -padx {0 16} -pady 6
+            if {$kind eq "combo"} {
+                ttk::combobox $w.body.e$key -textvariable ::ui::F($key) -values $values -state readonly -width 30
+            } else {
+                ttk::entry $w.body.e$key -textvariable ::ui::F($key) -width 32
             }
-            check {
-                ttk::checkbutton $w.body.e$key -variable ::ui::F($key) -text ""
-            }
-            default {
-                ttk::entry $w.body.e$key -textvariable ::ui::F($key) -width 30
-            }
+            grid $w.body.e$key -row $row -column 1 -sticky we -pady 6
         }
-        grid $w.body.e$key -row $row -column 1 -sticky we -pady 5
         if {$first eq ""} { set first $w.body.e$key }
         incr row
     }
-    ttk::label $w.body.err -text "" -foreground $::theme::c(bad) -style Surface.TLabel -wraplength 380
-    grid $w.body.err -row $row -column 0 -columnspan 2 -sticky w -pady {6 0}
+    ttk::label $w.body.err -text "" -style Error.TLabel -wraplength 380
+    grid $w.body.err -row $row -column 0 -columnspan 2 -sticky w -pady {8 0}
     grid columnconfigure $w.body 1 -weight 1
 
     set ok [list ::ui::formOk $w $fields $validate]
-    ttk::button $w.bar.ok -text $okText -style Accent.TButton -command $ok
-    ttk::button $w.bar.cancel -text Cancel -command {set ::ui::result ""}
-    pack $w.bar.ok $w.bar.cancel -side right -padx {8 0}
-    pack configure $w.bar.cancel -side right
+    ttk::button $w.bar.ok -text $okText -width 10 -style Accent.TButton -command $ok
+    ttk::button $w.bar.cancel -text Cancel -width 10 -command {set ::ui::result ""}
+    pack $w.bar.cancel -side right -padx {8 0}
+    pack $w.bar.ok -side right
     bind $w <Return> $ok
-    set r [run $w $first]
-    if {$r eq ""} { return "" }
-    return $r
+    if {[winfo class $first] eq "TEntry"} { $first selection range 0 end ; $first icursor end }
+    return [run $w $first]
 }
 proc ::ui::formOk {w fields validate} {
     set d {}
     foreach f $fields { dict set d [lindex $f 0] [string trim $::ui::F([lindex $f 0])] }
     if {$validate ne ""} {
         set msg [{*}$validate $d]
-        if {$msg ne ""} { $w.body.err configure -text $msg ; return }
+        if {$msg ne ""} { $w.body.err configure -text "✖  $msg" ; return }
     }
     set ::ui::result [list ok $d]
 }
 # unwrap the {ok dict} produced by form
 proc ::ui::formResult {r} { if {$r eq ""} { return "" } ; return [lindex $r 1] }
+
+# ---- row hover for treeviews ------------------------------------------------------
+# The "hover" tag must be the FIRST tag configured on the tree (in Tk 8.6 the
+# earliest-configured tag wins when several set the same option).
+proc ::ui::hoverTree {t} {
+    $t tag configure hover -background $::theme::c(hover)
+    ::theme::reg $t {%w tag configure hover -background $::theme::c(hover)}
+    bind $t <Motion> {+::ui::hoverMove %W %x %y}
+    bind $t <Leave>  {+::ui::hoverMove %W -1 -1}
+}
+proc ::ui::hoverMove {t x y} {
+    variable hov
+    set item [expr {$x < 0 ? "" : [$t identify item $x $y]}]
+    if {[info exists hov($t)] && $hov($t) eq $item} return
+    if {[info exists hov($t)] && $hov($t) ne "" && [$t exists $hov($t)]} { $t tag remove hover $hov($t) }
+    set hov($t) $item
+    if {$item ne ""} { $t tag add hover $item }
+}
+
+# ---- placeholder text for entries and comboboxes ------------------------------------
+proc ::ui::placeholder {e var text} {
+    set l $e.ph
+    label $l -text $text -font MkUI -borderwidth 0 -padx 0 -pady 0 -cursor xterm
+    ::theme::reg $l {%w configure -background $::theme::c(editor) -foreground $::theme::c(faint)}
+    bind $l <Button-1> [list focus $e]
+    trace add variable $var write [list ::ui::placeholderSync $e $var]
+    placeholderSync $e $var
+}
+proc ::ui::placeholderSync {e var args} {
+    if {![winfo exists $e.ph]} return
+    if {[set $var] eq ""} { place $e.ph -x 8 -rely 0.5 -anchor w } else { place forget $e.ph }
+}
 
 # ============================================================================
 #  Tab strip
@@ -230,8 +274,8 @@ proc ::tabs::add {w id title {icon ""}} {
         label $t.x -image [::icons::get closex] -borderwidth 0 -padx 4
         pack $t.x -side left -padx {0 6}
         bind $t.x <Button-1> [list ::tabs::close $w $id]
-        bind $t.x <Enter> [list $t.x configure -image [::icons::get closexh]]
-        bind $t.x <Leave> [list $t.x configure -image [::icons::get closex]]
+        bind $t.x <Enter> "[list ::tabs::hover $w $id] ; [list $t.x configure -image [::icons::get closexh]]"
+        bind $t.x <Leave> [list ::tabs::hover $w ""]
     } else {
         pack $t.l -padx {0 12}
     }
@@ -292,7 +336,6 @@ proc ::tabs::title {w id} { variable S ; return $S($w,title,$id) }
 
 proc ::tabs::paint {w} {
     variable S
-    set c(bg) $::theme::c(bg)
     set bg [expr {[opt $w -bg] eq "bg" ? $::theme::c(bg) : $::theme::c(panel)}]
     $w configure -background $bg
     $w.line configure -background $::theme::c(border)
@@ -312,7 +355,10 @@ proc ::tabs::paint {w} {
         $t.bar configure -background $bar
         $t.i configure -background $tb
         $t.l configure -background $tb -foreground $fg
-        if {[winfo exists $t.x]} { $t.x configure -background $tb }
+        if {[winfo exists $t.x]} {
+            $t.x configure -background $tb \
+                -image [::icons::get [expr {$sel || $id eq $S($w,hover) ? "closex" : "blank"}]]
+        }
     }
     raise $w.line
 }
@@ -326,5 +372,5 @@ proc ::tabs::listMenu {w x y} {
     foreach id $S($w,ids) {
         $m add command -label $S($w,title,$id) -command [list ::tabs::select $w $id 1]
     }
-    tk_popup $m $x $y
+    ::menus::post $m $x $y
 }

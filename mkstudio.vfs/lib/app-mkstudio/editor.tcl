@@ -54,7 +54,10 @@ proc ::editor::create {w args} {
     bind $t <Control-MouseWheel> [list ::editor::zoomWheel $w %D]
     bind $t <Control-Button-4>   "[list ::editor::zoom $w 1] ; break"
     bind $t <Control-Button-5>   "[list ::editor::zoom $w -1] ; break"
-    bind $t <Escape>        [list ::editor::closePopup $w]
+    bind $t <Escape>        [list ::editor::escape $w]
+    bind $t <Control-f>     "[list ::editor::findOpen $w] ; break"
+    bind $t <F3>            "[list ::editor::findStep $w 1] ; break"
+    bind $t <Shift-F3>      "[list ::editor::findStep $w -1] ; break"
     bind $t <FocusOut>      [list ::editor::closePopup $w]
     bind $w <Destroy>       [list ::editor::forget $w]
     $t edit modified 0
@@ -99,11 +102,16 @@ proc ::editor::recolor {t} {
     $t tag configure type -foreground $::theme::c(type)
     $t tag configure op -foreground $::theme::c(op)
     $t tag configure comment -foreground $::theme::c(comment)
+    $t tag configure found -background $::theme::c(find)
+    $t tag configure foundcur -background $::theme::c(findCur) -foreground $::theme::c(fg)
     $t tag configure err -underline 1 -foreground $::theme::c(bad) -background $::theme::c(errbg)
     $t tag lower curline
     $t tag raise sel
+    # text tags sit above the current-line band; match highlights above text; selection on top
     foreach tg {kw str num fn type op comment err} { $t tag raise $tg curline }
-    $t tag raise sel err
+    $t tag raise found
+    $t tag raise foundcur
+    $t tag raise sel
 }
 
 # ---- scrolling / gutter -----------------------------------------------------------
@@ -141,6 +149,7 @@ proc ::editor::modified {w} {
     set E($w,hl) [after 50 [list ::editor::highlight $w]]
     cursorMoved $w
     if {$E($w,popup) ne ""} { after idle [list ::editor::complete $w 1] }
+    if {[findShown $w]} { after idle [list ::editor::findMark $w] }
     if {$E($w,-modcmd) ne ""} { uplevel #0 $E($w,-modcmd) }
 }
 
@@ -335,7 +344,7 @@ proc ::editor::menu {w X Y} {
     $m add separator
     $m add command -label "Select All" -accelerator Ctrl+A -command [list $t tag add sel 1.0 end-1c]
     $m add command -label "Toggle Comment" -accelerator Ctrl+/ -command [list ::editor::toggleComment $w]
-    tk_popup $m $X $Y
+    ::menus::post $m $X $Y
 }
 
 # ---- completion ---------------------------------------------------------------------------
@@ -408,4 +417,120 @@ proc ::editor::closePopup {w} {
     bind $t <Down> {} ; bind $t <Up> {}
     bind $t <Return> "[list ::editor::newline $w] ; break"
     bind $t <Tab>    "[list ::editor::indent $w 1] ; break"
+}
+
+# ---- find bar ---------------------------------------------------------------------------
+proc ::editor::escape {w} {
+    variable E
+    if {$E($w,popup) ne ""} { closePopup $w ; return }
+    if {[findShown $w]} { findClose $w }
+}
+
+proc ::editor::findOpen {w} {
+    variable E
+    set fb $w.find
+    if {![winfo exists $fb]} {
+        set E($w,find) ""
+        ttk::frame $fb -style Raised.TFrame -padding {8 6}
+        ttk::entry $fb.e -width 26 -textvariable ::editor::E($w,find)
+        ttk::label $fb.n -text "" -style RaisedDim.TLabel -width 12 -anchor center
+        ttk::button $fb.prev -text "↑" -width 2 -style ToolRaised.TButton -command [list ::editor::findStep $w -1]
+        ttk::button $fb.next -text "↓" -width 2 -style ToolRaised.TButton -command [list ::editor::findStep $w 1]
+        ttk::button $fb.x -image [::icons::get closex] -style ToolRaised.TButton -command [list ::editor::findClose $w]
+        pack $fb.e -side left
+        pack $fb.n -side left -padx 6
+        pack $fb.prev $fb.next $fb.x -side left
+        ::ui::placeholder $fb.e ::editor::E($w,find) "Find"
+        ::tip::attach $fb.prev "Previous match  (Shift+Enter / Shift+F3)"
+        ::tip::attach $fb.next "Next match  (Enter / F3)"
+        bind $fb.e <KeyRelease> [list ::editor::findLive $w %K]
+        bind $fb.e <Return> [list ::editor::findStep $w 1]
+        bind $fb.e <Shift-Return> [list ::editor::findStep $w -1]
+        bind $fb.e <Escape> [list ::editor::findClose $w]
+    }
+    # seed with the selection when it is a short single line
+    set t $w.t
+    if {[llength [$t tag ranges sel]]} {
+        set s [$t get sel.first sel.last]
+        if {[string length $s] < 80 && [string first \n $s] < 0} { set E($w,find) $s }
+    }
+    set E($w,findOn) 1
+    place $fb -in $t -relx 1.0 -x -18 -y 6 -anchor ne
+    raise $fb
+    focus $fb.e
+    $fb.e selection range 0 end
+    findMark $w
+}
+
+proc ::editor::findLive {w key} {
+    if {$key in {Return KP_Enter Escape Shift_L Shift_R Up Down Left Right}} return
+    findMark $w
+    findStep $w 0
+}
+
+# highlight every match; returns the list of start indices
+proc ::editor::findMark {w} {
+    variable E
+    set t $w.t
+    $t tag remove found 1.0 end
+    $t tag remove foundcur 1.0 end
+    set pat $E($w,find)
+    set E($w,hits) {} ; set E($w,lens) {}
+    if {$pat eq ""} { $w.find.n configure -text "" ; return }
+    set lens {}
+    set hits [$t search -all -nocase -exact -count lens -- $pat 1.0 end-1c]
+    foreach h $hits n $lens { $t tag add found $h "$h + ${n}c" }
+    set E($w,hits) $hits ; set E($w,lens) $lens
+    # keep the current match (the one at the cursor) and its position
+    set k [lsearch -exact $hits [$t index insert]]
+    if {$k >= 0} {
+        $t tag add foundcur [lindex $hits $k] "[lindex $hits $k] + [lindex $lens $k]c"
+        $w.find.n configure -text "[expr {$k + 1}] of [llength $hits]"
+    } else {
+        $w.find.n configure -text [expr {[llength $hits] ? "[llength $hits] found" : "No results"}]
+    }
+}
+
+# dir 1/-1 moves to the next/previous match; 0 picks the first match from the cursor
+proc ::editor::findStep {w dir} {
+    variable E
+    if {![findShown $w]} { findOpen $w ; return }
+    set t $w.t
+    if {![info exists E($w,hits)]} { findMark $w }
+    set hits $E($w,hits)
+    if {![llength $hits]} return
+    set cur [$t index insert]
+    set k -1
+    if {$dir >= 0} {
+        set from [expr {$dir == 0 ? $cur : [$t index "$cur + 1c"]}]
+        if {$dir == 0 && [llength [$t tag ranges foundcur]]} { set from [lindex [$t tag ranges foundcur] 0] }
+        set i 0
+        foreach h $hits { if {[$t compare $h >= $from]} { set k $i ; break } ; incr i }
+        if {$k < 0} { set k 0 }
+    } else {
+        set i 0
+        foreach h $hits { if {[$t compare $h < $cur]} { set k $i } ; incr i }
+        if {$k < 0} { set k [expr {[llength $hits] - 1}] }
+    }
+    set h [lindex $hits $k] ; set n [lindex $E($w,lens) $k]
+    $t tag remove foundcur 1.0 end
+    $t tag add foundcur $h "$h + ${n}c"
+    $t mark set insert $h
+    $t see $h
+    cursorMoved $w
+    $w.find.n configure -text "[expr {$k + 1}] of [llength $hits]"
+}
+
+proc ::editor::findShown {w} {
+    variable E
+    expr {[info exists E($w,findOn)] && $E($w,findOn)}
+}
+proc ::editor::findClose {w} {
+    variable E
+    set E($w,findOn) 0
+    set t $w.t
+    $t tag remove found 1.0 end
+    $t tag remove foundcur 1.0 end
+    place forget $w.find
+    focus $t
 }

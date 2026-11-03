@@ -16,7 +16,7 @@ namespace eval ::qdoc {
 proc ::qdoc::create {id f {db ""} {text ""}} {
     variable Q
     set Q($id,db) $db ; set Q($id,running) 0 ; set Q($id,pages) {} ; set Q($id,page) ""
-    set Q($id,file) "" ; set Q($id,nres) 0 ; set Q($id,resultsShown) 1
+    set Q($id,file) "" ; set Q($id,nres) 0 ; set Q($id,resultsShown) 1 ; set Q($id,summary) ""
     ttk::frame $f -style Surface.TFrame
     ttk::panedwindow $f.pw -orient vertical
     pack $f.pw -fill both -expand 1
@@ -32,7 +32,8 @@ proc ::qdoc::create {id f {db ""} {text ""}} {
         -select [list ::qdoc::showPage $id]
     ttk::frame $f.res.body -style Surface.TFrame
     ttk::frame $f.res.info -style Panel.TFrame -padding {12 4}
-    ttk::label $f.res.info.l -text "Ready" -style PanelDim.TLabel
+    ttk::label $f.res.info.l -text "  Press F5 to run the query, or select part of it first" -style PanelDim.TLabel \
+        -image [::icons::get blank] -compound left
     ttk::label $f.res.info.r -text "" -style PanelDim.TLabel
     pack $f.res.info.l -side left
     pack $f.res.info.r -side right
@@ -123,19 +124,24 @@ proc ::qdoc::say {id text {tag {}}} {
     $t see end
 }
 
+# Results bar, right side:  database . elapsed . rows of the visible result
 proc ::qdoc::updateInfo {id} {
     variable Q
     set f [docf $id]
+    set parts {}
+    if {$Q($id,summary) ne ""} { set parts $Q($id,summary) }
     set pid $Q($id,page)
-    if {$pid eq "" || $pid eq "msg"} {
-        $f.res.info.r configure -text ""
-        return
-    }
     set g $f.res.body.$pid
-    if {[winfo exists $g]} {
+    if {$pid ne "" && $pid ne "msg" && [winfo exists $g]} {
         set n [::grid::count $g]
-        $f.res.info.r configure -text "[::app::commas $n] row[expr {$n == 1 ? {} : {s}}]"
+        lappend parts "[::app::commas $n] row[expr {$n == 1 ? {} : {s}}]"
     }
+    $f.res.info.r configure -text [join $parts "   \u00B7   "]
+}
+proc ::qdoc::outcome {id kind text} {
+    set f [docf $id]
+    set img [dict get {ok check bad closexh none blank} $kind]
+    $f.res.info.l configure -text "  $text" -image [::icons::get $img] -compound left
 }
 
 proc ::qdoc::toggleResults {id} {
@@ -167,7 +173,7 @@ proc ::qdoc::execute {id {parseOnly 0}} {
     set f [docf $id]
     lassign [::editor::runText $f.ed] text base
     if {[string trim $text] eq ""} {
-        ::app::setStatus "Nothing to execute \u2014 type a statement first." warn
+        outcome $id bad "Nothing to run \u2014 type a query first."
         return
     }
     clearResults $id
@@ -188,15 +194,16 @@ proc ::qdoc::execute {id {parseOnly 0}} {
         } else {
             say $id "  $parsed\n" err
         }
+        set Q($id,summary) ""
         showPage $id msg
-        ::app::setStatus "Syntax error" bad
+        outcome $id bad "Syntax error \u2014 see Messages"
         return
     }
     if {$parseOnly} {
         say $id "[stamp]  " dim
         say $id "Parsed [llength $parsed] statement[expr {[llength $parsed] == 1 ? {} : {s}}] \u2014 syntax is valid.\n" ok
         showPage $id msg
-        ::app::setStatus "Syntax OK" ok
+        outcome $id ok "Syntax is valid"
         return
     }
 
@@ -256,17 +263,17 @@ proc ::qdoc::execute {id {parseOnly 0}} {
     if {$Q($id,nres) > 1} {
         for {set i 1} {$i <= $Q($id,nres)} {incr i} { ::tabs::setTitle $f.res.tabs r$i "Results $i" }
     }
+    set Q($id,summary) [list [expr {$db ne "" ? $db : "no database"}] "$ms ms"]
     if {$failed} {
         say $id "Completed with errors in $ms ms\n" err
         showPage $id msg
-        ::app::setStatus "Query completed with errors" bad
+        outcome $id bad "Query completed with errors \u2014 see Messages"
     } else {
         say $id "Completed [llength $parsed] statement[expr {[llength $parsed] == 1 ? {} : {s}}] in $ms ms\n" dim
         if {$Q($id,nres) > 0} { showPage $id r1 } else { showPage $id msg }
-        ::app::setStatus "Query executed successfully" ok
+        outcome $id ok "Query executed successfully"
     }
-    $f.res.info.l configure -text [expr {$failed ? "Completed with errors" : "Query executed successfully"}]
-    ::app::setRunInfo $ms $lastRows
+    ::app::setStatus "Ready" ok
     if {$changed} { ::app::dataChanged }
     focus $f.ed.t
 }
@@ -384,6 +391,8 @@ proc ::ddoc::reload {id} {
         source $mk truncated 0 editable 1]
     if {$total > $n} {
         note $id "Showing the first [::app::commas $n] of [::app::commas $total] rows."
+    } elseif {$total == 0} {
+        note $id "This view is empty. Click Add Row to create the first row."
     } else { hint $id }
 }
 
@@ -430,7 +439,7 @@ proc ::ddoc::deleteRows {id} {
     set ids [::grid::selectedRowids $f.g]
     if {![llength $ids]} { note $id "Select one or more rows first." ; return }
     set n [llength $ids]
-    set r [::ui::ask "Delete rows" "Delete $n row[expr {$n == 1 ? {} : {s}}]?\n\nYou can still undo this with Roll Back until you commit." {Delete Cancel} stop]
+    set r [::ui::ask "Delete rows" "Delete $n row[expr {$n == 1 ? {} : {s}}]?\n\nYou can still undo this with Roll Back until you commit." {Delete Cancel} warn]
     if {$r ne "Delete"} return
     if {[catch {
         if {[::store::readonly [lindex [split $D($id,mk) .] 0]]} { error "This database is open read-only." }
@@ -467,6 +476,7 @@ proc ::design::create {id f mk} {
         pack $f.bar.$b -side left -padx {0 2}
     }
     ttk::treeview $f.t -style Grid.Treeview -columns {type} -show {tree headings} -selectmode browse
+    ::ui::hoverTree $f.t
     $f.t heading #0 -text "Column" -anchor w
     $f.t heading type -text "Type" -anchor w
     $f.t column #0 -width 300 -stretch 0
@@ -587,7 +597,7 @@ proc ::design::validateEdit {id old d} { validate $id [dict merge $d [dict creat
 proc ::design::dropColumn {id} {
     variable X
     set sel [picked $id] ; if {$sel eq ""} return
-    set r [::ui::ask "Drop column" "Drop '$sel' and all of its data?\n\nYou can still undo this with Roll Back until you commit." {Drop Cancel} stop]
+    set r [::ui::ask "Drop column" "Drop '$sel' and all of its data?\n\nYou can still undo this with Roll Back until you commit." {Drop Cancel} warn]
     if {$r ne "Drop"} return
     set mk $X($id,mk)
     set new {}

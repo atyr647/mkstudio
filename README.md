@@ -3,12 +3,14 @@
 A SQL-Server-Management-Studio-style workbench for **Metakit** databases, written
 entirely in Tcl/Tk and designed to live inside a **starpack** (one executable).
 
-* **Object Explorer** - databases -> views -> columns, subviews nested; double-click a view to edit its rows
-* **Edit Rows** - spreadsheet-style editing straight into the database, with friendly type validation; double-click a `> N rows` cell to open a subview
+* **Object Explorer** - databases -> views -> columns, subviews nested; filter box; double-click a view to edit its rows
+* **Edit Rows** - spreadsheet-style editing with type validation; double-click a `> N rows` cell to open a subview
 * **Designer** - add, edit (rename / retype) and drop columns and subviews
-* **Query windows** - tabbed editor with highlighting and multiple result tabs
+* **Query windows** - highlighting, Find (Ctrl+F), multiple result tabs, outcome bar with database / time / rows
 * **Commit / Roll Back** - changes stay in memory until you commit (files are opened `-nocommit`)
-* Dark and light themes, CSV import / export, script save / open
+* Themed menus everywhere (keyboard navigation, Alt+letter, F10), consistent dialogs with
+  red buttons for destructive actions, row hover, empty states, dark and light themes,
+  CSV import / export, script save / open
 
 ### The query language is pluggable
 
@@ -68,6 +70,7 @@ until commit, so `store.tcl` treats views with an empty layout as gone.
 
 ## Screenshots
 
-Captured from the app running on real Metakit (`tests/shoot.tcl`): `docs/screenshots/` -
-`welcome`, `main` (query + results), `drill`, `data` (editable grid), `subview`, `design`,
-`dialog`, `menu`, `pending` (uncommitted edits), `error` (syntax error underline), `light`.
+All captured from the app running on real Metakit (`tests/shoot.tcl <scenario> out.png`) in
+`docs/screenshots/`: `welcome`, `main`, `drill`, `data`, `subview`, `design`, `dialog`, `confirm`,
+`menu`, `viewmenu`, `ctxmenu`, `pending`, `find`, `filter`, `hover`, `empty`, `error`, and
+`light-welcome`, `light-main`, `light-menu`.

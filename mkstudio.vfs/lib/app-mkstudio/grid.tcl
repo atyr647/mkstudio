@@ -35,7 +35,10 @@ proc ::grid::create {w args} {
 
     $w.t column #0 -width 54 -stretch 0 -anchor e
     $w.t heading #0 -text "#"
+    ::ui::hoverTree $w.t
     ::theme::reg $w.t [list ::grid::recolor %w]
+    ttk::label $w.t.empty -text "No rows" -style SurfaceDim.TLabel
+    bind $w.t <Motion> [list +::grid::motion $w %x %y]
 
     bind $w.t <Double-1>  [list ::grid::doubleClick $w %x %y]
     bind $w.t <Button-1>  [list ::grid::noteColumn $w %x %y]
@@ -113,6 +116,9 @@ proc ::grid::fill {w} {
         $t insert {} end -id r$p -text [expr {$k + 1}] -values $vals -tags [expr {$k % 2 ? "odd" : "even"}]
         incr k
     }
+    if {$G($w,total) == 0 && [llength $G($w,cols)]} {
+        place $w.t.empty -relx 0.5 -y 70 -anchor n
+    } else { place forget $w.t.empty }
     if {$G($w,-changed) ne ""} { uplevel #0 $G($w,-changed) }
 }
 
@@ -251,7 +257,17 @@ proc ::grid::menu {w x y X Y} {
         $m add command -label "Edit Cell" -accelerator F2 -command [list ::grid::editCurrent $w]
         $m add command -label "Delete Row(s)" -accelerator Del -command [list event generate $w <<GridDelete>>]
     }
-    tk_popup $m $X $Y
+    ::menus::post $m $X $Y
+}
+
+# hand cursor over subview cells, which open on double-click
+proc ::grid::motion {w x y} {
+    variable G
+    set cursor ""
+    if {[$w.t identify region $x $y] eq "cell" && [regexp {^#(\d+)$} [$w.t identify column $x $y] -> n]} {
+        if {[dict exists $G($w,drill) [expr {$n - 1}]]} { set cursor hand2 }
+    }
+    if {[$w.t cget -cursor] ne $cursor} { $w.t configure -cursor $cursor }
 }
 
 proc ::grid::noteColumn {w x y} {

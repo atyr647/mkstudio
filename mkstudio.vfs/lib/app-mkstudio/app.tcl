@@ -80,11 +80,8 @@ proc ::app::setStatus {msg {kind ""}} {
     .sb.msg configure -text $msg
 }
 proc ::app::setCursor {l c} { .sb.pos configure -text "Ln $l, Col $c" }
-proc ::app::setRunInfo {ms rows} {
-    set t "$ms ms"
-    if {$rows ne ""} { append t "  ·  [commas $rows] row[expr {$rows == 1 ? {} : {s}}]" }
-    .sb.run configure -text $t
-}
+proc ::app::setRunInfo {ms rows} {}
+
 proc ::app::pendingTotal {} {
     set n 0
     foreach t [::store::tags] { incr n [::store::dirty $t] }
@@ -123,9 +120,8 @@ proc ::app::buildMenus {} {
     frame .mb -borderwidth 0 -highlightthickness 0
     ::theme::reg .mb {%w configure -background $::theme::c(bg)}
     foreach {k label} {file File edit Edit view View query Query help Help} {
-        ttk::menubutton .mb.$k -text $label -style Menubar.TMenubutton -menu .mb.$k.m
+        ::menus::barItem .mb $k $label .mb.$k.m
         menu .mb.$k.m -tearoff 0 -postcommand [list ::app::menuState $k]
-        ::theme::reg .mb.$k.m {::theme::menu %w}
         pack .mb.$k -side left
     }
 
@@ -137,7 +133,6 @@ proc ::app::buildMenus {} {
     $m add command -label "Open Database..." -accelerator "Ctrl+O" -command ::app::openDB
     $m add cascade -label "Open Recent" -menu $m.recent
     menu $m.recent -tearoff 0
-    ::theme::reg $m.recent {::theme::menu %w}
     $m add command -label "New Database..." -command ::app::newDB
     $m add command -label "New Sample Database..." -command ::app::newSample
     $m add command -label "Close Database" -command ::app::closeSelectedDB
@@ -160,6 +155,7 @@ proc ::app::buildMenus {} {
     $m add command -label "Paste" -accelerator "Ctrl+V" -command {::app::editEvent <<Paste>>}
     $m add command -label "Select All" -accelerator "Ctrl+A" -command {::app::editEvent <<SelectAll>>}
     $m add separator
+    $m add command -label "Find..." -accelerator "Ctrl+F" -command ::app::find
     $m add command -label "Toggle Comment" -accelerator "Ctrl+/" -command ::app::toggleComment
 
     set m .mb.view.m
@@ -241,6 +237,7 @@ proc ::app::buildToolbar {} {
     pack .tb.dl -side left -padx {2 6}
     pack .tb.db -side left
     bind .tb.db <<ComboboxSelected>> {::app::dbPicked}
+    ::ui::placeholder .tb.db ::app::dbVar "No database"
     ::tip::attach .tb.db "Database this query runs against"
     tsep 2
     tbtn run "Execute" play ::app::runOrStop "Run the query, or just the selected text  (F5)" Run.TButton
@@ -256,16 +253,14 @@ proc ::app::runOrStop {} {
 proc ::app::buildStatus {} {
     frame .sb -borderwidth 0 -highlightthickness 0 -height 26
     ::theme::reg .sb {%w configure -background $::theme::c(accentDim)}
-    foreach n {dot msg pend run pos} { label .sb.$n -borderwidth 0 -font MkSmall }
+    foreach n {dot msg pend pos} { label .sb.$n -borderwidth 0 -font MkSmall }
     .sb.dot configure -text "●" -padx 12
-    foreach n {dot msg pend run pos} {
+    foreach n {dot msg pend pos} {
         ::theme::reg .sb.$n [list %w configure -background $::theme::c(accentDim) -foreground $::theme::c(fg)]
     }
-    ::theme::reg .sb.run {%w configure -foreground $::theme::c(dim)}
     ::theme::reg .sb.pos {%w configure -foreground $::theme::c(dim)}
     pack .sb.dot .sb.msg -side left
     pack .sb.pos -side right -padx 14
-    pack .sb.run -side right -padx 8
     pack .sb.pend -side right -padx 8
     pack propagate .sb 0
     ::tip::attach .sb.pend "Changes are held in memory until you commit them  (Ctrl+Shift+S)"
@@ -291,48 +286,82 @@ proc ::app::buildMain {} {
 #  welcome page
 # ============================================================================
 proc ::app::buildWelcome {} {
-    set w .main.center.docs.welcome
-    ttk::frame $w -style Surface.TFrame
-    grid $w -row 0 -column 0 -sticky nsew
-    ttk::frame $w.c -style Surface.TFrame
-    place $w.c -relx 0.5 -rely 0.42 -anchor center
-    ttk::label $w.c.logo -image [::icons::logo] -style Surface.TLabel
-    ttk::label $w.c.t -text "MK Studio" -style Huge.TLabel
-    ttk::label $w.c.s -text "Browse, query and edit Metakit databases" -style SurfaceDim.TLabel
-    grid $w.c.logo -pady {0 8}
-    grid $w.c.t
-    grid $w.c.s -pady {2 22}
-    set r 3
-    foreach {text cmd} {
-        "Open a database..."     ::app::openDB
-        "Try the sample database..." ::app::newSample
-        "New query"              ::app::newQuery
-    } {
-        ttk::button $w.c.b$r -text $text -style Link.TButton -command $cmd -cursor hand2
-        grid $w.c.b$r -row $r -sticky w -padx 70
-        incr r
-    }
-    ttk::label $w.c.rh -text "RECENT" -style Section.TLabel
-    grid $w.c.rh -row $r -sticky w -padx 70 -pady {22 4}
-    ttk::frame $w.c.recent -style Surface.TFrame
-    grid $w.c.recent -row [expr {$r+1}] -sticky w -padx 70
-    ::theme::reg $w.c.rh {%w configure -background $::theme::c(surface) -foreground $::theme::c(dim)}
+    frame .main.center.docs.welcome -borderwidth 0 -highlightthickness 0
+    grid .main.center.docs.welcome -row 0 -column 0 -sticky nsew
+    ::theme::reg .main.center.docs.welcome {::app::refreshWelcome}
 }
 
+# The start page is rebuilt whenever the theme or the recent list changes.
 proc ::app::refreshWelcome {} {
     variable cfg
-    set f .main.center.docs.welcome.c.recent
-    if {![winfo exists $f]} return
-    foreach c [winfo children $f] { destroy $c }
+    set w .main.center.docs.welcome
+    if {![winfo exists $w]} return
+    foreach ch [winfo children $w] { destroy $ch }
+    set S $::theme::c(surface)
+    $w configure -background $S
+    frame $w.c -background $S
+    place $w.c -relx 0.5 -rely 0.42 -anchor center
+
+    label $w.c.logo -image [::icons::logo] -background $S -borderwidth 0
+    label $w.c.t -text "MK Studio" -font MkHuge -background $S -foreground $::theme::c(fg)
+    label $w.c.s -text "Browse, query and edit Metakit databases" -font MkUI \
+        -background $S -foreground $::theme::c(dim)
+    grid $w.c.logo -row 0 -column 0 -columnspan 2 -pady {0 6}
+    grid $w.c.t -row 1 -column 0 -columnspan 2
+    grid $w.c.s -row 2 -column 0 -columnspan 2 -pady {2 34}
+
+    foreach {col head} {0 START 1 RECENT} {
+        frame $w.c.col$col -background $S
+        grid $w.c.col$col -row 3 -column $col -sticky nw -padx 18
+        label $w.c.col$col.h -text $head -font MkSmall -background $S -foreground $::theme::c(faint) -anchor w
+        pack $w.c.col$col.h -fill x -padx 12 -pady {0 6}
+    }
+    grid columnconfigure $w.c {0 1} -minsize 330 -uniform cols
+    set p $w.c.col0
+    welcomeRow $p open    open    "Open database..."         "Browse for a Metakit file  (Ctrl+O)"  ::app::openDB
+    welcomeRow $p sample  db      "Try the sample database"   "Four views with subviews to explore"  ::app::newSample
+    welcomeRow $p newdb   dbnew   "New database..."          "Start from an empty file"             ::app::newDB
+    welcomeRow $p query   docnew  "New query"                 "Write a query  (Ctrl+N)"              ::app::newQuery
+
+    set p $w.c.col1
     set i 0
     foreach r $cfg(recent) {
         if {$i >= 5} break
-        ttk::button $f.r$i -text "[file tail $r]   [file dirname $r]" -style Link.TButton \
-            -command [list ::app::openDB $r] -cursor hand2
-        pack $f.r$i -anchor w
+        set dir [file dirname $r]
+        if {[string length $dir] > 44} { set dir "...[string range $dir end-40 end]" }
+        welcomeRow $p r$i db [file tail $r] $dir [list ::app::openDB $r]
         incr i
     }
-    if {$i == 0} { ttk::label $f.none -text "No recent files" -style SurfaceDim.TLabel ; pack $f.none -anchor w }
+    if {$i == 0} {
+        label $p.none -text "Databases you open will appear here." -font MkUI \
+            -background $S -foreground $::theme::c(dim) -anchor w
+        pack $p.none -fill x -padx 12 -pady 8
+    }
+}
+
+# A clickable row: icon, title, description; highlights on hover.
+proc ::app::welcomeRow {p name icon title desc cmd} {
+    set S $::theme::c(surface)
+    set r $p.$name
+    frame $r -background $S -cursor hand2 -padx 12 -pady 8
+    label $r.i -image [::icons::get $icon] -background $S -borderwidth 0
+    label $r.t -text $title -font MkUIBold -background $S -foreground $::theme::c(accent) -anchor w
+    label $r.d -text $desc -font MkSmall -background $S -foreground $::theme::c(dim) -anchor w
+    grid $r.i -row 0 -column 0 -rowspan 2 -sticky n -padx {0 12} -pady {2 0}
+    grid $r.t -row 0 -column 1 -sticky w
+    grid $r.d -row 1 -column 1 -sticky w
+    pack $r -fill x
+    foreach part [list $r $r.i $r.t $r.d] {
+        bind $part <Button-1> $cmd
+        $part configure -cursor hand2
+    }
+    bind $r <Enter> [list ::app::welcomeHover $r 1]
+    bind $r <Leave> [list ::app::welcomeHover $r 0 %d]
+}
+proc ::app::welcomeHover {r on {detail ""}} {
+    if {!$on && $detail eq "NotifyInferior"} return
+    set bg [expr {$on ? $::theme::c(hover) : $::theme::c(surface)}]
+    foreach part [list $r $r.i $r.t $r.d] { $part configure -background $bg }
 }
 
 # ============================================================================
@@ -404,9 +433,22 @@ proc ::app::showDoc {id} {
 }
 proc ::app::tabSelected {id} { showDoc $id }
 
+proc ::app::updateTitle {} {
+    variable A
+    set id [currentDoc]
+    if {$id eq "" || ![info exists A(title,$id)]} { wm title . "MK Studio" ; return }
+    set t $A(title,$id)
+    set db ""
+    if {[docType $id] eq "query"} { set db [::qdoc::db $id] }
+    if {[docType $id] in {data design}} { set db [lindex [split $A(path,$id) .] 0] }
+    if {$db ne ""} { append t "  \u2014  $db" }
+    wm title . "$t  \u2014  MK Studio"
+}
+
 proc ::app::docSelected {id} {
     variable dbVar
     updateDbCombo
+    after idle ::app::updateTitle
     set isQ [expr {[docType $id] eq "query"}]
     if {$isQ} {
         set dbVar [::qdoc::db $id]
@@ -512,7 +554,7 @@ proc ::app::closeDoc {id {force 0}} {
     if {!$force && $A(type,$id) eq "query"} {
         set text [string trim [::editor::get $f.ed]]
         if {$text ne "" && [::editor::get $f.ed] ne $A(saved,$id)} {
-            set r [::ui::ask "Save changes?" "Save changes to '$A(title,$id)' before closing?" {Save "Don't Save" Cancel} help]
+            set r [::ui::ask "Save changes?" "Save changes to '$A(title,$id)' before closing?" {Save "Don't Save" Cancel} info]
             if {$r eq "" || $r eq "Cancel"} { return 0 }
             if {$r eq "Save"} { if {![saveScript 0 $id]} { return 0 } }
         }
@@ -609,7 +651,7 @@ proc ::app::closeDB {tag {discard 0}} {
     variable A
     if {![::store::exists $tag]} { return 1 }
     if {!$discard && [::store::dirty $tag] > 0} {
-        set r [::ui::ask "Close database" "'$tag' has [::store::dirty $tag] uncommitted change(s).\n\nCommit them to disk before closing?" {Commit "Discard" Cancel} help]
+        set r [::ui::ask "Close database" "'$tag' has [::store::dirty $tag] uncommitted change(s).\n\nCommit them to disk before closing?" {Commit "Discard" Cancel} warn]
         if {$r eq "" || $r eq "Cancel"} { return 0 }
         if {$r eq "Commit"} {
             if {[catch {::store::commit $tag} err]} { ::ui::problem "Commit failed:\n\n$err" ; return 0 }
@@ -751,7 +793,7 @@ proc ::app::validateRow {path d} {
 proc ::app::dropView {m} {
     variable A
     set path [dict get $m path]
-    set r [::ui::ask "Drop view" "Drop '[dict get $m name]' and its [commas [::store::size $path]] row(s)?\n\nYou can still undo this with Roll Back until you commit." {Drop Cancel} stop]
+    set r [::ui::ask "Drop view" "Drop '[dict get $m name]' and its [commas [::store::size $path]] row(s)?\n\nYou can still undo this with Roll Back until you commit." {Drop Cancel} warn]
     if {$r ne "Drop"} return
     foreach id [docs] {
         if {[docType $id] in {data design} && [string match "$path*" $A(path,$id)]} { closeDoc $id 1 }
@@ -775,6 +817,10 @@ proc ::app::execute {} {
 proc ::app::toggleResults {} {
     set id [currentQuery]
     if {$id ne ""} { ::qdoc::toggleResults $id }
+}
+proc ::app::find {} {
+    set id [currentQuery]
+    if {$id ne ""} { ::editor::findOpen [docFrame $id].ed }
 }
 proc ::app::toggleComment {} {
     set id [currentQuery]
@@ -968,7 +1014,7 @@ proc ::app::importCsv {} {
 # ============================================================================
 proc ::app::about {} {
     variable version
-    ::ui::ask "About MK Studio" "MK Studio $version\n\nA workbench for Metakit databases, written entirely in Tcl/Tk and designed to live inside a starpack.\n\nTcl [info patchlevel]  ·  Tk [package present Tk]\nMetakit: [expr {[::store::available] ? {Mk4tcl available} : {Mk4tcl missing}}]" OK help
+    ::ui::ask "About MK Studio" "MK Studio $version\n\nA workbench for Metakit databases, written entirely in Tcl/Tk and designed to live inside a starpack.\n\nTcl [info patchlevel]  ·  Tk [package present Tk]\nMetakit: [expr {[::store::available] ? {Mk4tcl available} : {Mk4tcl missing}}]" OK info
 }
 
 proc ::app::quit {} {
@@ -988,6 +1034,12 @@ proc ::app::quit {} {
 #  start up
 # ============================================================================
 proc ::app::bindKeys {} {
+    foreach {k key} {f file e edit v view q query h help} {
+        bind . <Alt-$k> [list ::menus::openBar .mb.$key 1]
+        bind . <Alt-[string toupper $k]> [list ::menus::openBar .mb.$key 1]
+    }
+    bind . <Control-f>      {::app::find ; break}
+    bind . <F10>            {::menus::openBar .mb.file 1 ; break}
     bind . <F5>             {::app::execute ; break}
     bind . <Control-e>      {::app::execute ; break}
     bind . <Escape>         {::app::cancel}

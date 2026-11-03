@@ -161,6 +161,19 @@ proc ::icons::draw {name} {
         }
         help { ell 7.5 7.5 6.5 6.5 blue ; ell 7.5 7.5 5.5 5.5 dblue ; arc 7.5 6 2 2 0 220 white ; px 7 9 white ; px 7 11 white ; px 8 9 white ; px 8 11 white ; px 7 8 white ; px 8 8 white }
         csv { rect 2 1 13 14 gray ; rect 3 2 12 13 pale ; rect 3 3 12 4 green ; line 3 7 12 7 gray ; line 3 10 12 10 gray ; line 7 4 7 13 gray }
+        blank { }
+        warn {
+            tri 7 1 0 14 15 14 damber ; tri 7 3 2 13 13 13 amber ; tri 8 3 2 13 13 13 amber
+            rect 7 5 8 10 ink ; rect 7 12 8 13 ink
+        }
+        error {
+            ell 7.5 7.5 7 7 red
+            thick 4 4 10 10 white ; thick 10 4 4 10 white
+        }
+        info {
+            ell 7.5 7.5 7 7 blue
+            rect 7 3 8 4 white ; rect 7 6 8 12 white ; rect 6 6 6 6 white ; rect 6 12 9 12 white
+        }
         col_S { colicon amber }
         col_I { colicon blue }
         col_L { colicon purple }
@@ -200,6 +213,16 @@ proc ::icons::get {name} {
         image delete ${img}_1
     }
     lappend made $name
+    return $img
+}
+
+# A 2x version of an icon, for dialogs and the start page.
+proc ::icons::big {name} {
+    set img ic_big_$name
+    if {[lsearch -exact [image names] $img] < 0} {
+        image create photo $img
+        $img copy [get $name] -zoom 2 2
+    }
     return $img
 }
 
