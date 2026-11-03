@@ -183,7 +183,19 @@ proc ::store::formatLayout {layout} {
     return $parts
 }
 
-proc ::store::layout {path} { parseLayout [mk::view layout $path] }
+# Layout of a view or subview.  Real Mk4tcl answers `mk::view layout` for a
+# subview path ("db.view!3.sub") with the TOP-LEVEL view's layout, so descend
+# through the nested definitions ourselves.
+proc ::store::layout {path} {
+    set base [lindex [split $path !] 0]
+    set layout [parseLayout [mk::view layout $base]]
+    foreach {-> name} [regexp -all -inline {!\d+\.([A-Za-z0-9_]+)} $path] {
+        set col [findCol $layout $name]
+        if {$col eq "" || [lindex $col 1] ne "V"} { error "no subview '$name' in $path" }
+        set layout [lindex $col 2]
+    }
+    return $layout
+}
 proc ::store::size   {path} { mk::view size $path }
 
 # -- reading rows ------------------------------------------------------------

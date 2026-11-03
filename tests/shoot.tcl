@@ -53,6 +53,42 @@ switch -- $scenario {
         expandAll
         shot $out
     }
+    drill {
+        set id [::app::newQuery "SELECT id, name, skills FROM employees WHERE skills >= 3;" $tag 1]
+        ::app::showDoc $id
+        ::qdoc::showPage $id r1
+        shot $out
+    }
+    subview {
+        ::app::openData $tag.employees employees
+        ::ddoc::drill [lindex [::app::docs] 0] 2 skills
+        shot $out
+    }
+    dialog {
+        ::app::openDesign $tag.products products
+        after 600 {
+            update
+            exec import -window root $::out
+            set ::ui::result ""
+        }
+        ::design::addColumn [lindex [::app::docs] 0]
+    }
+    menu {
+        ::app::openData $tag.products products
+        update
+        set m .mb.file.m
+        $m post [winfo rootx .mb.file] [expr {[winfo rooty .mb.file] + 30}]
+        settle 400
+        exec import -window root $out
+    }
+    pending {
+        set id [::app::openData $tag.products products]
+        ::ddoc::commit $id 0 name "Keyboard 65% (edited)"
+        ::ddoc::commit $id 1 stock 1000
+        ::ddoc::reload $id
+        .main.ex.t selection set {}
+        shot $out
+    }
     error {
         set id [::app::newQuery "SELECT id, name\nFROM employees\nWHERE salary >> 5000;" $tag 1]
         shot $out

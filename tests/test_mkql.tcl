@@ -59,6 +59,9 @@ check subcount [rows "SELECT COUNT(*) FROM orders\[0\].lines"] {2}
 check subinsert [errmsg "INSERT INTO employees\[0\].skills (skill, level) VALUES ('Go', 3)"] "(no error)"
 check subinsert2 [rows "SELECT COUNT(*) FROM employees\[0\].skills"] {3}
 
+check sublayout [store::layout $db.employees!2.skills] {{skill S {}} {level I {}}}
+check sublayout2 [store::layout $db.orders!0.lines] {{sku S {}} {qty I {}} {unit D {}}}
+
 # DML
 check ins   [dict get [q "INSERT INTO products (sku, name, price, stock) VALUES ('X-1', 'Test', 1.5, 7), ('X-2', 'Two', 2, 8)"] affected] 2
 check ins2  [rows "SELECT sku, discontinued FROM products WHERE sku LIKE 'X-%' ORDER BY sku"] {{X-1 0} {X-2 0}}

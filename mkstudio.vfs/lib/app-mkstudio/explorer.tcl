@@ -35,7 +35,7 @@ proc ::explorer::create {win args} {
         -yscrollcommand [list $w.v set]
     ttk::scrollbar $w.v -orient vertical -command [list $w.t yview]
     $w.t column #0 -stretch 1 -minwidth 120
-    $w.t column detail -stretch 0 -width 64 -anchor e
+    $w.t column detail -stretch 0 -width 92 -anchor e
     pack $w.head -side top -fill x
     pack $w.v -side right -fill y
     pack $w.t -side left -fill both -expand 1

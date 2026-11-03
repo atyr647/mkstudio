@@ -135,7 +135,8 @@ proc ::mkmock::cmd_view {cmd path args} {
     switch -- $cmd {
         layout {
             if {[llength $args] == 0} {
-                lassign [_resolve $path] id idx
+                # real Mk4tcl returns the TOP-LEVEL layout even for a subview path
+                lassign [_resolve [lindex [split $path !] 0]] id idx
                 return [::store::formatLayout [dict get $vo($id) layout]]
             }
             set new [::store::parseLayout [lindex $args 0]]

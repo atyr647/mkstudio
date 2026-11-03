@@ -65,3 +65,9 @@ the classic Tcl 8.5 tclkits (the code sticks to 8.5 syntax, but that is unexerci
 Metakit notes: there is no NULL (NULL means empty string); renaming or retyping a column
 copies its data into a new column that ends up last in the layout; a dropped view stays listed
 until commit, so `store.tcl` treats views with an empty layout as gone.
+
+## Screenshots
+
+Captured from the app running on real Metakit (`tests/shoot.tcl`): `docs/screenshots/` -
+`welcome`, `main` (query + results), `drill`, `data` (editable grid), `subview`, `design`,
+`dialog`, `menu`, `pending` (uncommitted edits), `error` (syntax error underline), `light`.
