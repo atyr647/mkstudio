@@ -1,6 +1,6 @@
 # Engine tests: run with   tclsh tests/test_mkql.tcl
 set here [file dirname [file normalize [info script]]]
-source $here/mock_mk4tcl.tcl
+if {![info exists ::env(REAL_MK)]} { source $here/mock_mk4tcl.tcl } else { package require Mk4tcl }
 foreach f {store mkql} { source $here/../mkstudio.vfs/lib/app-mkstudio/$f.tcl }
 
 set pass 0 ; set fail 0
@@ -63,7 +63,7 @@ check subinsert2 [rows "SELECT COUNT(*) FROM employees\[0\].skills"] {3}
 check ins   [dict get [q "INSERT INTO products (sku, name, price, stock) VALUES ('X-1', 'Test', 1.5, 7), ('X-2', 'Two', 2, 8)"] affected] 2
 check ins2  [rows "SELECT sku, discontinued FROM products WHERE sku LIKE 'X-%' ORDER BY sku"] {{X-1 0} {X-2 0}}
 check upd   [dict get [q "UPDATE products SET stock = stock + 10, price = price * 2 WHERE sku = 'X-1'"] affected] 1
-check upd2  [rows "SELECT stock, price FROM products WHERE sku = 'X-1'"] {{17 3}}
+check upd2  [expr {[lindex [rows "SELECT stock, price FROM products WHERE sku = 'X-1'"] 0] in {{17 3} {17 3.0}}}] 1
 check del   [dict get [q "DELETE FROM products WHERE sku LIKE 'X-%'"] affected] 2
 check del2  [rows "SELECT COUNT(*) FROM products"] 8
 check dirty [expr {[store::dirty $db] > 0}] 1

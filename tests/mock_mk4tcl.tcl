@@ -103,9 +103,12 @@ proc ::mkmock::_dumpvo {id} {
     return [list [dict get $vo($id) layout] $rows]
 }
 proc ::mkmock::_dump {tag} {
+    variable vo
     variable db
     set out {}
-    dict for {n id} [dict get $db($tag) views] { dict set out $n [_dumpvo $id] }
+    dict for {n id} [dict get $db($tag) views] {
+        if {[dict get $vo($id) layout] ne ""} { dict set out $n [_dumpvo $id] }
+    }
     return $out
 }
 proc ::mkmock::_loadvo {d} {
@@ -154,7 +157,9 @@ proc ::mkmock::cmd_view {cmd path args} {
         }
         delete {
             lassign [split $path .] tag vname
-            set db($tag) [dict replace $db($tag) views [dict remove [dict get $db($tag) views] $vname]]
+            # like real Metakit: the view stays listed, emptied, until the next commit
+            set id [dict get $db($tag) views $vname]
+            dict set vo($id) layout {} ; dict set vo($id) rows {}
             return
         }
     }

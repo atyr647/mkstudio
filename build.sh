@@ -1,21 +1,17 @@
 #!/bin/sh
-# Build the MK Studio starpack.
-#
-#   ./build.sh <tclkit-runtime> <sdx.kit> [output]
-#
-# <tclkit-runtime>  a tclkit WITH Tk (e.g. tclkit-8.6.x-<platform>); it must
-#                   include Mk4tcl (every standard tclkit does).
-# <sdx.kit>         the SDX starkit tool.
-#
-# Result: ./mkstudio (or the name you give) - one self-contained executable.
+# Build the MK Studio starpack:   ./build.sh [output]      (default: dist/mkstudio-linux-x86_64)
+# Uses the tclkit in tools/ both to run the wrapper and as the runtime, so no
+# sdx.kit is needed.  To target another platform, set RUNTIME to that platform's
+# tclkit (it must include Tk and Mk4tcl) and run this script with a tclkit that
+# can execute on the build machine (KIT).
 set -e
-[ $# -ge 2 ] || { echo "usage: $0 <tclkit-runtime> <sdx.kit> [output]"; exit 1; }
-RUNTIME=$1; SDX=$2; OUT=${3:-mkstudio}
 cd "$(dirname "$0")"
-rm -rf build && mkdir build
-cp -R mkstudio.vfs build/mkstudio.vfs
-cp "$RUNTIME" build/runtime && chmod +x build/runtime
-( cd build && "./runtime" "$(cd .. && cd "$(dirname "$SDX")" && pwd)/$(basename "$SDX")" \
-      wrap "../$OUT" -vfs mkstudio.vfs -runtime runtime )
-rm -rf build
-echo "built ./$OUT"
+KIT=${KIT:-tools/tclkit-8.6.3-linux-x86_64}
+RUNTIME=${RUNTIME:-$KIT}
+OUT=${1:-dist/mkstudio-linux-x86_64}
+mkdir -p "$(dirname "$OUT")"
+TMP=$(mktemp -d)
+cp "$RUNTIME" "$TMP/runtime"      # a copy: a running tclkit mounts its own path as a vfs
+"$KIT" tools/wrap.tcl "$TMP/runtime" mkstudio.vfs "$OUT"
+chmod +x "$OUT"
+rm -rf "$TMP"

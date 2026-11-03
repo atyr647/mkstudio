@@ -116,6 +116,20 @@ proc ::explorer::restore {item open sel} {
     }
 }
 
+# open a database node down to its list of views
+proc ::explorer::expandDb {tag} {
+    variable M ; variable w
+    foreach item [array names M] {
+        if {![$w.t exists $item]} continue
+        if {[dict get $M($item) key] eq "db:$tag"} {
+            populate $item ; $w.t item $item -open 1
+            foreach c [$w.t children $item] { populate $c ; $w.t item $c -open 1 }
+            $w.t selection set $item ; $w.t see $item
+            return
+        }
+    }
+}
+
 proc ::explorer::collapseAll {} {
     variable w
     foreach item [$w.t children {}] {

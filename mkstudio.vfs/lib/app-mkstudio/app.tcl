@@ -544,6 +544,7 @@ proc ::app::openOne {path} {
     }
     addRecent $path
     afterDbChange
+    ::explorer::expandDb $tag
     setStatus "Opened '$tag'  ([file tail $path])" ok
     return $tag
 }
@@ -560,7 +561,8 @@ proc ::app::newDB {} {
     } err]} { ::ui::problem "Could not create the database:\n\n$err" ; return }
     addRecent $path
     afterDbChange
-    setStatus "Created '$tag'. Use CREATE VIEW or New View to add data." ok
+    ::explorer::expandDb $tag
+    setStatus "Created '$tag'. Use File > New View to add data." ok
 }
 proc ::app::newSample {} {
     variable cfg ; variable A
@@ -576,6 +578,7 @@ proc ::app::newSample {} {
     } err]} { ::ui::problem "Could not create the sample database:\n\n$err" ; return }
     addRecent $path
     afterDbChange
+    ::explorer::expandDb $tag
     setStatus "Sample database '$tag' created: employees (with a skills subview), departments, products, orders (with a lines subview)." ok
     set text "-- Sample database. Press F5 to run the whole script, or select a statement and press F5.\nSELECT TOP 10 name, title, salary\nFROM employees\nORDER BY salary DESC;\n\nSELECT dept, COUNT(*) AS people, ROUND(AVG(salary), 0) AS avg_salary\nFROM employees\nGROUP BY dept\nORDER BY avg_salary DESC;\n\n-- skills is a subview (a nested table in every row).\n-- Double-click a ▸ cell in the grid to open it.\nSELECT id, name, skills FROM employees WHERE skills >= 3;"
     set id [newQuery $text $tag 1]

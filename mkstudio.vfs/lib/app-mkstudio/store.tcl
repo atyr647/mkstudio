@@ -131,10 +131,23 @@ proc ::store::rollback {tag} {
 }
 
 # -- reading structure -------------------------------------------------------
-proc ::store::views {tag} { lsort -dictionary [mk::file views $tag] }
+# Metakit keeps a deleted view in `mk::file views` (with an empty layout) until
+# the next commit, so a view only counts as present while it has a layout.
+proc ::store::views {tag} {
+    set out {}
+    foreach v [mk::file views $tag] {
+        if {[hasLayout $tag.$v]} { lappend out $v }
+    }
+    return [lsort -dictionary $out]
+}
 
 proc ::store::hasView {tag name} {
-    expr {[lsearch -exact [mk::file views $tag] $name] >= 0}
+    if {[lsearch -exact [mk::file views $tag] $name] < 0} { return 0 }
+    hasLayout $tag.$name
+}
+proc ::store::hasLayout {path} {
+    if {[catch {mk::view layout $path} l]} { return 0 }
+    expr {[string trim $l] ne ""}
 }
 
 # Parse the string Mk4tcl returns from `mk::view layout` into triples.

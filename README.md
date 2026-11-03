@@ -33,30 +33,35 @@ tests/                               engine tests, GUI tests, a pure-Tcl mk:: st
 build.sh                             wraps everything into a starpack
 ```
 
-## Build the starpack
+## Download / build the starpack
 
-You need a tclkit runtime that includes Tk and Metakit, and `sdx.kit`:
+A ready-built Linux x86_64 starpack is in `dist/mkstudio-linux-x86_64` (single file, includes Tcl/Tk 8.6.3 and Metakit):
 
-    ./build.sh path/to/tclkit-runtime path/to/sdx.kit mkstudio
+    ./dist/mkstudio-linux-x86_64 [file.mk ...]
 
-## Run from source
+Rebuild it (no sdx needed - `tools/wrap.tcl` does what `sdx wrap` does):
 
-    wish mkstudio.vfs/main.tcl [file.mk ...]          # needs a Tk that has Mk4tcl, e.g. a tclkit
-    wish mkstudio.vfs/main.tcl --mock                 # development only: pure-Tcl mk:: stand-in
+    ./build.sh                                  # -> dist/mkstudio-linux-x86_64
+    RUNTIME=path/to/other-tclkit ./build.sh dist/mkstudio-other     # another platform's runtime (needs Tk + Mk4tcl)
+
+`tools/tclkit-8.6.3-linux-x86_64` is the unmodified tclkit from tclkits.rkeene.org
+(SHA1 36b5cb68899cfcb79417a29f9c6d8176ebae0d24).
 
 ## Tests
 
-    tclsh tests/test_mkql.tcl                         # query engine (69 checks)
-    xvfb-run wish tests/gui_logic.tcl                 # UI logic
-    xvfb-run wish tests/shoot.tcl main out.png        # screenshot of the running app
+    tools/tclkit-8.6.3-linux-x86_64 tests/test_mkql.tcl                  # mock mk::  (tclsh also works)
+    REAL_MK=1 tools/tclkit-8.6.3-linux-x86_64 tests/test_mkql.tcl        # real Metakit
+    REAL_MK=1 xvfb-run tools/tclkit-8.6.3-linux-x86_64 tests/gui_logic.tcl
+    tools/tclkit-8.6.3-linux-x86_64 tests/persist.tcl                    # commit / uncommitted-close on real files
+    xvfb-run -s "-screen 0 1440x900x24" wish tests/shoot.tcl main out.png  # screenshot (add REAL_MK=1 under a tclkit)
 
 ## Verification status
 
-Developed and tested on Tcl/Tk 8.6 against `tests/mock_mk4tcl.tcl`, a stand-in that
-follows the documented `mk::` semantics. **It has not yet been run against the real
-Mk4tcl, and no starpack has been built**, because no tclkit was available in the
-build environment. The code is kept to Tcl 8.5 syntax for classic tclkits, and every
-Metakit call is isolated in `store.tcl` so any difference is a small fix.
+Verified against the **real Mk4tcl 2.4.9.7** in tclkit 8.6.3 on Linux: all 69 engine checks, the
+16 UI-logic checks, commit / roll-back / `-nocommit` persistence, and the packaged starpack
+launching standalone and opening a real file. Not yet tested: Windows and macOS runtimes, and
+the classic Tcl 8.5 tclkits (the code sticks to 8.5 syntax, but that is unexercised).
 
-Metakit notes: there is no NULL (NULL means empty string); renaming or retyping a
-column copies its data into a new column that ends up last in the layout.
+Metakit notes: there is no NULL (NULL means empty string); renaming or retyping a column
+copies its data into a new column that ends up last in the layout; a dropped view stays listed
+until commit, so `store.tcl` treats views with an empty layout as gone.

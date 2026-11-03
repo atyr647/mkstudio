@@ -1,7 +1,7 @@
 # Drives the real UI code paths that need no dialogs.  wish tests/gui_logic.tcl
 set here [file dirname [file normalize [info script]]]
 set ::mkstudio_root [file join $here .. mkstudio.vfs]
-source $here/mock_mk4tcl.tcl
+if {![info exists ::env(REAL_MK)]} { source $here/mock_mk4tcl.tcl } else { package require Mk4tcl }
 lappend auto_path $::mkstudio_root/lib
 package require app-mkstudio
 set ::env(HOME) /tmp/mks_home_logic ; file mkdir $::env(HOME)
