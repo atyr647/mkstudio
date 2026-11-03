@@ -57,6 +57,12 @@ jobs:
           REAL_MK=1 tools/ext/tclkit-8.6.3-linux-x86_64 tests/run.tcl tests/test_power_loss.tcl
           MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views REAL_MK=1 tools/ext/tclkit-8.5.17-linux-x86_64 tests/run.tcl tests/test_power_loss.tcl
 
+      - name: Power safety (first commit, checksum, backup), crash reports, update path (Tcl 8.6 and 8.5)
+        run: |
+          for kit in tools/ext/tclkit-8.6.3-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+            for t in test_durability test_crash test_update; do REAL_MK=1 $kit tests/run.tcl tests/$t.tcl; done
+          done
+
       - name: Write-lock protocol, crash points and chaos (Tcl 8.6 and 8.5)
         run: |
           for kit in tools/ext/tclkit-8.6.3-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
@@ -80,6 +86,12 @@ jobs:
         run: tools/ext/tclkit-8.6.3-linux-x86_64 tests/verify_payload.tcl dist/*
       - name: Launch the Linux starpack
         run: tests/smoke_starpack.sh
+      - name: --version and --selftest of the Linux starpack
+        run: |
+          v=$(grep -o 'current [0-9][^ ]*' mkstudio.vfs/lib/app-mkstudio/version.tcl | cut -d' ' -f2)
+          test "$(dist/mkstudio-linux-x86_64 --version)" = "$v"
+          dist/mkstudio-linux-x86_64 --selftest "$RUNNER_TEMP/st.txt"
+          cat "$RUNNER_TEMP/st.txt"; grep -q "^ok $v mk4tcl yes" "$RUNNER_TEMP/st.txt"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -90,7 +102,7 @@ jobs:
   windows:
     needs: linux
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     defaults:
       run:
         shell: bash
@@ -109,12 +121,14 @@ jobs:
 
       # The Windows tclkit has no console, so each test also writes its output to MKS_TEST_LOG.
       - name: Engine, contract, persistence and UI tests on Windows (real Metakit)
-        timeout-minutes: 10
+        timeout-minutes: 25
         run: |
           fail=0
-          for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_lock_protocol test_lock_crash test_grid gui_logic; do
+          for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_durability test_crash test_update test_lock_protocol test_lock_crash test_grid gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
-            MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$(cygpath -w "$log")" timeout 300 "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
+            # forcing data to disk starts PowerShell twice per commit: only the durability test does it for real
+            D=0; [ "$t" = test_durability ] && D=1
+            MKS_DURABLE=$D MKS_EXPECT_FLUSH=1 MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$(cygpath -w "$log")" timeout 300 "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
           done
           exit $fail
@@ -123,6 +137,15 @@ jobs:
         if: always()
         run: |
           for f in "$RUNNER_TEMP"/*.log; do echo "=== $f"; cat "$f"; done
+
+      - name: --version and --selftest of the Windows starpack
+        timeout-minutes: 3
+        run: |
+          v=$(grep -o 'current [0-9][^ ]*' mkstudio.vfs/lib/app-mkstudio/version.tcl | cut -d' ' -f2)
+          rm -f "$RUNNER_TEMP/st.txt"
+          ./dist/mkstudio-windows-x86_64.exe --selftest "$(cygpath -w "$RUNNER_TEMP/st.txt")"
+          for i in $(seq 1 30); do [ -s "$RUNNER_TEMP/st.txt" ] && break; sleep 1; done
+          cat "$RUNNER_TEMP/st.txt"; grep -q "^ok $v mk4tcl yes" "$RUNNER_TEMP/st.txt"
 
       - name: Launch the Windows starpack
         timeout-minutes: 5
@@ -220,10 +243,10 @@ jobs:
           file "$KIT"
 
       - name: Engine, contract, persistence and UI tests on macOS (real Metakit, current Tk)
-        timeout-minutes: 10
+        timeout-minutes: 15
         run: |
           fail=0
-          for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_lock_protocol test_lock_crash test_grid gui_logic; do
+          for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_durability test_crash test_update test_lock_protocol test_lock_crash test_grid gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
             MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$log" perl -e 'alarm 300; exec @ARGV' "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
@@ -247,6 +270,32 @@ jobs:
           codesign --force --sign - "$OUT" || echo "(codesign not applied)"
           echo "OUT=$OUT" >> "$GITHUB_ENV"
 
+      - name: --version and --selftest of the macOS starpack
+        run: |
+          v=$(grep -o 'current [0-9][^ ]*' mkstudio.vfs/lib/app-mkstudio/version.tcl | cut -d' ' -f2)
+          test "$("./$OUT" --version)" = "$v"
+          "./$OUT" --selftest "$RUNNER_TEMP/st.txt"; cat "$RUNNER_TEMP/st.txt"; grep -q "^ok $v mk4tcl yes" "$RUNNER_TEMP/st.txt"
+
+      - name: Build and test the .app and .dmg
+        timeout-minutes: 10
+        run: |
+          v=$(grep -o 'current [0-9][^ ]*' mkstudio.vfs/lib/app-mkstudio/version.tcl | cut -d' ' -f2)
+          packaging/macos/make-dmg.sh "$v" "$OUT" dist
+          DMG=$(ls dist/MKStudio-*.dmg)
+          MNT="$RUNNER_TEMP/dmg"; mkdir -p "$MNT"
+          hdiutil attach "$DMG" -mountpoint "$MNT" -nobrowse -quiet
+          ls -la "$MNT"
+          codesign --verify --deep --strict "$MNT/MK Studio.app"
+          "$MNT/MK Studio.app/Contents/MacOS/mkstudio" --selftest "$RUNNER_TEMP/st2.txt"
+          cat "$RUNNER_TEMP/st2.txt"; grep -q "^ok $v mk4tcl yes" "$RUNNER_TEMP/st2.txt"
+          # the app must also start as an app (a window appears and it keeps running)
+          cp -R "$MNT/MK Studio.app" "$RUNNER_TEMP/MK Studio.app"
+          hdiutil detach "$MNT" -quiet
+          open -n "$RUNNER_TEMP/MK Studio.app" --args || true
+          sleep 10
+          pgrep -f "MK Studio.app/Contents/MacOS/mkstudio" >/dev/null || { echo "the app exited early"; exit 1; }
+          pkill -f "MK Studio.app/Contents/MacOS/mkstudio" || true
+
       - name: Launch the macOS starpack
         timeout-minutes: 5
         run: |
@@ -267,6 +316,7 @@ jobs:
           path: |
             macos-starpack.png
             dist/mkstudio-macos-*
+            dist/MKStudio-*.dmg
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------- mkit-sql: does the other repo still fit?
@@ -303,11 +353,102 @@ jobs:
       - name: Bulk mutation, MK Studio vs mkit-sql (identical workloads, results must be identical)
         run: MKITSQL_DIR="$PWD/mkit-sql" REAL_MK=1 tools/ext/tclkit-8.6.3-linux-x86_64 tests/bench_mutation.tcl 100000
 
+  # ---------------------------------------------------------------- installers that can be built anywhere
+  package:
+    needs: linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: starpacks
+          path: dist
+      - name: Install makensis
+        run: sudo apt-get update && sudo apt-get install -y nsis
+      - name: .deb, .tar.gz and the Windows installer
+        run: |
+          v=$(grep -o 'current [0-9][^ ]*' mkstudio.vfs/lib/app-mkstudio/version.tcl | cut -d' ' -f2)
+          base=${v%%-*}
+          chmod +x dist/mkstudio-linux-x86_64
+          mkdir -p packages
+          packaging/linux/make-packages.sh "$v" dist/mkstudio-linux-x86_64 packages
+          makensis -V2 -DVERSION="$v" -DVIVERSION="$base.0" -DEXE="$PWD/dist/mkstudio-windows-x86_64.exe" \
+            -DICON="$PWD/packaging/icons/mkstudio.ico" -DOUTFILE="$PWD/packages/MKStudio-$v-windows-x64-setup.exe" packaging/windows/installer.nsi
+          ls -l packages
+      - name: Install the .deb, run it, remove it
+        run: |
+          sudo dpkg -i packages/mkstudio_*_amd64.deb
+          v=$(grep -o 'current [0-9][^ ]*' mkstudio.vfs/lib/app-mkstudio/version.tcl | cut -d' ' -f2)
+          mkstudio --selftest "$RUNNER_TEMP/st.txt"; cat "$RUNNER_TEMP/st.txt"; grep -q "^ok $v mk4tcl yes" "$RUNNER_TEMP/st.txt"
+          test -f /usr/share/applications/mkstudio.desktop
+          test -f /usr/share/icons/hicolor/256x256/apps/mkstudio.png
+          sudo dpkg -r mkstudio
+          test ! -e /usr/bin/mkstudio
+      - name: The tarball installs for one user
+        run: |
+          export HOME=$(mktemp -d)
+          tar xzf packages/MKStudio-*-linux-x86_64.tar.gz -C "$HOME"
+          sh "$HOME"/MKStudio-*-linux-x86_64/install.sh
+          "$HOME/.local/bin/mkstudio" --selftest "$HOME/st.txt"; cat "$HOME/st.txt"
+          grep -q "^Exec=$HOME/.local/bin/mkstudio" "$HOME/.local/share/applications/mkstudio.desktop"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: packages/*
+
+  windows-installer:
+    needs: package
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: packages
+      - name: Install silently, check, run, uninstall
+        run: |
+          v=$(grep -o 'current [0-9][^ ]*' mkstudio.vfs/lib/app-mkstudio/version.tcl | cut -d' ' -f2)
+          SETUP=$(ls packages/MKStudio-*-windows-x64-setup.exe)
+          INST=$(cygpath -u "$LOCALAPPDATA")/Programs/"MK Studio"
+          "$SETUP" /S
+          for i in $(seq 1 60); do [ -f "$INST/mkstudio.exe" ] && [ -f "$INST/Uninstall.exe" ] && break; sleep 1; done
+          ls -la "$INST"
+          test -f "$INST/mkstudio.exe"
+          test -f "$APPDATA/Microsoft/Windows/Start Menu/Programs/MK Studio/MK Studio.lnk"
+          reg query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\MKStudio' //v DisplayVersion | grep -q "$v"
+          reg query 'HKCU\Software\Classes\MKStudio.Database\shell\open\command'
+          rm -f "$RUNNER_TEMP/st.txt"
+          "$INST/mkstudio.exe" --selftest "$(cygpath -w "$RUNNER_TEMP/st.txt")"
+          for i in $(seq 1 30); do [ -s "$RUNNER_TEMP/st.txt" ] && break; sleep 1; done
+          cat "$RUNNER_TEMP/st.txt"; grep -q "^ok $v mk4tcl yes" "$RUNNER_TEMP/st.txt"
+          # installing again over a copy that exists is an upgrade
+          "$SETUP" /S
+          for i in $(seq 1 30); do sleep 1; [ -f "$INST/mkstudio.exe" ] && break; done
+          test -f "$INST/mkstudio.exe"
+          # uninstall (the uninstaller copies itself away and returns at once: wait for the files to go)
+          "$INST/Uninstall.exe" /S
+          for i in $(seq 1 60); do [ ! -f "$INST/mkstudio.exe" ] && break; sleep 1; done
+          test ! -f "$INST/mkstudio.exe"
+          test ! -f "$APPDATA/Microsoft/Windows/Start Menu/Programs/MK Studio/MK Studio.lnk"
+          ! reg query 'HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\MKStudio' 2>/dev/null
+          echo "installer: install, upgrade, run, uninstall all fine"
+
   release:
-    needs: [linux, windows, macos]
+    needs: [linux, windows, macos, package, windows-installer]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+      - name: The tag must be the version in the source
+        run: |
+          v=$(grep -o 'current [0-9][^ ]*' mkstudio.vfs/lib/app-mkstudio/version.tcl | cut -d' ' -f2)
+          test "${GITHUB_REF_NAME}" = "v$v" || { echo "::error::tag ${GITHUB_REF_NAME} does not match the version $v in version.tcl"; exit 1; }
+          echo "VERSION=$v" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v4
         with:
           name: starpacks
@@ -317,6 +458,27 @@ jobs:
           pattern: macos-*
           path: dist
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+      - name: Checksums and notes
+        run: |
+          cd dist
+          rm -f mkstudio-linux-x86_64.exe *.png
+          # only release files; the in-app updater downloads SHA256SUMS next to the file it replaces
+          ls -l
+          sha256sum mkstudio-* MKStudio-* mkstudio_* > SHA256SUMS
+          cat SHA256SUMS
+          cd ..
+          sed "s/<version>/$VERSION/g" RELEASE_NOTES.md > notes.md
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/mkstudio-*
+          files: |
+            dist/mkstudio-*
+            dist/MKStudio-*
+            dist/mkstudio_*
+            dist/SHA256SUMS
+          body_path: notes.md
+          name: MK Studio ${{ env.VERSION }}
+          prerelease: ${{ contains(github.ref_name, '-') }}

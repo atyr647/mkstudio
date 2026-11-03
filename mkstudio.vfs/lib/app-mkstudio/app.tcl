@@ -1,7 +1,9 @@
 # app.tcl -- MK Studio main window and application logic.
 
 namespace eval ::app {
-    variable version 1.0
+    variable version $::version::current
+    variable updating 0
+    variable restartAfterQuit 0
     variable A            ;# per-document info:  A(type,id) A(title,id) A(saved,id) A(file,id)
     array set A {}
     variable seq 0
@@ -9,7 +11,7 @@ namespace eval ::app {
     variable cfg
     array set cfg {
         theme dark recent {} geometry 1360x820 showEx 1 showPr 0 exWidth 280 prWidth 280
-        fontSize 11 lastDir ""
+        fontSize 11 lastDir "" updateCheck 1 updateLast 0
     }
     variable busyFlag 0
     variable root ""
@@ -182,6 +184,10 @@ proc ::app::buildMenus {} {
 
     set m .mb.help.m
     $m add command -label "Keyboard Shortcuts" -accelerator F1 -command ::app::shortcuts
+    $m add separator
+    $m add command -label "Check for Updates..." -command {::app::checkUpdates 1}
+    $m add checkbutton -label "Check for Updates Automatically" -variable ::app::cfg(updateCheck)
+    $m add command -label "Open Crash Reports Folder" -command ::app::openCrashFolder
     $m add separator
     $m add command -label "About MK Studio" -command ::app::about
 }
@@ -598,10 +604,40 @@ proc ::app::openOne {path} {
             return ""
         }
     }
+    if {[::store::integrityState $tag] eq "damaged"} {
+        # the content of the file changed without its size or time changing: a bad sector, bit rot, a failing disk
+        set bak [::store::backupPath $path]
+        set have [file exists $bak]
+        set msg "$path\n\nThis file no longer matches the checksum recorded when it was last saved by MK Studio, although its size and date are unchanged. That is what a failing disk or memory looks like: some of the data may be wrong."
+        if {$have} {
+            append msg "\n\nA backup from [clock format [file mtime $bak] -format {%Y-%m-%d %H:%M}] is available (the file as it was before the last editing session). Restoring it keeps the damaged file next to it as .damaged."
+            set buttons {"Restore Backup" "Open Anyway" Cancel}
+        } else {
+            append msg "\n\nThere is no backup."
+            set buttons {"Open Anyway" Cancel}
+        }
+        set r [::ui::ask "Database may be damaged" $msg $buttons warn]
+        if {$r eq "Restore Backup"} {
+            ::store::closeFile $tag
+            if {[catch {::store::restoreBackup $path} err]} {
+                ::ui::problem "Could not restore the backup:\n\n$err" "Restore backup"
+                return ""
+            }
+            afterDbChange
+            set tag [openOne $path]
+            if {$tag ne ""} { setStatus "Restored '$tag' from its backup. The damaged file was kept as [file tail $path].damaged" warn }
+            return $tag
+        } elseif {$r ne "Open Anyway"} {
+            ::store::closeFile $tag
+            afterDbChange
+            return ""
+        }
+    }
     if {[::store::lockedByOther $tag] ne ""} {
         setStatus "'$tag' is being edited by another process - this read-only view may be inconsistent." warn
     }
     addRecent $path
+    ::crash::crumb "database opened[expr {[::store::readonly $tag] ? { (read-only)} : {}}]"
     afterDbChange
     ::explorer::expandDb $tag
     if {[::store::repairedNote $tag] ne ""} {
@@ -683,6 +719,7 @@ proc ::app::closeDB {tag {discard 0}} {
         if {[docType $id] in {data design} && [lindex [split $A(path,$id) .] 0] eq $tag} { closeDoc $id 1 }
     }
     ::store::closeFile $tag
+    ::crash::crumb "database closed"
     afterDbChange
     setStatus "Closed '$tag'." ""
     return 1
@@ -710,6 +747,7 @@ proc ::app::commit {{tag ""}} {
         if {[::store::readonly $t]} { setStatus "'$t' is read-only." warn ; continue }
         if {[catch {::store::commit $t} err]} { ::ui::problem "Commit of '$t' failed:\n\n$err" ; return }
     }
+    ::crash::crumb "committed"
     ::explorer::refresh
     updatePending
     setStatus "Committed changes to [join $tags {, }]." ok
@@ -726,6 +764,7 @@ proc ::app::rollback {{tag ""}} {
     set r [::ui::ask "Roll back" "Discard $n uncommitted change(s) in '$tag'?\n\nThe database returns to its last committed state." {"Roll Back" Cancel} stop]
     if {$r ne "Roll Back"} return
     if {[catch {::store::rollback $tag} err]} { ::ui::problem "Roll back failed:\n\n$err" ; return }
+    ::crash::crumb "rolled back"
     dataChanged 1
     setStatus "Rolled back '$tag'." ok
 }
@@ -836,6 +875,7 @@ proc ::app::dropView {m} {
 proc ::app::execute {} {
     set id [currentQuery]
     if {$id eq ""} { setStatus "Open a query window first (Ctrl+N)." warn ; return }
+    ::crash::crumb "query executed"
     ::qdoc::execute $id
 }
 proc ::app::toggleResults {} {
@@ -1077,7 +1117,75 @@ proc ::app::shortcuts {} {
 
 proc ::app::about {} {
     variable version
-    ::ui::ask "About MK Studio" "MK Studio $version\n\nA workbench for Metakit databases, written entirely in Tcl/Tk and designed to live inside a starpack.\n\nTcl [info patchlevel]  \u00B7  Tk [package present Tk]\nQuery language: $::engine::name" OK info
+    ::ui::ask "About MK Studio" "MK Studio $version\n\nA workbench for Metakit databases, written entirely in Tcl/Tk and designed to live inside a starpack.\n\nTcl [info patchlevel]  \u00B7  Tk [package present Tk]\nQuery language: $::engine::name\n\nhttps://github.com/$::version::repo" OK info
+}
+
+# ============================================================================
+#  updates and crash reports
+# ============================================================================
+proc ::app::openCrashFolder {} {
+    set d [::crash::ensureDir]
+    if {[::crash::openExternal $d]} { ::ui::ask "Crash reports" "Reports are saved in:\n\n$d" OK info }
+}
+proc ::app::updateProgress {msg} { setStatus $msg "" ; update idletasks }
+# manual = 1: the user asked (always answer); 0: the quiet check at start-up (only speaks when there is news)
+proc ::app::checkUpdates {manual} {
+    variable cfg ; variable updating ; variable version
+    if {$updating} return
+    set updating 1
+    if {$manual} { setStatus "Checking for updates..." "" }
+    set rc [catch {::update::check} info]
+    set updating 0
+    ::crash::crumb "update check [expr {$rc ? {failed} : {done}}]"
+    if {$rc} {
+        if {$manual} {
+            set r [::ui::ask "Check for updates" "The check could not be completed:\n\n[string range $info 0 400]\n\nYou can look for a new version on the releases page." {"Open Releases Page" Close} warn]
+            if {$r eq "Open Releases Page"} { ::crash::openExternal "https://github.com/$::version::repo/releases" }
+        }
+        return
+    }
+    set cfg(updateLast) [clock seconds]
+    if {$info eq ""} {
+        if {$manual} { ::ui::ask "Check for updates" "MK Studio $version is the newest version." OK info ; setStatus "MK Studio is up to date." ok }
+        return
+    }
+    if {!$manual} {
+        setStatus "MK Studio [dict get $info version] is available - Help > Check for Updates..." warn
+        return
+    }
+    updateDialog $info
+}
+proc ::app::updateDialog {info} {
+    variable version ; variable restartAfterQuit
+    set new [dict get $info version]
+    set notes [string trim [string range [dict get $info notes] 0 700]]
+    set msg "MK Studio $new is available (you have $version)."
+    if {[dict get $info pre]} { append msg "\nThis is a pre-release." }
+    if {$notes ne ""} { append msg "\n\n$notes" }
+    set exe [::update::selfReplaceable]
+    if {$exe ne ""} {
+        append msg "\n\nUpdate Now downloads the new version, checks it against the release's SHA-256 checksums, tests it, and replaces this program. The old one is kept next to it as [file tail $exe].old."
+        set buttons {"Update Now" "Release Page" Later}
+    } else {
+        append msg "\n\nThis copy cannot replace itself ($::update::lastError). Download the installer or file for your system from the release page."
+        set buttons {"Release Page" Later}
+    }
+    set r [::ui::ask "Update available" $msg $buttons info]
+    if {$r eq "Release Page"} { ::crash::openExternal [dict get $info page] ; return }
+    if {$r ne "Update Now"} return
+    if {[pendingTotal] > 0} {
+        ::ui::ask "Update" "There are uncommitted changes. Commit or roll them back first, then run the update again." OK warn
+        return
+    }
+    if {[catch {::update::install $info ::app::updateProgress} err]} {
+        ::crash::crumb "update failed"
+        set r [::ui::ask "Update failed" "$err\n\nNothing was changed." {"Release Page" Close} error]
+        if {$r eq "Release Page"} { ::crash::openExternal [dict get $info page] }
+        return
+    }
+    ::crash::crumb "updated to $new"
+    set r [::ui::ask "Updated" "MK Studio $new is installed. Restart to use it." {"Restart Now" Later} ok]
+    if {$r eq "Restart Now"} { set restartAfterQuit 1 ; quit ; set restartAfterQuit 0 }
 }
 
 proc ::app::quit {} {
@@ -1090,6 +1198,9 @@ proc ::app::quit {} {
         if {[docType $id] eq "query"} { if {![closeDoc $id]} return }
     }
     saveSettings
+    ::crash::cleanExit
+    variable restartAfterQuit
+    if {$restartAfterQuit} { catch {exec [info nameofexecutable] &} }
     destroy .
 }
 
@@ -1145,11 +1256,18 @@ proc ::app::main {argv} {
     variable cfg ; variable themeVar
     loadSettings
     set themeVar $cfg(theme)
+    ::crash::install
+    set deadSessions [::crash::start]
+    ::update::cleanup
     wm withdraw .
     wm title . "MK Studio"
     wm minsize . [::theme::px 960] [::theme::px 600]
     ::theme::init
     ::theme::apply $cfg(theme)
+    # macOS: files opened from Finder / the Dock / "Open With" arrive as an Apple event, not on the command line
+    if {[tk windowingsystem] eq "aqua"} {
+        proc ::tk::mac::OpenDocument {args} { foreach f $args { catch {::app::openOne $f} } }
+    }
     catch {::editor::zoomReset ; set ::editor::fontSize $cfg(fontSize) ; font configure MkMono -size $cfg(fontSize)}
     catch {wm iconphoto . -default [::icons::get db]}
 
@@ -1180,6 +1298,11 @@ proc ::app::main {argv} {
     docSelected ""
     updatePending
     setStatus "Ready" ok
+    if {[llength $deadSessions]} {
+        ::crash::reportDead $deadSessions
+        setStatus "The previous session ended unexpectedly. A report was saved (Help > Open Crash Reports Folder)." warn
+    }
+    if {$cfg(updateCheck) && ![info exists ::env(MKS_NO_UPDATE_CHECK)] && [clock seconds] - $cfg(updateLast) > 86400} { after 5000 {::app::checkUpdates 0} }
     bind .main.ex <<ExplorerRefreshed>> {::app::onExplorerSelect [::explorer::selected]}
     onExplorerSelect {}
 

@@ -347,13 +347,14 @@ proc ::store::openFile {path args} {
     }
     if {!$create && ![file exists $path]} { error "File not found: $path" }
     set holder [lockHolder $path]
-    set lf "" ; set mine "" ; set repairNote ""
+    set lf "" ; set mine "" ; set repairNote "" ; set integ ""
     if {!$readonly} {
         if {$holder ne ""} { lockedError $path $holder }
         set mine [takeLock $path]                        ;# before opening, so a refusal touches nothing
         set lf [expr {$mine eq "" ? "" : [lockPath $path]}]
         # with the lock held nobody else is mid-commit: put right a commit that was interrupted
         if {[file exists $path] && [catch {repairFile $path} repairNote]} { set repairNote "" }
+        if {[file exists $path] && ![catch {integrityOnOpen $path} verdict]} { set integ $verdict }
     }
     set tag [makeTag $path]
     set opts {-nocommit}
@@ -376,6 +377,7 @@ proc ::store::openFile {path args} {
     }
     lappend tags $tag
     if {$repairNote ne ""} { variable repaired ; set repaired($tag) $repairNote }
+    if {$integ ne ""} { variable integrity ; set integrity($tag) $integ }
     set file($tag) $path ; set ro($tag) $readonly ; set dirty($tag) 0
     touchGen $tag
     if {$readonly} {
@@ -408,7 +410,7 @@ proc ::store::closeFile {tag} {
     if {$i >= 0} { set tags [lreplace $tags $i $i] }
     unset -nocomplain file($tag) ro($tag) dirty($tag)
     cacheClear $tag
-    unset -nocomplain ::store::gen($tag) ::store::repaired($tag)
+    unset -nocomplain ::store::gen($tag) ::store::repaired($tag) ::store::backedUp($tag) ::store::integrity($tag)
 }
 
 # ---- interrupted commits and power loss -------------------------------------------------------------------------
@@ -429,7 +431,7 @@ proc ::store::closeFile {tag} {
 #   * without a record, a file longer than its header says (an unfinished append) is cut back to the header's offset.
 # Not covered: a disk that loses data it said was written, or a system with no way to force data out (Windows has no
 # `sync` command, so there the protocol is as good as the OS's own write ordering - best effort).
-namespace eval ::store { variable durable 1 }   ;# 0 turns the `sync` calls off (the record and the repair stay)
+namespace eval ::store { variable durable [expr {[info exists ::env(MKS_DURABLE)] ? $::env(MKS_DURABLE) : 1}] }   ;# 0 turns the `sync` calls off (the record and the repair stay); env MKS_DURABLE=0 for tests
 
 proc ::store::commitRecord {path} { return $path.commit }
 
@@ -442,28 +444,66 @@ proc ::store::headerInfo {path} {
     binary scan $d H* hex
     return [dict create size [file size $path] offset $off header $hex]
 }
-# force the files (and the folder entry) to disk where the system can: coreutils `sync FILE...` (Linux), else a plain `sync`
+# force the files (and the folder entry) to disk where the system can:
+#   Linux/BSD  coreutils `sync FILE...`, else a plain `sync`
+#   macOS      `sync` (flushes the OS cache; the drive's own cache is out of reach from Tcl)
+#   Windows    FlushFileBuffers through PowerShell (.NET FileStream.Flush($true)), if PowerShell can be started
+# Returns 1 when something was asked to force the data out, 0 when nothing could be (tests and the status line use it).
 proc ::store::syncDisk {args} {
     variable durable
-    if {!$durable || $::tcl_platform(platform) eq "windows"} return
+    if {!$durable} { return 0 }
+    if {$::tcl_platform(platform) eq "windows"} { return [syncWindows {*}$args] }
     set paths {}
     foreach p $args { lappend paths $p ; lappend paths [file dirname $p] }
-    if {[catch {exec sync {*}[lsort -unique $paths]}]} { catch {exec sync} }
+    if {[catch {exec sync {*}[lsort -unique $paths]}] && [catch {exec sync}]} { return 0 }
+    return 1
 }
-# Called before mk::file commit: remember the state we can fall back to.
+namespace eval ::store { variable psOk -1 }
+proc ::store::syncWindows {args} {
+    variable psOk
+    if {$psOk == 0} { return 0 }
+    set files {}
+    foreach p $args { if {[file isfile $p]} { lappend files [file nativename $p] } }
+    if {![llength $files]} { return 1 }
+    # file names go in through the environment, not the command line: no quoting problems
+    set ::env(MKS_FLUSH) [join $files "|"]
+    set script {foreach($f in $env:MKS_FLUSH.Split('|')){ $s=[IO.File]::Open($f,'Open','ReadWrite','ReadWrite'); try{ $s.Flush($true) } finally{ $s.Dispose() } }}
+    set ok 0 ; set started 0
+    foreach exe {powershell pwsh} {
+        if {[catch {exec $exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command $script 2>@1} out opts]} {
+            # "couldn't execute": no such program (try the next, and remember if neither exists); a program that ran and
+            # failed (a file another program keeps locked) only fails THIS flush
+            if {[lindex [dict get $opts -errorcode] 0] eq "CHILDSTATUS"} { set started 1 }
+            continue
+        }
+        set ok 1 ; set started 1 ; break
+    }
+    unset -nocomplain ::env(MKS_FLUSH)
+    if {!$started} { set psOk 0 } else { set psOk 1 }
+    return $ok
+}
+# What a commit can fall back to: the file as it is now.  Three situations:
+#   a Metakit file       -> "<header-hex16> <size>"
+#   no file / 0 bytes    -> "empty 0"       (the first commit of a new database)
+#   anything else        -> not protected   (a starkit, a foreign file)
 proc ::store::beginCommit {path} {
     set info [headerInfo $path]
-    if {$info eq ""} { return 0 }
+    if {$info ne ""} {
+        set line "[dict get $info header] [dict get $info size]"
+    } elseif {![file exists $path] || [file size $path] == 0} {
+        set line "empty 0"
+    } else {
+        return 0
+    }
     set rec [commitRecord $path]
-    if {[catch {
-        set h [open $rec w] ; puts -nonewline $h "[dict get $info header] [dict get $info size]" ; close $h
-    }]} { return 0 }
+    if {[catch { set h [open $rec w] ; puts -nonewline $h $line ; close $h }]} { return 0 }
     syncDisk $rec $path
     return 1
 }
 proc ::store::endCommit {path} {
     syncDisk $path
     catch {file delete [commitRecord $path]}
+    catch {sumWrite $path}
 }
 # Put right an interrupted commit.  Needs the write lock.  Returns "" (nothing to do) or what was done.
 proc ::store::repairFile {path} {
@@ -472,6 +512,16 @@ proc ::store::repairFile {path} {
     if {[file exists $rec]} {
         if {[catch {set h [open $rec r] ; set d [string trim [read $h]] ; close $h}]} { return "" }
         lassign [split $d " "] hex size
+        if {$hex eq "empty" && $size == 0} {
+            # the first commit of a new database was interrupted: it is a new, empty database again
+            file delete $rec
+            if {[file exists $path] && [file size $path] > 0} {
+                set h [open $path r+b] ; chan truncate $h 0 ; close $h
+                syncDisk $path
+                return "The first save of this new database was interrupted and has been undone: the database is empty again."
+            }
+            return ""
+        }
         if {[string length $hex] == 16 && [string is integer -strict $size] && $info ne ""} {
             if {[file size $path] == $size && [dict get $info header] eq $hex} {
                 file delete $rec                                      ;# the commit never wrote anything
@@ -497,14 +547,84 @@ proc ::store::repairFile {path} {
     }
     return ""
 }
+
+# ---- silent corruption: a checksum of the whole file, and a backup ----------------------------------------------------
+# Metakit stores no checksums, so a flipped bit or a lost sector inside the data is invisible to it.  After every commit
+# <file>.sum records "<crc32> <size> <mtime>" of the finished file.  When the file is next opened for writing the sum is
+# checked - but only if size and modification time still match what was recorded (a file that another program has changed
+# legitimately just gets a new baseline).  Same size, same time, different content = damaged: the file is not changed and
+# the application offers the backup.  The backup <file>.bak is a copy of the file as it was before the first commit of an
+# editing session; it is never overwritten by a copy that fails the check.  Files over `sumLimit` MB are not covered.
+namespace eval ::store { variable sumLimit 512 ; variable backups 1 }
+
+proc ::store::sumPath {path} { return $path.sum }
+proc ::store::backupPath {path} { return $path.bak }
+proc ::store::crcFile {path} {
+    set crc 0
+    set h [open $path rb]
+    set rc [catch { while {![eof $h]} { set crc [zlib crc32 [read $h 4194304] $crc] } } err opts]
+    close $h
+    if {$rc} { return -options $opts $err }                       ;# (no `try` in Tcl 8.5)
+    return [format %08x $crc]
+}
+proc ::store::sumCovered {path} { variable sumLimit ; expr {[file isfile $path] && [file size $path] <= $sumLimit * 1048576 && [file size $path] > 0} }
+proc ::store::sumWrite {path} {
+    if {![sumCovered $path]} { file delete [sumPath $path] ; return 0 }
+    set line "[crcFile $path] [file size $path] [file mtime $path]"
+    set tmp [sumPath $path].tmp
+    set h [open $tmp w] ; puts -nonewline $h $line ; close $h
+    file rename -force $tmp [sumPath $path]
+    return 1
+}
+# ok | none (no sum / not covered) | changed (size or time differ: modified by something else) | damaged
+proc ::store::sumCheck {path} {
+    if {![sumCovered $path] || ![file exists [sumPath $path]]} { return none }
+    if {[catch {set h [open [sumPath $path] r] ; set d [string trim [read $h]] ; close $h}] || [llength $d] != 3} { return none }
+    lassign $d crc size mtime
+    if {$size != [file size $path] || $mtime != [file mtime $path]} { return changed }
+    return [expr {[crcFile $path] eq $crc ? "ok" : "damaged"}]
+}
+# keep a copy of the database as it is before this session changes it
+proc ::store::backupBeforeCommit {path} {
+    variable backups
+    if {!$backups || ![sumCovered $path] || ![file exists $path]} { return 0 }
+    if {[sumCheck $path] eq "damaged"} { return 0 }               ;# never replace a good backup with a bad copy
+    set bak [backupPath $path]
+    if {[catch {
+        file copy -force $path $bak.tmp
+        file rename -force $bak.tmp $bak
+    }]} { catch {file delete $bak.tmp} ; return 0 }
+    return 1
+}
+# Put the backup back (the damaged file is kept as <file>.damaged).  Needs the write lock - call it with the file closed.
+proc ::store::restoreBackup {path} {
+    set bak [backupPath $path]
+    if {![file exists $bak]} { error "There is no backup of this database." }
+    if {[file exists $path]} { file rename -force $path $path.damaged }
+    file copy -force $bak $path
+    catch {file delete [sumPath $path] ; file delete [commitRecord $path]}
+    catch {sumWrite $path}
+    return $path
+}
+# at open for writing: the verdict (ok none changed damaged), and a new baseline when there is none or it is out of date
+proc ::store::integrityOnOpen {path} {
+    set v [sumCheck $path]
+    if {$v eq "none" || $v eq "changed"} { catch {sumWrite $path} }
+    return $v
+}
+namespace eval ::store { variable integrity ; array set integrity {} }
+proc ::store::integrityState {tag} { variable integrity ; if {[info exists integrity($tag)]} { return $integrity($tag) } ; return "" }
 # interrupted commits repaired during open, by tag - for the application to tell the user
-namespace eval ::store { variable repaired ; array set repaired {} }
+namespace eval ::store { variable repaired ; array set repaired {} ; variable backedUp ; array set backedUp {} }
 proc ::store::repairedNote {tag} { variable repaired ; if {[info exists repaired($tag)]} { return $repaired($tag) } ; return "" }
 
 proc ::store::commit {tag} {
-    variable dirty ; variable file
+    variable dirty ; variable file ; variable backedUp
     set record 0
-    if {$dirty($tag) > 0} { set record [beginCommit $file($tag)] }
+    if {$dirty($tag) > 0} {
+        if {![info exists backedUp($tag)]} { set backedUp($tag) [backupBeforeCommit $file($tag)] }
+        set record [beginCommit $file($tag)]
+    }
     mk::file commit $tag
     set dirty($tag) 0
     if {$record} { endCommit $file($tag) }

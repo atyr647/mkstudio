@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=MK Studio
+GenericName=Metakit database workbench
+Comment=Browse, query and edit Metakit databases
+Exec=mkstudio %F
+Icon=mkstudio
+Terminal=false
+Categories=Development;Database;
+Keywords=metakit;database;sql;tcl;

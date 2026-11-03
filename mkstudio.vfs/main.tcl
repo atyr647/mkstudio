@@ -12,6 +12,24 @@ if {![catch {package require starkit}]} {
 }
 lappend ::auto_path [file join $::mkstudio_root lib]
 
+# Command-line switches that must work without opening a window (a GUI-subsystem Windows build has no console,
+# so --selftest writes its answer to a file):
+#   --version              print the version and exit
+#   --selftest FILE        write "ok <version> mk4tcl yes|no" to FILE and exit   (the updater runs this on a download)
+source [file join $::mkstudio_root lib app-mkstudio version.tcl]
+if {[lindex $argv 0] eq "--version"} {
+    puts $::version::current
+    catch {if {[info exists ::env(MKS_TEST_LOG)]} { set h [open $::env(MKS_TEST_LOG) a] ; puts $h $::version::current ; close $h }}
+    exit 0
+}
+if {[lindex $argv 0] eq "--selftest"} {
+    source [file join $::mkstudio_root lib app-mkstudio update.tcl]
+    set rc [catch {
+        set h [open [lindex $argv 1] w] ; puts $h [::update::selftestText] ; close $h
+    }]
+    exit $rc
+}
+
 # Metakit: real Mk4tcl when available.  `--mock` (development only) loads the
 # pure-Tcl stand-in from tests/ so the UI can be exercised without Metakit.
 set ::mkstudio_args {}
@@ -23,9 +41,17 @@ foreach a $argv {
 if {[llength [info commands ::mk::file]] == 0} { catch {package require Mk4tcl} }
 
 package require app-mkstudio
+# an error while starting (before the window exists) still leaves a report and a message, not a silent exit
+proc ::mkstudio_fatal {err opts} {
+    set report ""
+    catch {lassign [::crash::record $err [dict get $opts -errorinfo] Startup] report}
+    catch {tk_messageBox -icon error -title "MK Studio" -message "MK Studio could not start.\n\n$err\n\nA report was saved:\n$report"}
+    puts stderr "MK Studio could not start: $err\n[dict get $opts -errorinfo]"
+    exit 1
+}
 if {[llength [info commands ::mk::file]] == 0} {
     ::app::main {}
     ::ui::problem "Mk4tcl (the Metakit binding) was not found.\n\nMK Studio is meant to run as a starpack built on a tclkit, which includes Metakit. You can still look around, but databases cannot be opened." "Metakit not available"
 } else {
-    ::app::main $::mkstudio_args
+    if {[catch {::app::main $::mkstudio_args} err opts]} { ::mkstudio_fatal $err $opts }
 }

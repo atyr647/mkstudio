@@ -96,6 +96,23 @@ A crashed owner leaves its lock behind until the next opener finds it stale (sam
 remote owners, by design. The only time-based rules are the two abandonment limits above (5 s, 10 s), compared with the
 local file system clock.
 
+## Files next to a database
+
+MK Studio keeps a few small files beside `sales.mk`. Another component that writes the same database should know them:
+
+| file | what | lifetime |
+|---|---|---|
+| `sales.mk.lock`, `.lock.guard` | the advisory write lock (above) | while a writer has the file open |
+| `sales.mk.commit` | `<header-hex16> <size>` of the last committed state, or `empty 0` for a new file - written and forced to disk **before** a commit, removed after it | only during a commit; finding it at open means the commit never finished, and the next writer puts the header and size back (`store::repairFile`). Do not delete it, do not "complete" the commit |
+| `sales.mk.sum` | `<crc32> <size> <mtime>` of the file after its last commit | kept; checked at the next write-open only while size and mtime still match |
+| `sales.mk.bak` | the file as it was before the first commit of the last editing session | kept; replaced at the next session that commits |
+| `sales.mk.damaged` | a file that failed its checksum, set aside by *Restore Backup* | until the user deletes it |
+
+A program that writes the database without this protocol (mkit-sql's own storage layer, a script) leaves `.sum` out of date; that is
+harmless - the next MK Studio open sees a different size or time, calls it a legitimate change and takes a new baseline.
+If such a program commits while a `.commit` record exists, the record describes a state that no longer exists: stop and ask the
+user rather than guess. Copying or moving a database: take `.mk` only, with no `.lock`, `.commit`, `.sum` (they would be stale).
+
 ## API (`store.tcl`)
 
     ::store::openFile path ?-readonly? ?-create?   takes/refuses the lock; error code {STORE LOCKED pid host role endpoint}
@@ -109,6 +126,8 @@ local file system clock.
     ::store::onClose cmd                           cmd tag is called just BEFORE a database closes (results freeze themselves)
     ::store::cacheConfigure -budget MB             derived-data cache budget (default 256 MB, env MKS_CACHE_MB; 0 = off)
     ::store::cacheStats                            entries bytes budget hits misses evictions
+    ::store::integrityState tag                    ok none changed damaged - the checksum verdict at the last write-open
+    ::store::restoreBackup path                    put <path>.bak back (call with the file closed)
 
 ## Checklist for adding mkit-sql or a server
 

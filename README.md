@@ -37,7 +37,50 @@ designer use `store.tcl` directly and don't depend on the language at all.
 
 Edit the `stmts` array at the top of that test for your dialect and point it at your engine.
 
-## Get it / build it
+## Install
+
+Download from the [releases page](https://github.com/atyr647/mkstudio/releases). **The files are not signed with a
+certificate** - there is none behind this project - so each system asks you to confirm once:
+
+| System | File | First start |
+|---|---|---|
+| Windows 10/11 | `MKStudio-<version>-windows-x64-setup.exe` (per-user, no administrator rights; Start menu entry, uninstaller, optional desktop shortcut and "Open with" for `.mk` files) or the single file `mkstudio-windows-x86_64.exe` | SmartScreen: *More info > Run anyway* |
+| macOS | `MKStudio-<version>-macos-arm64.dmg` (Apple silicon) / `-x86_64.dmg` (Intel): drag to Applications | right-click the app > *Open* |
+| Debian / Ubuntu | `mkstudio_<version>_amd64.deb` (`sudo apt install ./mkstudio_*.deb`) | |
+| other Linux | `MKStudio-<version>-linux-x86_64.tar.gz`, then `sh install.sh` (installs into `~/.local`, no root) | |
+
+`SHA256SUMS` lists every file. A checksum catches a damaged download, **not** a malicious one (whoever controls the GitHub
+account controls the checksums too) - download only from the project's own releases page. `mkstudio --version` prints the
+version; `mkstudio --selftest FILE` writes a one-line health check to FILE (CI uses it on every platform).
+
+### Updates
+
+*Help > Check for Updates...* asks the GitHub releases API for the newest release (one `GET`; the program name and version
+are the only thing sent) using `curl`, `wget` or - on Windows - PowerShell, because the bundled Tcl has no TLS of its own. A
+daily check at start-up is on by default and can be switched off in the same menu; it only writes a line in the status bar.
+A stand-alone program in a writable folder can then **replace itself**: it downloads the new file, checks its SHA-256 against the
+release's `SHA256SUMS` (no checksum tool = no automatic install), starts it once with `--selftest` and compares the version it
+reports, and only then swaps it in; the old one stays beside it as `mkstudio.old` (rename it back to roll back). Anything
+wrong at any step changes nothing. Installed copies (`.deb`, the `.app`, a program in a protected folder) are not touched:
+the dialog opens the release page for the new installer. Pre-releases are only offered to someone already running one.
+`tests/test_update.tcl` covers all of it against a fake release feed on disk: version order, JSON, choosing a release,
+real download, wrong checksum, truncated download, a new program that does not start, one that reports the wrong version,
+no checksum file, no file for this system, copies that must not replace themselves.
+
+### Crash reports
+
+An error that nothing handled is caught: a dialog says so, and a report is written to a local folder (*Help > Open Crash
+Reports Folder*; `%LOCALAPPDATA%\MKStudio\crashes`, `~/Library/Logs/MKStudio`, `~/.local/state/mkstudio/crashes`).
+It holds the version, system, Tcl/Tk versions, the error message, the call stack as **procedure names and line numbers**
+and the last things the program did ("database opened", "query executed", "committed" - never SQL, rows or values); your
+home folder and user name are replaced and database file names shortened. **Nothing is sent anywhere by the program.** The
+dialog can copy the report or open a pre-filled GitHub issue in your browser; you read it and press submit yourself.
+A crash nothing can catch (Metakit or Tk dying, a power cut) is noticed at the next start: every running copy keeps a small
+marker file with its recent breadcrumbs, and a marker whose process is gone becomes a report. `tests/test_crash.tcl`
+checks what is in a report (and, with a query full of fake secrets, what is not), rotation, the handler, and a really killed
+process.
+
+## Build it yourself
 
     tools/fetch-runtimes.sh             # download SHA1-verified tclkit runtimes into tools/ext/
     ./build.sh                          # Linux  -> dist/mkstudio-linux-x86_64
@@ -67,7 +110,9 @@ Every row below is something that was actually run; the CI badge-of-truth is the
 | **macOS** (`macos-15-intel` and `macos-latest`/Apple silicon) | the same suites pass with a KitCreator-built Tcl/Tk 8.6.16 (native Aqua); the starpack is wrapped, signed, payload-verified and launches |
 | Real-world file (a tclkit's own boot database: subviews + binary columns) | opens, browses, hex view works |
 | 500,000-row file | see the numbers below |
-| Packaged Linux starpack | launches, opens a database, no errors |
+| Packaged Linux starpack | launches, opens a database, no errors; `--version` / `--selftest` answer correctly |
+| Installers | `.deb` is installed, run and removed on a Linux runner; the tarball installs for one user; the Windows setup is installed silently, run, upgraded over itself and uninstalled on a Windows runner (Start menu entry, registry entries, files all checked); the macOS `.dmg` is mounted, signature verified, the app run and started as an app |
+| Update path, crash reports, first-commit / checksum / backup | `tests/test_update.tcl` (93 checks incl. a real download from a fake feed), `tests/test_crash.tcl` (45), `tests/test_durability.tcl` (62), the Help menu / damaged-file / update dialogs in `tests/gui_logic.tcl` |
 | HiDPI | verified with Tk scaling 2.0 on Linux; Windows/macOS DPI behaviour depends on the runtime's manifest |
 | Screen readers | **not supported**: Tk has no accessibility API. Keyboard operation, visible focus and a high-contrast theme are provided instead |
 
@@ -154,12 +199,31 @@ at all.** What MK Studio now does (`store.tcl`):
 
 Cost: a commit takes about 0.25 s longer on a 30 MB database (the two `sync`s).
 
+**Further hardening** (`tests/test_durability.tcl`):
+
+- **Windows now forces the data out too**: `FlushFileBuffers` through PowerShell (`FileStream.Flush($true)`; one short PowerShell
+  start per stage, so two per commit). If PowerShell cannot be started this quietly stays
+  best-effort, as before. CI asserts on a real Windows runner that the flush happened. macOS `sync` flushes the operating
+  system's cache but cannot reach the drive's own cache (`F_FULLFSYNC` is not available from Tcl).
+- **The first commit of a new database is protected**: the record then says "empty", and a record found at the next open
+  makes the file empty again instead of leaving a half-written first save (real kills at every write of a first commit:
+  all come out empty or complete, never half).
+- **Silent corruption is detected**: after every commit `<file>.sum` stores a CRC-32, the size and the modification time of
+  the finished file. At the next open for writing the sum is checked - but only if size and time still match (a file another
+  program legitimately changed just gets a new baseline). Same size and time but different content is what a bad sector or
+  bit rot looks like: MK Studio does not touch the file, says so, and offers the backup.
+- **A backup of the file as it was before the first commit of an editing session** is kept as `<file>.bak` (never replaced
+  by a copy that fails the check). *Restore Backup* keeps the damaged file as `<file>.damaged`.
+- Cost (measured): the CRC of 100 MB takes 0.15 s on every commit, the backup copy 0.35 s once per editing session - a 29 MB database
+  adds about 40 ms per commit. The backup needs as much free disk space as the database.
+- Not covered: files larger than 512 MB (no checksum or backup - the limit is `store::sumLimit`), damage that happens
+  *before* the first baseline, damage that keeps size and time and is also in `.sum` itself.
+
 **Limits - please read.** The result is "the last confirmed commit, or the one before it, never a mixture", *given* the
 model: pages reach the disk in any order, an 8-byte write is atomic (it lies in one sector), and `sync` really forces data
 out. It does not cover a disk that lies about having written (some cheap SSDs and USB sticks), a filesystem that loses a
-whole file, a power cut during the *first* commit of a new file, or data lost from a commit that was already confirmed - and
-**on Windows there is no `sync` command**, so there the record and the repair work (kills are fully covered) but nothing is
-forced to disk: power-loss safety is only as good as the OS's own write ordering. A commit that was in flight when the power
+whole file, or data lost from a commit that was already confirmed - and Windows has no `sync` command, so there the
+flush goes through PowerShell (see below) and is only as good as that. A commit that was in flight when the power
 failed is lost (rolled back), by design: it was never confirmed to the user. `mkit-sql` on its own storage layer
 (`db.tcl`) does not have this protocol; in MK Studio it shares `store.tcl`, so it does.
 
@@ -279,7 +343,12 @@ mkstudio.vfs/lib/app-mkstudio/
     engine.tcl    the query-language seam (documented contract)
     mkql.tcl      built-in stand-in dialect: parser, binder, value semantics
     mkplan.tcl    its fast execution path: pushdown, compiled expressions, streaming aggregates, lazy results
+    version.tcl   the version number (one place) and semantic-version comparison
+    update.tcl    update check, checksum-verified download, self-replacement (no Tk)
+    crash.tcl     error handler, crash reports, unexpected-end detection
     theme icons menus widgets grid editor explorer docs app
+packaging/     NSIS installer, .deb/.tar.gz, macOS .app/.dmg, icons (tools/make-icons.py draws them)
 tests/  tools/  build.sh  .github/workflows/build.yml
+RELEASE_NOTES.md       the text of the current release
 docs/CONCURRENCY.md    the shared write-lock / generation policy (for mkit-sql or a server)
 ```

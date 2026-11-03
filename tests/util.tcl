@@ -12,6 +12,12 @@ proc tmpdir {} {
 }
 proc tmp {name} { return [file join [tmpdir] $name] }
 
+# Tests never ask the network for updates, never open a crash dialog nobody could click (an unhandled error fails the
+# test instead) and keep their crash markers out of the real crash folder.  test_crash.tcl/test_update.tcl set their own.
+if {![info exists ::env(MKS_NO_UPDATE_CHECK)]} { set ::env(MKS_NO_UPDATE_CHECK) 1 }
+if {![info exists ::env(MKS_CRASH_FATAL)]} { set ::env(MKS_CRASH_FATAL) 1 }
+if {![info exists ::env(MKS_CRASH_DIR)]} { set ::env(MKS_CRASH_DIR) [tmp mks_crash_default] }
+
 if {[info exists ::env(MKS_TEST_LOG)] && [llength [info commands ::tcl_puts]] == 0} {
     rename puts ::tcl_puts
     proc puts {args} {

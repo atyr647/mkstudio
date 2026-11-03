@@ -8,6 +8,7 @@ package require app-mkstudio
 set ::env(HOME) [tmp mks_home_logic] ; file mkdir $::env(HOME)
 ::app::main {}
 set pass 0 ; set fail 0
+proc lmap_file {} { set o {} ; foreach t [::store::tags] { lappend o [::store::path $t] } ; return $o }
 proc check {n got want} { global pass fail ; if {$got eq $want} {incr pass} else {incr fail ; puts "FAIL $n: got <$got> want <$want>"} }
 set f [tmp logic_demo.mk] ; file delete $f
 set tag [::store::createSample $f] ; ::app::afterDbChange
@@ -107,6 +108,76 @@ menu .kbtest -tearoff 0
 ::menus::key Down {} ; ::menus::key Down {} ; ::menus::key Return {}
 update
 check "menu keyboard" $::kbd 2
+
+
+# ---- Help menu: updates and crash reports -----------------------------------------------------------------------------------
+set labels {}
+set last [.mb.help.m index end]
+for {set i 0} {$i <= $last} {incr i} { if {[.mb.help.m type $i] ne "separator"} { lappend labels [.mb.help.m entrycget $i -label] } }
+check help_updates [expr {"Check for Updates..." in $labels}] 1
+check help_auto_updates [expr {"Check for Updates Automatically" in $labels}] 1
+check help_crash_folder [expr {"Open Crash Reports Folder" in $labels}] 1
+# stub the dialogs: record what was asked, answer with $::answer
+set ::asked {} ; set ::answer ""
+rename ::ui::ask ::ui::ask_real
+proc ::ui::ask {title message {buttons {OK}} {icon ""}} { lappend ::asked [list $title $message $buttons] ; return $::answer }
+rename ::ui::problem ::ui::problem_real
+proc ::ui::problem {message {title "Something went wrong"}} { lappend ::asked [list $title $message {}] ; return "" }
+# a check that fails (no network here, bogus feed): manual check says so
+set ::env(MKS_UPDATE_API) file:///nonexistent/releases.json
+set ::answer Close
+::app::checkUpdates 1
+check update_failure_dialog [lindex $::asked end 0] "Check for updates"
+check update_failure_text [string match "*could not be completed*" [lindex $::asked end 1]] 1
+set n [llength $::asked]
+::app::checkUpdates 0                      ;# the quiet check never opens a dialog
+check update_quiet_failure_silent [llength $::asked] $n
+# a newer release: quiet check only writes the status line, manual check shows the dialog
+proc ::update::check {{c ""} {p ""}} { return [dict create version 9.9.9 tag v9.9.9 pre 0 notes "Shiny new things" page https://example.test/r assets {}] }
+::app::checkUpdates 0
+check update_quiet_status [string match "*9.9.9 is available*" [.sb.msg cget -text]] 1
+check update_quiet_no_dialog [llength $::asked] $n
+set ::answer Later
+::app::checkUpdates 1
+check update_dialog_title [lindex $::asked end 0] "Update available"
+check update_dialog_notes [string match "*Shiny new things*" [lindex $::asked end 1]] 1
+check update_dialog_no_install_from_source [expr {"Update Now" in [lindex $::asked end 2]}] 0
+check update_dialog_has_release_page [expr {"Release Page" in [lindex $::asked end 2]}] 1
+
+# ---- a database that no longer matches its checksum --------------------------------------------------------------------------
+set df [tmp logic_damaged.mk] ; foreach x [glob -nocomplain $df*] { file delete $x }
+set dt [::store::createSample $df] ; ::store::setCell $dt.products 0 name "first save" ; ::store::commit $dt ; ::store::closeFile $dt
+set dt [::store::openFile $df] ; ::store::setCell $dt.products 0 name "second save" ; ::store::commit $dt ; ::store::closeFile $dt
+check backup_exists [file exists $df.bak] 1
+set mt [file mtime $df] ; set h [open $df rb] ; set d [read $h] ; close $h
+set pos [expr {[string length $d] / 2}] ; scan [string index $d $pos] %c oc
+set h [open $df wb] ; puts -nonewline $h [string replace $d $pos $pos [format %c [expr {($oc + 1) % 256}]]] ; close $h ; file mtime $df $mt
+# Cancel: nothing opens
+set ::asked {} ; set ::answer Cancel
+check damaged_cancel [::app::openOne $df] ""
+check damaged_dialog [lindex $::asked 0 0] "Database may be damaged"
+check damaged_offers_restore [expr {"Restore Backup" in [lindex $::asked 0 2]}] 1
+check damaged_cancel_leaves_closed [expr {$df in [lmap_file]}] 0
+# Restore Backup
+set ::asked {} ; set ::answer "Restore Backup"
+set rt [::app::openOne $df]
+check restore_opened [expr {$rt ne ""}] 1
+check restore_data_is_the_backup [::store::cell $rt.products 0 name] "first save"
+check restore_keeps_damaged [file exists $df.damaged] 1
+check restore_status [string match "*Restored*backup*" [.sb.msg cget -text]] 1
+::app::closeDB $rt 1
+# Open Anyway on a file with no backup
+file delete $df.bak ; file delete $df.damaged
+set h [open $df rb] ; set d [read $h] ; close $h ; set mt [file mtime $df]
+set h [open $df wb] ; puts -nonewline $h [string replace $d $pos $pos [format %c [expr {($oc + 2) % 256}]]] ; close $h ; file mtime $df $mt
+set ::asked {} ; set ::answer "Open Anyway"
+set at [::app::openOne $df]
+check damaged_no_backup_buttons [lindex $::asked 0 2] {"Open Anyway" Cancel}
+check damaged_open_anyway [expr {$at ne ""}] 1
+if {$at ne ""} { ::app::closeDB $at 1 }
+rename ::ui::ask {} ; rename ::ui::ask_real ::ui::ask
+rename ::ui::problem {} ; rename ::ui::problem_real ::ui::problem
+unset ::env(MKS_UPDATE_API)
 
 # CSV
 check csv [::app::parseCsv "a,b\n1,\"x,\"\"y\"\"\"\n"] [list {a b} [list 1 "x,\"y\""]]

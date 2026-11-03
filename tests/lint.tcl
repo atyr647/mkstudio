@@ -34,7 +34,7 @@ foreach f [lsort [glob -directory $dir *.tcl]] {
         }
         if {[string match "\\#*" [string trimleft $line]]} continue
         foreach w {lmap try finally throw tailcall} {
-            if {[regexp "(^|\[\\\[;\{\] *)$w " $line]} { puts "8.6-only '$w' at [file tail $f]:$n" ; incr fails }
+            if {[regexp "(^\[ \t\]*|\[\\\[;\{\] *)$w " $line]} { puts "8.6-only '$w' at [file tail $f]:$n" ; incr fails }
         }
     }
 }
