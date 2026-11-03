@@ -317,7 +317,7 @@ foreach {in want} {"" "" a YQ== ab YWI= abc YWJj abcd YWJjZA== "Hello, World!" S
     check "base64_[string length $in]_$in" [::update::base64 $in] $want
 }
 # a PowerShell script is sent UTF-16 in base64 - an accented name needs no quoting at all
-set enc [::update::base64 [encoding convertto unicode "'café'"]]
+set enc [::update::base64 [encoding convertto unicode "'caf\u00e9'"]]
 check psc_encoding_of_an_accented_name $enc YwBhAGYA6QA=
 ok psc_encoding_is_plain_ascii [regexp {^[A-Za-z0-9+/=]+$} $enc]
 if {$::tcl_platform(platform) ne "windows"} { check psc_none_off_windows [::update::psCommand "x"] {} }
