@@ -734,7 +734,7 @@ proc ::app::dataChanged {{structure 1}} {
         ::explorer::refresh
         foreach id [docs] {
             switch -- [docType $id] {
-                data   { catch {::ddoc::reload $id} }
+                data   { catch {::ddoc::reload $id 1} }
                 design { catch {::design::refresh $id} }
             }
         }
@@ -1046,7 +1046,9 @@ proc ::app::shortcuts {} {
         "Complete a name" "Ctrl+Space"  "Comment lines" "Ctrl+/"  "Duplicate line" "Ctrl+D"  "Text size" "Ctrl+wheel"
         "Data grid"  ""
         "Edit cell" "Double-click / F2 / Enter"  "Next cell" "Tab"  "Undo / Redo" "Ctrl+Z / Ctrl+Y"
-        "Delete rows" "Delete"  "Previous / next page" "Alt+Left / Alt+Right"  "Copy" "Ctrl+C"
+        "Delete rows" "Delete"  "Copy" "Ctrl+C"  "Select all" "Ctrl+A"
+        "Extend selection" "Shift+click / Shift+arrows"  "Add to selection" "Ctrl+click (Cmd+click on a Mac)"
+        "Page / start / end" "PgUp PgDn / Home / End"
         "Window"  ""
         "Menus" "F10 or Alt+F/E/V/Q/H"  "Next tab" "Ctrl+Tab"  "Object Explorer" "F8"  "Properties" "F4"
         "Results pane" "Ctrl+R"  "Open the selected item" "Enter (in the explorer)"

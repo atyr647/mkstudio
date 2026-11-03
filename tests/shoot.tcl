@@ -52,15 +52,21 @@ switch -- $scenario {
         set id [::app::openData $b.big big]
         puts stderr "open data tab (500k rows): [expr {[clock milliseconds]-$t0}] ms"
         set t0 [clock milliseconds]
-        ::ddoc::page $id 1 ; ::ddoc::page $id 1
-        puts stderr "two page turns: [expr {[clock milliseconds]-$t0}] ms"
+        set g [::app::docFrame $id].g
+        update
+        puts stderr "first paint: [expr {[clock milliseconds]-$t0}] ms"
+        set t0 [clock milliseconds]
+        for {set i 0} {$i < 50} {incr i} { ::grid::scrollTo $g [expr {$i * 9973}] ; update idletasks }
+        puts stderr "50 jumps across the 500k rows: [expr {[clock milliseconds]-$t0}] ms"
+        ::grid::scrollTo $g 250000
+        ::grid::select $g {250002 250003 250004}
         shot $out
     }
     ctxgrid {
         set id [::app::openData $tag.products products]
         set g [::app::docFrame $id].g
         update
-        $g.t selection set r2
+        ::grid::select $g {2}
         ::grid::popupMenu $g 100 80 [expr {[winfo rootx $g.t] + 120}] [expr {[winfo rooty $g.t] + 100}]
         ::menus::activate [::menus::current] 2
         settle 300
@@ -113,7 +119,7 @@ switch -- $scenario {
     }
     confirm {
         set id [::app::openData $tag.products products]
-        [::app::docFrame $id].g.t selection set {r1 r2}
+        ::grid::select [::app::docFrame $id].g {1 2}
         after 700 { exec import -window root $::out ; set ::ui::result "" }
         ::ddoc::deleteRows $id
     }

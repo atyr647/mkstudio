@@ -2,9 +2,14 @@
 # Build MK Studio starpacks.
 #
 #   ./build.sh            Linux x86_64        -> dist/mkstudio-linux-x86_64
-#   ./build.sh all        Linux + Windows + macOS
+#   ./build.sh all        Linux + Windows
 #   ./build.sh windows    -> dist/mkstudio-windows-x86_64.exe
-#   ./build.sh macos      -> dist/mkstudio-macos-universal
+#
+# macOS starpacks are built by CI on a Mac (.github/workflows/build.yml): there is no usable prebuilt
+# macOS tclkit - the old ones crash on current macOS - so a current one is compiled with KitCreator
+# there.  To do it by hand on a Mac: build a tclkit (Tcl/Tk 8.6 + Metakit, --enable-aqua=yes), then
+#   KIT=/path/to/that/tclkit tclkit tools/wrap.tcl <copy of that tclkit> mkstudio.vfs dist/mkstudio-macos
+#   codesign --force --sign - dist/mkstudio-macos
 #
 # Runtimes come from tools/fetch-runtimes.sh (SHA1-verified).  Wrapping only
 # appends the application's Metakit payload to a runtime, so any platform's
@@ -27,7 +32,7 @@ wrap() {  # runtime output
 case $what in
     linux)   wrap tools/ext/tclkit-8.6.3-linux-x86_64     dist/mkstudio-linux-x86_64 ;;
     windows) wrap tools/ext/tclkit-8.6.3-win32-x86_64.exe dist/mkstudio-windows-x86_64.exe ;;
-    macos)   wrap tools/ext/tclkit-8.6.3-macosx-universal dist/mkstudio-macos-universal ;;
-    all)     "$0" linux; "$0" windows; "$0" macos ;;
-    *)       echo "usage: $0 [linux|windows|macos|all]"; exit 1 ;;
+    macos)   echo "macOS starpacks are built by CI on a Mac (see the comment at the top of this file)."; exit 1 ;;
+    all)     "$0" linux; "$0" windows ;;
+    *)       echo "usage: $0 [linux|windows|all]"; exit 1 ;;
 esac

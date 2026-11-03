@@ -43,12 +43,17 @@ jobs:
 
       - name: Persistence and safety (real Metakit)
         run: tools/ext/tclkit-8.6.3-linux-x86_64 tests/persist.tcl
+      - name: Grid virtualisation (real Metakit, Tcl 8.6 and 8.5)
+        run: |
+          REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.6.3-linux-x86_64 tests/test_grid.tcl
+          REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.5.17-linux-x86_64 tests/test_grid.tcl
+
       - name: UI logic (real Metakit, Tcl 8.6)
         run: REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.6.3-linux-x86_64 tests/gui_logic.tcl
       - name: UI logic (real Metakit, Tcl 8.5)
         run: REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.5.17-linux-x86_64 tests/gui_logic.tcl
 
-      - name: Build starpacks (Linux, Windows, macOS)
+      - name: Build starpacks (Linux, Windows)
         run: ./build.sh all
       - name: Verify embedded payloads
         run: tools/ext/tclkit-8.6.3-linux-x86_64 tests/verify_payload.tcl dist/*
@@ -86,7 +91,7 @@ jobs:
         timeout-minutes: 10
         run: |
           fail=0
-          for t in test_mkql engine_contract persist test_engine_diff test_crash_safety gui_logic; do
+          for t in test_mkql engine_contract persist test_engine_diff test_crash_safety test_grid gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
             MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_TEST_LOG="$(cygpath -w "$log")" timeout 300 "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
@@ -197,7 +202,7 @@ jobs:
         timeout-minutes: 10
         run: |
           fail=0
-          for t in test_mkql engine_contract persist test_engine_diff test_crash_safety gui_logic; do
+          for t in test_mkql engine_contract persist test_engine_diff test_crash_safety test_grid gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
             MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_TEST_LOG="$log" perl -e 'alarm 300; exec @ARGV' "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
@@ -252,6 +257,11 @@ jobs:
         with:
           name: starpacks
           path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: macos-*
+          path: dist
+          merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: dist/mkstudio-*

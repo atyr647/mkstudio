@@ -301,7 +301,6 @@ proc ::qdoc::currentGrid {id} {
 namespace eval ::ddoc {
     variable D
     array set D {}
-    variable pageSize 5000
 }
 
 proc ::ddoc::docf {id} { return [::app::docFrame $id] }
@@ -315,7 +314,7 @@ proc ::ddoc::viewLabel {mk} {
 
 proc ::ddoc::create {id f mk} {
     variable D
-    set D($id,mk) $mk ; set D($id,offset) 0 ; set D($id,undo) {} ; set D($id,redo) {}
+    set D($id,mk) $mk ; set D($id,undo) {} ; set D($id,redo) {}
     ttk::frame $f -style Surface.TFrame
     ttk::frame $f.bar -style Surface.TFrame -padding {8 6}
     ttk::button $f.bar.add -text "Add Row" -image [::icons::get plus] -compound left \
@@ -325,8 +324,6 @@ proc ::ddoc::create {id f mk} {
     ttk::button $f.bar.col -text "Add Column" -image [::icons::get col_I] -compound left \
         -style ToolSurface.TButton -command [list ::ddoc::addColumn $id]
     ttk::label $f.bar.count -text "" -style SurfaceDim.TLabel
-    ttk::button $f.bar.next -text "\u203A" -width 3 -style ToolSurface.TButton -command [list ::ddoc::page $id 1]
-    ttk::button $f.bar.prev -text "\u2039" -width 3 -style ToolSurface.TButton -command [list ::ddoc::page $id -1]
     pack $f.bar.add $f.bar.del -side left -padx {0 2}
     pack $f.bar.col -side left -padx {8 2}
     if {[string first ! $mk] >= 0} {
@@ -335,11 +332,7 @@ proc ::ddoc::create {id f mk} {
     } else {
         ::tip::attach $f.bar.col "Add a new column to this view  (more options in Design)"
     }
-    pack $f.bar.next $f.bar.count $f.bar.prev -side right -padx 2
-    ::tip::attach $f.bar.prev "Previous page of rows  (Alt+Left)"
-    ::tip::attach $f.bar.next "Next page of rows  (Alt+Right)"
-    bind $f <Alt-Right> [list ::ddoc::page $id 1]
-    bind $f <Alt-Left>  [list ::ddoc::page $id -1]
+    pack $f.bar.count -side right -padx 2
 
     set ro [readonly $id]
     if {$ro} { foreach b {add del col} { $f.bar.$b state disabled } }
@@ -378,75 +371,28 @@ proc ::ddoc::hint {id} {
     note $id "Double-click a cell to edit it. Changes stay in memory until you Commit."
 }
 
-# Read the view straight from the store into the grid's result format.
-proc ::ddoc::reload {id} {
-    variable D ; variable pageSize
+# (Re)attach the grid to the view.  Every row is available - the grid reads them as they scroll
+# into view - so there is no paging.  keep=1 keeps the scroll position and selection.
+proc ::ddoc::reload {id {keep 0}} {
+    variable D
     set f [docf $id]
     set mk $D($id,mk)
-    if {[catch {::store::layout $mk} layout]} {
+    if {[catch {::grid::loadStore $f.g $mk $keep} err]} {
         note $id "\u2716  This view no longer exists." bad
         return
     }
-    set cols {} ; set types {} ; set props {} ; set drill [dict create]
-    set i 0
-    foreach c $layout {
-        lassign $c n t
-        lappend cols $n ; lappend types $t
-        if {$t eq "V"} { dict set drill $i $n } else { lappend props $n }
-        if {$t eq "B"} { dict set drill $i @$n }
-        incr i
-    }
-    set total [::store::size $mk]
-    # clamp the page after rows were deleted
-    if {$D($id,offset) >= $total} { set D($id,offset) [expr {max(0, ($total - 1) / $pageSize * $pageSize)}] }
-    set off $D($id,offset)
-    set n [expr {min($total - $off, $pageSize)}]
-    set raw [::store::rows $mk $props $off $n]
-    set rows {} ; set rowids {}
-    set r $off
-    foreach vals $raw {
-        set out {} ; set k 0
-        foreach c $layout {
-            lassign $c name t
-            if {$t eq "V"} {
-                set cnt [::store::subSize $mk $r $name]
-                lappend out "\u25B8 $cnt row[expr {$cnt == 1 ? {} : {s}}]"
-            } else { lappend out [lindex $vals $k] ; incr k }
-        }
-        lappend rows $out ; lappend rowids $r
-        incr r
-    }
-    ::grid::load $f.g [dict create cols $cols types $types rows $rows rowids $rowids drill $drill \
-        source $mk truncated 0 editable 1 rowbase $off]
-    if {$total == 0} {
+    if {[::store::size $mk] == 0} {
         note $id "This view is empty. Click Add Row to create the first row."
     } else { hint $id }
 }
 
-# pager label and buttons:  "1-5,000 of 500,000 rows"
+# row count label
 proc ::ddoc::updateCount {id} {
-    variable D ; variable pageSize
+    variable D
     set f [docf $id]
     if {![winfo exists $f.g]} return
-    set total [::store::size $D($id,mk)]
-    set off $D($id,offset)
-    set last [expr {min($total, $off + $pageSize)}]
-    if {$total <= $pageSize} {
-        $f.bar.count configure -text "[::app::commas $total] row[expr {$total == 1 ? {} : {s}}]"
-        $f.bar.prev state disabled ; $f.bar.next state disabled
-    } else {
-        $f.bar.count configure -text "[::app::commas [expr {$off + 1}]] - [::app::commas $last] of [::app::commas $total] rows"
-        $f.bar.prev state [expr {$off > 0 ? "!disabled" : "disabled"}]
-        $f.bar.next state [expr {$last < $total ? "!disabled" : "disabled"}]
-    }
-}
-proc ::ddoc::page {id dir} {
-    variable D ; variable pageSize
-    set total [::store::size $D($id,mk)]
-    set new [expr {$D($id,offset) + $dir * $pageSize}]
-    if {$new < 0 || $new >= $total} return
-    set D($id,offset) $new
-    reload $id
+    set total [::grid::count $f.g]
+    $f.bar.count configure -text "[::app::commas $total] row[expr {$total == 1 ? {} : {s}}]"
 }
 
 proc ::ddoc::commit {id rowid col value} {
@@ -467,7 +413,7 @@ proc ::ddoc::drill {id rowid sub} {
     set mk $D($id,mk)
     if {[string index $sub 0] eq "@"} {
         ::bytes::view $mk $rowid [string range $sub 1 end] [readonly $id] $id
-        reload $id
+        reload $id 1
         return
     }
     ::app::openData "$mk!$rowid.$sub" "[viewLabel $mk]\[$rowid\].$sub"
@@ -488,9 +434,7 @@ proc ::ddoc::addRow {id} {
         set idx [::store::appendRow $D($id,mk) {} {}]
         push $id [list add $idx {}]
     } err]} { note $id "\u2716  $err" bad ; return }
-    variable pageSize
-    set D($id,offset) [expr {($idx / $pageSize) * $pageSize}]
-    reload $id
+    reload $id 1
     ::grid::selectLast $f.g
     ::app::dataChanged 0
     note $id "Row added. Double-click its cells to fill them in."
@@ -579,7 +523,7 @@ proc ::ddoc::step {id from to} {
     } err]} { note $id "\u2716  Can't [expr {$from eq {undo} ? {undo} : {redo}}]: $err." bad ; return }
     set D($id,$from) [lrange $D($id,$from) 0 end-1]
     lappend D($id,$to) $action
-    reload $id
+    reload $id 1
     ::app::dataChanged 0
     note $id $msg
 }

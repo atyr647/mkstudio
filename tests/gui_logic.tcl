@@ -36,7 +36,7 @@ check cellundo2 [::store::cell $tag.employees 3 name] $oldname
 check cellredo [::store::cell $tag.employees 3 name] "Changed Name"
 ::ddoc::undo $u
 set g2 [::app::docFrame $u].g
-::grid::selectLast $g2 ; $g2.t selection set {r3 r4}
+::grid::selectLast $g2 ; ::grid::select $g2 {3 4}
 set nsub [::store::size $tag.employees]
 ::ddoc::push $u [list del [list [list 3 [::store::captureRow $tag.employees 3]] [list 4 [::store::captureRow $tag.employees 4]]]]
 ::store::deleteRows $tag.employees {3 4}
