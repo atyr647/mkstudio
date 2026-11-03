@@ -33,7 +33,7 @@ proc ::grid::create {w args} {
     grid $w.h -row 1 -column 0 -sticky ew
     grid rowconfigure $w 0 -weight 1 ; grid columnconfigure $w 0 -weight 1
 
-    $w.t column #0 -width 54 -stretch 0 -anchor e
+    $w.t column #0 -width [::theme::px 54] -stretch 0 -anchor e
     $w.t heading #0 -text "#"
     ::ui::hoverTree $w.t
     ::theme::reg $w.t [list ::grid::recolor %w]
@@ -43,13 +43,19 @@ proc ::grid::create {w args} {
     bind $w.t <Double-1>  [list ::grid::doubleClick $w %x %y]
     bind $w.t <Button-1>  [list ::grid::noteColumn $w %x %y]
     bind $w.t <<TreeviewSelect>> [list ::grid::selChanged $w]
-    bind $w.t <Control-c> "[list ::grid::copy $w 0] ; break"
-    bind $w.t <Control-C> "[list ::grid::copy $w 1] ; break"
-    bind $w.t <Control-a> "$w.t selection set \[$w.t children {}\] ; break"
+    ::ui::bindMod $w.t c "[list ::grid::copy $w 0] ; break"
+    ::ui::bindMod $w.t C "[list ::grid::copy $w 1] ; break"
+    ::ui::bindMod $w.t a "$w.t selection set \[$w.t children {}\] ; break"
     bind $w.t <F2>        [list ::grid::editCurrent $w]
-    bind $w.t <Button-3>  [list ::grid::menu $w %x %y %X %Y]
-    bind $w.t <Button-2>  [list ::grid::menu $w %x %y %X %Y]
-    bind $w.t <Control-Button-1> [list ::grid::menu $w %x %y %X %Y]
+    bind $w.t <Return>    "[list ::grid::editCurrent $w] ; break"
+    bind $w.t <KP_Enter>  "[list ::grid::editCurrent $w] ; break"
+    bind $w.t <Key-Menu>  "[list ::grid::keyMenu $w] ; break"
+    bind $w.t <Shift-F10> "[list ::grid::keyMenu $w] ; break"
+    bind $w.t <Left>      "[list ::grid::moveCol $w -1] ; break"
+    bind $w.t <Right>     "[list ::grid::moveCol $w 1] ; break"
+    bind $w.t <Button-3>  [list ::grid::popupMenu $w %x %y %X %Y]
+    bind $w.t <Button-2>  [list ::grid::popupMenu $w %x %y %X %Y]
+    bind $w.t <Control-Button-1> [list ::grid::popupMenu $w %x %y %X %Y]
     bind $w <Destroy> [list ::grid::forget $w]
     return $w
 }
@@ -76,10 +82,11 @@ proc ::grid::load {w result} {
     set cols [dict get $result cols]
     set G($w,cols) $cols
     set G($w,types) [dict get $result types]
-    set G($w,rows) [dict get $result rows]
+    set G($w,rows) [summariseBytes [dict get $result rows] $G($w,types)]
     set G($w,rowids) [dict get $result rowids]
     set G($w,drill) [dict get $result drill]
     set G($w,source) [dict get $result source]
+    set G($w,rowbase) [expr {[dict exists $result rowbase] ? [dict get $result rowbase] : 0}]
     set G($w,total) [llength $G($w,rows)]
     set G($w,sortcol) -1
     set ids {}
@@ -89,7 +96,7 @@ proc ::grid::load {w result} {
     foreach c $cols type $G($w,types) {
         set anchor [expr {$type in {I L F D N} ? "e" : "w"}]
         $t heading c$i -text $c -anchor $anchor -command [list ::grid::sortBy $w $i]
-        $t column c$i -anchor $anchor -stretch 0 -minwidth 50 -width [measure $w $i]
+        $t column c$i -anchor $anchor -stretch 0 -minwidth [::theme::px 50] -width [measure $w $i]
         incr i
     }
     set G($w,order) {}
@@ -97,6 +104,27 @@ proc ::grid::load {w result} {
     for {set p 0} {$p < $n} {incr p} { lappend G($w,order) $p }
     fill $w
     return $G($w,total)
+}
+
+# Binary columns never go into a cell as raw bytes: show size plus a short hex preview.
+proc ::grid::bytesLabel {v} {
+    set n [string length $v]
+    if {$n == 0} { return "" }
+    binary scan [string range $v 0 9] H* hx
+    regsub -all {..} $hx {& } hx
+    return "<$n byte[expr {$n == 1 ? {} : {s}}]>  [string trim $hx][expr {$n > 10 ? { ...} : {}}]"
+}
+proc ::grid::summariseBytes {rows types} {
+    set cols {}
+    set i 0
+    foreach t $types { if {$t eq "B"} { lappend cols $i } ; incr i }
+    if {![llength $cols]} { return $rows }
+    set out {}
+    foreach r $rows {
+        foreach c $cols { lset r $c [bytesLabel [lindex $r $c]] }
+        lappend out $r
+    }
+    return $out
 }
 
 proc ::grid::display {v} {
@@ -113,7 +141,7 @@ proc ::grid::fill {w} {
     foreach p $G($w,order) {
         set vals {}
         foreach v [lindex $G($w,rows) $p] { lappend vals [display $v] }
-        $t insert {} end -id r$p -text [expr {$k + 1}] -values $vals -tags [expr {$k % 2 ? "odd" : "even"}]
+        $t insert {} end -id r$p -text [expr {$G($w,rowbase) + $k + 1}] -values $vals -tags [expr {$k % 2 ? "odd" : "even"}]
         incr k
     }
     if {$G($w,total) == 0 && [llength $G($w,cols)]} {
@@ -165,7 +193,16 @@ proc ::grid::sortBy {w i} {
     }
     fill $w
 }
-proc ::grid::cmpKeyed {a b} { ::mkql::compare [lindex $a 1] [lindex $b 1] }
+# SQL-ish three-way compare for the sort-by-header feature (numbers numerically)
+proc ::grid::compare {a b} {
+    if {[string is double -strict $a] && [string is double -strict $b]} {
+        return [expr {$a < $b ? -1 : $a > $b ? 1 : 0}]
+    }
+    set c [string compare -nocase $a $b]
+    if {$c == 0} { set c [string compare $a $b] }
+    return $c
+}
+proc ::grid::cmpKeyed {a b} { ::grid::compare [lindex $a 1] [lindex $b 1] }
 
 # ---- selection / copy -----------------------------------------------------------
 proc ::grid::selChanged {w} {
@@ -237,7 +274,7 @@ proc ::grid::exportCsv {w} {
 }
 proc ::grid::lmap_csv {l} { set r {} ; foreach v $l { lappend r [csvEscape $v] } ; return $r }
 
-proc ::grid::menu {w x y X Y} {
+proc ::grid::popupMenu {w x y X Y} {
     variable G
     set item [$w.t identify row $x $y]
     if {$item ne "" && [lsearch -exact [$w.t selection] $item] < 0} { $w.t selection set $item }
@@ -268,6 +305,22 @@ proc ::grid::motion {w x y} {
         if {[dict exists $G($w,drill) [expr {$n - 1}]]} { set cursor hand2 }
     }
     if {[$w.t cget -cursor] ne $cursor} { $w.t configure -cursor $cursor }
+}
+
+# keyboard cell cursor: Left/Right choose the column that F2 / Enter will edit
+proc ::grid::moveCol {w d} {
+    variable G
+    set n [llength $G($w,cols)]
+    if {!$n} return
+    set G($w,lastcol) [expr {max(0, min($n - 1, $G($w,lastcol) + $d))}]
+    set col [lindex $G($w,cols) $G($w,lastcol)]
+    event generate $w <<GridColumn>> -data $col
+}
+proc ::grid::keyMenu {w} {
+    set item [$w.t focus]
+    if {$item eq ""} return
+    lassign [$w.t bbox $item] x y cw ch
+    popupMenu $w $x $y [expr {[winfo rootx $w.t] + $x + 24}] [expr {[winfo rooty $w.t] + $y + $ch}]
 }
 
 proc ::grid::noteColumn {w x y} {

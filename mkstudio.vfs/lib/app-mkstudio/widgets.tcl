@@ -109,7 +109,7 @@ proc ::ui::ask {title message {buttons {OK}} {icon ""}} {
         ttk::label $w.body.i -image [::icons::big $icon] -style Surface.TLabel
         grid $w.body.i -row 0 -column 0 -sticky n -padx {0 18}
     }
-    ttk::label $w.body.m -text $message -style Surface.TLabel -wraplength 400 -justify left
+    ttk::label $w.body.m -text $message -style Surface.TLabel -wraplength [::theme::px 400] -justify left
     grid $w.body.m -row 0 -column 1 -sticky nw
     set first ""
     set i 0
@@ -136,7 +136,7 @@ proc ::ui::form {title fields {okText OK} {validate ""} {intro ""}} {
     set w [modal $title]
     set row 0
     if {$intro ne ""} {
-        ttk::label $w.body.intro -text $intro -style SurfaceDim.TLabel -wraplength 380 -justify left
+        ttk::label $w.body.intro -text $intro -style SurfaceDim.TLabel -wraplength [::theme::px 380] -justify left
         grid $w.body.intro -row $row -column 0 -columnspan 2 -sticky w -pady {0 14}
         incr row
     }
@@ -161,7 +161,7 @@ proc ::ui::form {title fields {okText OK} {validate ""} {intro ""}} {
         if {$first eq ""} { set first $w.body.e$key }
         incr row
     }
-    ttk::label $w.body.err -text "" -style Error.TLabel -wraplength 380
+    ttk::label $w.body.err -text "" -style Error.TLabel -wraplength [::theme::px 380]
     grid $w.body.err -row $row -column 0 -columnspan 2 -sticky w -pady {8 0}
     grid columnconfigure $w.body 1 -weight 1
 
@@ -185,6 +185,18 @@ proc ::ui::formOk {w fields validate} {
 }
 # unwrap the {ok dict} produced by form
 proc ::ui::formResult {r} { if {$r eq ""} { return "" } ; return [lindex $r 1] }
+
+# Bind Ctrl+<key>, and on macOS Command+<key> as well (Command is the platform's
+# primary modifier there; Control keeps working too).
+proc ::ui::bindMod {w key script} {
+    bind $w <Control-$key> $script
+    if {[tk windowingsystem] eq "aqua"} { bind $w <Command-$key> $script }
+}
+# Shortcut text as the platform writes it.
+proc ::ui::accel {text} {
+    if {[tk windowingsystem] eq "aqua"} { return [string map {Ctrl+ Cmd+} $text] }
+    return $text
+}
 
 # ---- row hover for treeviews ------------------------------------------------------
 # The "hover" tag must be the FIRST tag configured on the tree (in Tk 8.6 the
@@ -234,7 +246,7 @@ proc ::tabs::create {w args} {
     array set o $args
     set S($w,opts) [array get o]
     set S($w,ids) {} ; set S($w,sel) "" ; set S($w,hover) ""
-    set h [expr {$o(-small) ? 28 : 34}]
+    set h [expr {max([::theme::px [expr {$o(-small) ? 28 : 34}]], [font metrics MkUI -linespace] + [::theme::px 16])}]
     frame $w -height $h -borderwidth 0 -highlightthickness 0
     pack propagate $w 0
     frame $w.line -height 1 -borderwidth 0
@@ -273,7 +285,7 @@ proc ::tabs::add {w id title {icon ""}} {
     if {[opt $w -closable]} {
         label $t.x -image [::icons::get closex] -borderwidth 0 -padx 4
         pack $t.x -side left -padx {0 6}
-        bind $t.x <Button-1> [list ::tabs::close $w $id]
+        bind $t.x <Button-1> [list ::tabs::requestClose $w $id]
         bind $t.x <Enter> "[list ::tabs::hover $w $id] ; [list $t.x configure -image [::icons::get closexh]]"
         bind $t.x <Leave> [list ::tabs::hover $w ""]
     } else {
@@ -283,7 +295,7 @@ proc ::tabs::add {w id title {icon ""}} {
     # keep the "more" button on the far right
     foreach p [list $t $t.bar $t.i $t.l] {
         bind $p <Button-1> [list ::tabs::click $w $id]
-        bind $p <ButtonRelease-2> [list ::tabs::close $w $id]
+        bind $p <ButtonRelease-2> [list ::tabs::requestClose $w $id]
         bind $p <Enter> [list ::tabs::hover $w $id]
         bind $p <Leave> [list ::tabs::hover $w ""]
     }
@@ -299,7 +311,7 @@ proc ::tabs::select {w id {notify 0}} {
     set cmd [opt $w -select]
     if {$notify && $cmd ne ""} { uplevel #0 [list {*}$cmd $id] }
 }
-proc ::tabs::close {w id} {
+proc ::tabs::requestClose {w id} {
     set cmd [opt $w -close]
     if {$cmd ne ""} { uplevel #0 [list {*}$cmd $id] } else { remove $w $id }
 }

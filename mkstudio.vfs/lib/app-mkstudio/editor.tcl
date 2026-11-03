@@ -44,18 +44,18 @@ proc ::editor::create {w args} {
     bind $t <Shift-Tab>     "[list ::editor::indent $w -1] ; break"
     bind $t <Return>        "[list ::editor::newline $w] ; break"
     bind $t <KP_Enter>      "[list ::editor::newline $w] ; break"
-    bind $t <Control-slash> "[list ::editor::toggleComment $w] ; break"
-    bind $t <Control-space> "[list ::editor::complete $w] ; break"
-    bind $t <Control-a>     "$t tag add sel 1.0 end-1c ; $t mark set insert end-1c ; break"
-    bind $t <Control-y>     "[list event generate $t <<Redo>>] ; break"
-    bind $t <Control-d>     "[list ::editor::duplicateLine $w] ; break"
+    ::ui::bindMod $t slash "[list ::editor::toggleComment $w] ; break"
+    ::ui::bindMod $t space "[list ::editor::complete $w] ; break"
+    ::ui::bindMod $t a "$t tag add sel 1.0 end-1c ; $t mark set insert end-1c ; break"
+    ::ui::bindMod $t y "[list event generate $t <<Redo>>] ; break"
+    ::ui::bindMod $t d "[list ::editor::duplicateLine $w] ; break"
     bind $t <<Paste>>       "[list ::editor::paste $w] ; break"
-    bind $t <Button-3>      [list ::editor::menu $w %X %Y]
+    bind $t <Button-3>      [list ::editor::popupMenu $w %X %Y]
     bind $t <Control-MouseWheel> [list ::editor::zoomWheel $w %D]
     bind $t <Control-Button-4>   "[list ::editor::zoom $w 1] ; break"
     bind $t <Control-Button-5>   "[list ::editor::zoom $w -1] ; break"
     bind $t <Escape>        [list ::editor::escape $w]
-    bind $t <Control-f>     "[list ::editor::findOpen $w] ; break"
+    ::ui::bindMod $t f "[list ::editor::findOpen $w] ; break"
     bind $t <F3>            "[list ::editor::findStep $w 1] ; break"
     bind $t <Shift-F3>      "[list ::editor::findStep $w -1] ; break"
     bind $t <FocusOut>      [list ::editor::closePopup $w]
@@ -177,7 +177,7 @@ proc ::editor::highlight {w} {
     set text [$t get 1.0 end-1c]
     set kinds {comment comment str str num kw {} {}}
     # same lexer as the engine: comment | block comment | string | "ident" | number | word | operator
-    foreach {all g1 g2 g3 g4 g5 g6 g7 g8} [regexp -all -inline -indices $::mkql::tokenRe $text] {
+    foreach {all g1 g2 g3 g4 g5 g6 g7 g8} [regexp -all -inline -indices $::engine::tokenRe $text] {
         set k 0
         foreach g [list $g1 $g2 $g3 $g4 $g5 $g6 $g7 $g8] {
             if {[lindex $g 0] >= 0} break
@@ -192,9 +192,9 @@ proc ::editor::highlight {w} {
             4     { set tag num }
             5     {
                 set word [string toupper [string range $text $s $e]]
-                if {[lsearch -exact $::mkql::keywords $word] >= 0} { set tag kw
-                } elseif {[lsearch -exact $::mkql::aggs $word] >= 0 || [lsearch -exact $::mkql::functions $word] >= 0} { set tag fn
-                } elseif {[lsearch -exact {STRING TEXT INT INTEGER LONG BIGINT FLOAT REAL DOUBLE BYTES BLOB} $word] >= 0} { set tag type }
+                if {[lsearch -exact $::engine::keywords $word] >= 0} { set tag kw
+                } elseif {[lsearch -exact $::engine::functions $word] >= 0} { set tag fn
+                } elseif {[lsearch -exact $::engine::types $word] >= 0} { set tag type }
             }
             6     { set tag op }
         }
@@ -327,7 +327,7 @@ proc ::editor::runText {w} {
     return [list [get $w] 0]
 }
 
-proc ::editor::menu {w X Y} {
+proc ::editor::popupMenu {w X Y} {
     variable E
     set t $w.t
     set m $w.menu

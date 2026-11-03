@@ -25,7 +25,7 @@ proc ::icons::px {x y c} {
 proc ::icons::rect {x1 y1 x2 y2 c} {
     for {set y $y1} {$y <= $y2} {incr y} { for {set x $x1} {$x <= $x2} {incr x} { px $x $y $c } }
 }
-proc ::icons::frame {x1 y1 x2 y2 c} {
+proc ::icons::outline {x1 y1 x2 y2 c} {
     for {set x $x1} {$x <= $x2} {incr x} { px $x $y1 $c ; px $x $y2 $c }
     for {set y $y1} {$y <= $y2} {incr y} { px $x1 $y $c ; px $x2 $y $c }
 }
@@ -103,14 +103,14 @@ proc ::icons::draw {name} {
             rect 6 7 14 14 dgray ; rect 7 8 13 13 pale ; rect 7 8 13 9 teal ; line 10 9 10 13 gray ; line 7 11 13 11 gray
         }
         folder {
-            rect 1 3 6 5 damber ; rect 1 4 14 13 amber ; rect 1 4 14 5 lamber ; frame 1 4 14 13 damber
+            rect 1 3 6 5 damber ; rect 1 4 14 13 amber ; rect 1 4 14 5 lamber ; outline 1 4 14 13 damber
         }
         folderopen {
             rect 1 3 6 5 damber ; rect 1 4 12 6 damber ; rect 3 6 14 13 amber ; rect 1 7 12 13 lamber
             line 1 13 3 7 damber ; line 12 13 14 7 damber
         }
         play { tri 4 2 4 13 12 7 green ; tri 5 4 5 11 10 7 dgreen ; tri 4 2 4 13 12 7 green }
-        stop { rect 3 3 12 12 red ; frame 3 3 12 12 orange }
+        stop { rect 3 3 12 12 red ; outline 3 3 12 12 orange }
         check { thick 2 8 5 12 green ; thick 5 12 12 3 green ; thick 6 12 13 3 green }
         commit { draw db ; rect 8 8 15 15 ink ; thick 9 12 11 14 green ; thick 11 14 14 9 green }
         rollback {
@@ -131,9 +131,9 @@ proc ::icons::draw {name} {
             rect 2 2 13 13 blue ; rect 4 2 11 6 pale ; rect 4 9 11 13 pale ; rect 9 3 10 5 blue
             line 5 10 10 10 gray ; line 5 12 10 12 gray
         }
-        panel_l { frame 1 2 14 13 gray ; rect 2 3 5 12 blue ; line 6 3 6 12 gray }
-        panel_r { frame 1 2 14 13 gray ; rect 10 3 13 12 blue ; line 9 3 9 12 gray }
-        panel_b { frame 1 2 14 13 gray ; rect 2 9 13 12 blue ; line 2 8 13 8 gray }
+        panel_l { outline 1 2 14 13 gray ; rect 2 3 5 12 blue ; line 6 3 6 12 gray }
+        panel_r { outline 1 2 14 13 gray ; rect 10 3 13 12 blue ; line 9 3 9 12 gray }
+        panel_b { outline 1 2 14 13 gray ; rect 2 9 13 12 blue ; line 2 8 13 8 gray }
         theme {
             for {set y 0} {$y < 16} {incr y} { for {set x 0} {$x < 16} {incr x} {
                 set d [expr {hypot($x - 7.5, $y - 7.5)}]

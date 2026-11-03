@@ -56,6 +56,7 @@ proc ::app::saveSettings {} {
     set f [settingsFile]
     if {$f eq ""} return
     catch {
+        if {[lsearch -exact [.main panes] .main.ex] >= 0} { set cfg(exWidth) [expr {int([lindex [.main sashpos 0] 0] / [::theme::scale])}] }
         set cfg(geometry) [wm geometry .]
         set out [open $f w] ; fconfigure $out -encoding utf-8
         puts $out [array get cfg] ; close $out
@@ -110,7 +111,7 @@ proc ::app::busy {flag} {
 
 proc ::app::cancel {} {
     variable busyFlag
-    if {$busyFlag} { set ::mkql::cancel 1 ; setStatus "Cancelling\u2026" warn }
+    if {$busyFlag} { set ::engine::cancel 1 ; setStatus "Cancelling\u2026" warn }
 }
 
 # ============================================================================
@@ -165,6 +166,7 @@ proc ::app::buildMenus {} {
     $m add separator
     $m add radiobutton -label "Dark Theme" -variable ::app::themeVar -value dark -command {::app::setTheme dark}
     $m add radiobutton -label "Light Theme" -variable ::app::themeVar -value light -command {::app::setTheme light}
+    $m add radiobutton -label "High Contrast" -variable ::app::themeVar -value contrast -command {::app::setTheme contrast}
     $m add separator
     $m add command -label "Larger Text" -accelerator "Ctrl++" -command {::editor::zoom {} 1}
     $m add command -label "Smaller Text" -accelerator "Ctrl+-" -command {::editor::zoom {} -1}
@@ -179,6 +181,8 @@ proc ::app::buildMenus {} {
     $m add command -label "Export Results as CSV..." -command ::app::exportCsv
 
     set m .mb.help.m
+    $m add command -label "Keyboard Shortcuts" -accelerator F1 -command ::app::shortcuts
+    $m add separator
     $m add command -label "About MK Studio" -command ::app::about
 }
 
@@ -218,7 +222,7 @@ proc ::app::rebuildRecent {} {
 
 proc ::app::tbtn {name text icon cmd tip {style Tool.TButton}} {
     ttk::button .tb.$name -text $text -image [::icons::get $icon] -compound [expr {$text eq "" ? "image" : "left"}] \
-        -style $style -command $cmd -takefocus 0
+        -style $style -command $cmd
     ::tip::attach .tb.$name $tip
     pack .tb.$name -side left -padx 1 -pady 3
 }
@@ -233,7 +237,7 @@ proc ::app::buildToolbar {} {
     tbtn open "" open ::app::openDB "Open a database  (Ctrl+O)"
     tsep 1
     ttk::label .tb.dl -text "Database" -style Dim.TLabel
-    ttk::combobox .tb.db -state readonly -width 16 -textvariable ::app::dbVar -takefocus 0
+    ttk::combobox .tb.db -state readonly -width 16 -textvariable ::app::dbVar
     pack .tb.dl -side left -padx {2 6}
     pack .tb.db -side left
     bind .tb.db <<ComboboxSelected>> {::app::dbPicked}
@@ -251,7 +255,7 @@ proc ::app::runOrStop {} {
 }
 
 proc ::app::buildStatus {} {
-    frame .sb -borderwidth 0 -highlightthickness 0 -height 26
+    frame .sb -borderwidth 0 -highlightthickness 0 -height [expr {max([::theme::px 26], [font metrics MkSmall -linespace] + 12)}]
     ::theme::reg .sb {%w configure -background $::theme::c(accentDim)}
     foreach n {dot msg pend pos} { label .sb.$n -borderwidth 0 -font MkSmall }
     .sb.dot configure -text "\u25CF" -padx 12
@@ -316,7 +320,7 @@ proc ::app::refreshWelcome {} {
         label $w.c.col$col.h -text $head -font MkSmall -background $S -foreground $::theme::c(faint) -anchor w
         pack $w.c.col$col.h -fill x -padx 12 -pady {0 6}
     }
-    grid columnconfigure $w.c {0 1} -minsize 330 -uniform cols
+    grid columnconfigure $w.c {0 1} -minsize [::theme::px 330] -uniform cols
     set p $w.c.col0
     welcomeRow $p open    open    "Open database..."         "Browse for a Metakit file  (Ctrl+O)"  ::app::openDB
     welcomeRow $p sample  db      "Try the sample database"   "Four views with subviews to explore"  ::app::newSample
@@ -374,11 +378,11 @@ proc ::app::applyPanes {} {
         if {$cfg($key) && !$present} {
             if {$key eq "showEx"} { .main insert 0 $win -weight 0 } else { .main add $win -weight 0 }
             update idletasks
-            if {$key eq "showEx"} { catch {.main sashpos 0 $cfg(exWidth)} }
-            if {$key eq "showPr"} { catch {.main sashpos [expr {[llength [.main panes]] - 2}] [expr {[winfo width .main] - $cfg(prWidth)}]} }
+            if {$key eq "showEx"} { catch {.main sashpos 0 [::theme::px $cfg(exWidth)]} }
+            if {$key eq "showPr"} { catch {.main sashpos [expr {[llength [.main panes]] - 2}] [expr {[winfo width .main] - [::theme::px $cfg(prWidth)]}]} }
         } elseif {!$cfg($key) && $present} {
-            if {$key eq "showEx"} { set cfg(exWidth) [lindex [.main sashpos 0] 0] }
-            if {$key eq "showPr"} { set cfg(prWidth) [expr {[winfo width .main] - [.main sashpos [expr {[llength [.main panes]] - 2}]]}] }
+            if {$key eq "showEx"} { set cfg(exWidth) [expr {int([lindex [.main sashpos 0] 0] / [::theme::scale])}] }
+            if {$key eq "showPr"} { set cfg(prWidth) [expr {int(([winfo width .main] - [.main sashpos [expr {[llength [.main panes]] - 2}]]) / [::theme::scale])}] }
             .main forget $win
         }
     }
@@ -713,6 +717,7 @@ proc ::app::dataChanged {{structure 1}} {
     variable A
     updatePending
     if {$structure} {
+        ::ddoc::clearUndo
         ::explorer::refresh
         foreach id [docs] {
             switch -- [docType $id] {
@@ -827,6 +832,11 @@ proc ::app::toggleComment {} {
     if {$id ne ""} { ::editor::toggleComment [docFrame $id].ed }
 }
 proc ::app::editEvent {ev} {
+    set cur [currentDoc]
+    if {$cur ne "" && [docType $cur] eq "data" && $ev in {<<Undo>> <<Redo>>} && [winfo class [focus]] ne "Entry" && [winfo class [focus]] ne "TEntry"} {
+        if {$ev eq "<<Undo>>"} { ::ddoc::undo $cur } else { ::ddoc::redo $cur }
+        return
+    }
     set w [focus]
     if {$w eq ""} return
     if {$ev eq "<<SelectAll>>" && [winfo class $w] eq "Text"} { $w tag add sel 1.0 end-1c ; return }
@@ -865,8 +875,8 @@ proc ::app::complete {ctx full} {
     foreach t $tags {
         foreach v [::store::views $t] { lappend items [list $v "view in $t"] }
     }
-    foreach f [concat $::mkql::aggs $::mkql::functions] { lappend items [list $f function] }
-    foreach k $::mkql::keywords { lappend items [list $k keyword] }
+    foreach f $::engine::functions { lappend items [list $f function] }
+    foreach k $::engine::keywords { lappend items [list $k keyword] }
     return $items
 }
 
@@ -1012,9 +1022,41 @@ proc ::app::importCsv {} {
 # ============================================================================
 #  about, quit
 # ============================================================================
+proc ::app::shortcuts {} {
+    set w [::ui::modal "Keyboard shortcuts"]
+    set rows {
+        "File"  ""
+        "New query" "Ctrl+N"  "Open database" "Ctrl+O"  "Save script" "Ctrl+S"  "Close tab" "Ctrl+W"
+        "Commit changes" "Ctrl+Shift+S"
+        "Query"  ""
+        "Execute (or the selection)" "F5 / Ctrl+E"  "Cancel" "Esc"  "Find" "Ctrl+F"  "Next / previous match" "F3 / Shift+F3"
+        "Complete a name" "Ctrl+Space"  "Comment lines" "Ctrl+/"  "Duplicate line" "Ctrl+D"  "Text size" "Ctrl+wheel"
+        "Data grid"  ""
+        "Edit cell" "Double-click / F2 / Enter"  "Next cell" "Tab"  "Undo / Redo" "Ctrl+Z / Ctrl+Y"
+        "Delete rows" "Delete"  "Previous / next page" "Alt+Left / Alt+Right"  "Copy" "Ctrl+C"
+        "Window"  ""
+        "Menus" "F10 or Alt+F/E/V/Q/H"  "Next tab" "Ctrl+Tab"  "Object Explorer" "F8"  "Properties" "F4"
+        "Results pane" "Ctrl+R"  "Open the selected item" "Enter (in the explorer)"
+    }
+    text $w.body.t -width 62 -height 26 -font MkUI -borderwidth 0 -highlightthickness 0 -padx 4 -pady 4 \
+        -wrap none -cursor arrow -tabs {250}
+    ::theme::reg $w.body.t {%w configure -background $::theme::c(surface) -foreground $::theme::c(fg) -selectbackground $::theme::c(sel)
+        %w tag configure h -foreground $::theme::c(accent) -font MkUIBold -spacing1 10 -spacing3 3
+        %w tag configure k -foreground $::theme::c(dim)}
+    foreach {a b} $rows {
+        if {$b eq ""} { $w.body.t insert end "$a\n" h } else { $w.body.t insert end "$a\t" {} "[::ui::accel $b]\n" k }
+    }
+    $w.body.t configure -state disabled
+    pack $w.body.t -fill both -expand 1
+    ttk::button $w.bar.close -text Close -width 10 -style Accent.TButton -command {set ::ui::result close}
+    pack $w.bar.close -side right
+    bind $w <Return> {set ::ui::result close}
+    ::ui::run $w $w.bar.close
+}
+
 proc ::app::about {} {
     variable version
-    ::ui::ask "About MK Studio" "MK Studio $version\n\nA workbench for Metakit databases, written entirely in Tcl/Tk and designed to live inside a starpack.\n\nTcl [info patchlevel]  \u00B7  Tk [package present Tk]\nMetakit: [expr {[::store::available] ? {Mk4tcl available} : {Mk4tcl missing}}]" OK info
+    ::ui::ask "About MK Studio" "MK Studio $version\n\nA workbench for Metakit databases, written entirely in Tcl/Tk and designed to live inside a starpack.\n\nTcl [info patchlevel]  \u00B7  Tk [package present Tk]\nQuery language: $::engine::name" OK info
 }
 
 proc ::app::quit {} {
@@ -1038,36 +1080,37 @@ proc ::app::bindKeys {} {
         bind . <Alt-$k> [list ::menus::openBar .mb.$key 1]
         bind . <Alt-[string toupper $k]> [list ::menus::openBar .mb.$key 1]
     }
-    bind . <Control-f>      {::app::find ; break}
+    ::ui::bindMod . f {::app::find ; break}
     bind . <F10>            {::menus::openBar .mb.file 1 ; break}
     bind . <F5>             {::app::execute ; break}
-    bind . <Control-e>      {::app::execute ; break}
+    ::ui::bindMod . e {::app::execute ; break}
     bind . <Escape>         {::app::cancel}
-    bind . <Control-n>      {::app::newQuery ; break}
-    bind . <Control-o>      {::app::openDB ; break}
-    bind . <Control-s>      {::app::saveScript ; break}
-    bind . <Control-S>      {::app::commit ; break}
-    bind . <Control-w>      {::app::closeCurrent ; break}
-    bind . <Control-r>      {::app::toggleResults ; break}
+    ::ui::bindMod . n {::app::newQuery ; break}
+    ::ui::bindMod . o {::app::openDB ; break}
+    ::ui::bindMod . s {::app::saveScript ; break}
+    ::ui::bindMod . S {::app::commit ; break}
+    ::ui::bindMod . w {::app::closeCurrent ; break}
+    ::ui::bindMod . r {::app::toggleResults ; break}
+    bind . <F1>             {::app::shortcuts ; break}
     bind . <F8>             {::app::togglePane showEx ; break}
     bind . <F4>             {::app::togglePane showPr ; break}
-    bind . <Control-Tab>    {::app::cycleTab 1 ; break}
+    ::ui::bindMod . Tab {::app::cycleTab 1 ; break}
     bind . <Control-Shift-Tab> {::app::cycleTab -1 ; break}
     bind . <Control-ISO_Left_Tab> {::app::cycleTab -1 ; break}
-    bind . <Control-equal>  {::editor::zoom {} 1 ; break}
-    bind . <Control-plus>   {::editor::zoom {} 1 ; break}
-    bind . <Control-minus>  {::editor::zoom {} -1 ; break}
+    ::ui::bindMod . equal {::editor::zoom {} 1 ; break}
+    ::ui::bindMod . plus {::editor::zoom {} 1 ; break}
+    ::ui::bindMod . minus {::editor::zoom {} -1 ; break}
 }
 proc ::app::placeSashes {} {
     variable cfg
     set n [llength [.main panes]]
     if {$n == 3} {
-        .main sashpos 0 $cfg(exWidth)
-        .main sashpos 1 [expr {[winfo width .main] - $cfg(prWidth)}]
+        .main sashpos 0 [::theme::px $cfg(exWidth)]
+        .main sashpos 1 [expr {[winfo width .main] - [::theme::px $cfg(prWidth)]}]
     } elseif {$n == 2 && $cfg(showEx)} {
-        .main sashpos 0 $cfg(exWidth)
+        .main sashpos 0 [::theme::px $cfg(exWidth)]
     } elseif {$n == 2} {
-        .main sashpos 0 [expr {[winfo width .main] - $cfg(prWidth)}]
+        .main sashpos 0 [expr {[winfo width .main] - [::theme::px $cfg(prWidth)]}]
     }
 }
 proc ::app::cycleTab {dir} {
@@ -1083,7 +1126,7 @@ proc ::app::main {argv} {
     set themeVar $cfg(theme)
     wm withdraw .
     wm title . "MK Studio"
-    wm minsize . 960 600
+    wm minsize . [::theme::px 960] [::theme::px 600]
     ::theme::init
     ::theme::apply $cfg(theme)
     catch {::editor::zoomReset ; set ::editor::fontSize $cfg(fontSize) ; font configure MkMono -size $cfg(fontSize)}
@@ -1103,7 +1146,11 @@ proc ::app::main {argv} {
     refreshWelcome
     bindKeys
     wm protocol . WM_DELETE_WINDOW ::app::quit
-    wm geometry . $cfg(geometry)
+    if {$cfg(geometry) eq "1360x820"} {
+        set gw [expr {min([::theme::px 1360], int([winfo screenwidth .] * 0.92))}]
+        set gh [expr {min([::theme::px 820], int([winfo screenheight .] * 0.88))}]
+        wm geometry . ${gw}x${gh}
+    } else { wm geometry . $cfg(geometry) }
     wm deiconify .
     update
     if {!$cfg(showEx)} { .main forget .main.ex }

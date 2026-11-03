@@ -1,7 +1,7 @@
 # Engine tests: run with   tclsh tests/test_mkql.tcl
 set here [file dirname [file normalize [info script]]]
 if {![info exists ::env(REAL_MK)]} { source $here/mock_mk4tcl.tcl } else { package require Mk4tcl }
-foreach f {store mkql} { source $here/../mkstudio.vfs/lib/app-mkstudio/$f.tcl }
+foreach f {store engine mkql} { source $here/../mkstudio.vfs/lib/app-mkstudio/$f.tcl }
 
 set pass 0 ; set fail 0
 proc check {name got want} {
@@ -49,6 +49,10 @@ check numstr  [rows "SELECT 'abc' < 'abd', 2 < 10, '2' < '10'"] {{1 1 1}}
 check caseins [rows "SELECT id FROM employees WHERE NAME = 'Alan Turing'"] {3}
 check alias   [rows "SELECT e.name FROM employees e WHERE e.id = 1"] {{{Ada Lovelace}}}
 
+# multi-key / typed sorting
+check sortstable [rows "SELECT dept, id FROM employees ORDER BY dept DESC, id ASC LIMIT 3"] {{5 2} {5 7} {5 12}}
+check sorttext [lindex [rows "SELECT name FROM employees ORDER BY name"] 0] {{Ada Lovelace}}
+
 # subviews
 set r [q "SELECT id, skills FROM employees WHERE id = 1"]
 check subcell [dict get $r rows] [list [list 1 "\u25B8 2 rows"]]
@@ -80,12 +84,13 @@ q "ALTER VIEW notes ADD flag int"
 check addcol [lindex [store::layout $db.notes] end] {flag I {}}
 q "ALTER VIEW notes RENAME body TO text"
 check ren [rows "SELECT text FROM notes WHERE id = 1"] {hello}
+check renpos [lindex [lmap_ [store::layout $db.notes]] 1] text
 q "ALTER VIEW notes MODIFY id string"
 check retype [dict get [q "DESCRIBE notes"] rows] [dict get [q "DESCRIBE notes"] rows]
 check retype2 [rows "SELECT id FROM notes ORDER BY id"] {1 2}
 q "ALTER VIEW notes DROP flag"
-check dropcol [lmap_ [store::layout $db.notes]] {tags text id}
-check desc [dict get [q "DESCRIBE notes"] rows] {{1 tags Subview subview V} {2 tags.tag String column S} {3 tags.weight Float column F} {4 text String column S} {5 id String column S}}
+check dropcol [lmap_ [store::layout $db.notes]] {id text tags}
+check desc [dict get [q "DESCRIBE notes"] rows] {{1 id String column S} {2 text String column S} {3 tags Subview subview V} {4 tags.tag String column S} {5 tags.weight Float column F}}
 q "DROP VIEW notes"
 check dropview [store::hasView $db notes] 0
 

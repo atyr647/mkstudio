@@ -182,7 +182,7 @@ proc ::qdoc::execute {id {parseOnly 0}} {
     set db $Q($id,db)
     ::app::dbAutoSelect $id
 
-    if {[catch {::mkql::parseScript $text} parsed opts]} {
+    if {[catch {::engine::parseScript $text} parsed opts]} {
         set code [dict get $opts -errorcode]
         say $id "[stamp]  " dim
         say $id "Syntax error\n" err
@@ -209,7 +209,7 @@ proc ::qdoc::execute {id {parseOnly 0}} {
 
     set Q($id,running) 1
     ::app::busy 1
-    set ::mkql::progressHook ::app::pump
+    set ::engine::progressHook ::app::pump
     set t0 [clock milliseconds]
     set failed 0 ; set changed 0 ; set lastRows ""
     set n 0
@@ -222,7 +222,7 @@ proc ::qdoc::execute {id {parseOnly 0}} {
         say $id "[stamp]  " dim
         say $id "$short\n" stmt
         set s0 [clock milliseconds]
-        if {[catch {::mkql::execStatement $ast $db} res opts]} {
+        if {[catch {::engine::execute $ast $db} res opts]} {
             set failed 1
             set code [dict get $opts -errorcode]
             if {[lindex $code 0] eq "MKQL" && [lindex $code 1] eq "SYNTAX"} {
@@ -243,7 +243,7 @@ proc ::qdoc::execute {id {parseOnly 0}} {
                 ::grid::create $g -drill [list ::qdoc::drill $id $pid] -changed [list ::qdoc::updateInfo $id]
                 set cnt [::grid::load $g $res]
                 addPage $id $pid "Results" $g
-                set suffix [expr {[dict get $res truncated] ? "  (stopped at [::app::commas $::mkql::maxRows] rows \u2014 add LIMIT or WHERE)" : ""}]
+                set suffix [expr {[dict get $res truncated] ? "  (stopped at [::app::commas $::engine::maxRows] rows \u2014 add LIMIT or WHERE)" : ""}]
                 say $id "  \u2714  [::app::commas $cnt] row[expr {$cnt == 1 ? {} : {s}}]  \u00B7  $ms ms$suffix\n\n" ok
                 set lastRows $cnt
             }
@@ -255,7 +255,7 @@ proc ::qdoc::execute {id {parseOnly 0}} {
         }
     }
     set ms [expr {[clock milliseconds] - $t0}]
-    set ::mkql::progressHook {}
+    set ::engine::progressHook {}
     set Q($id,running) 0
     ::app::busy 0
 
@@ -301,13 +301,13 @@ proc ::qdoc::currentGrid {id} {
 namespace eval ::ddoc {
     variable D
     array set D {}
-    variable maxRows 20000
+    variable pageSize 5000
 }
 
 proc ::ddoc::docf {id} { return [::app::docFrame $id] }
 
 # "tag.view!3.sub"  ->  "view[3].sub"   (what the user sees on tabs)
-proc ::ddoc::label {mk} {
+proc ::ddoc::viewLabel {mk} {
     regsub -all {!(\d+)\.} $mk {[\1].} p
     regsub -all {!(\d+)$} $p {[\1]} p
     return [join [lrange [split $p .] 1 end] .]
@@ -315,7 +315,7 @@ proc ::ddoc::label {mk} {
 
 proc ::ddoc::create {id f mk} {
     variable D
-    set D($id,mk) $mk
+    set D($id,mk) $mk ; set D($id,offset) 0 ; set D($id,undo) {} ; set D($id,redo) {}
     ttk::frame $f -style Surface.TFrame
     ttk::frame $f.bar -style Surface.TFrame -padding {8 6}
     ttk::button $f.bar.add -text "Add Row" -image [::icons::get plus] -compound left \
@@ -323,10 +323,18 @@ proc ::ddoc::create {id f mk} {
     ttk::button $f.bar.del -text "Delete" -image [::icons::get minus] -compound left \
         -style ToolSurface.TButton -command [list ::ddoc::deleteRows $id]
     ttk::label $f.bar.count -text "" -style SurfaceDim.TLabel
+    ttk::button $f.bar.next -text "\u203A" -width 3 -style ToolSurface.TButton -command [list ::ddoc::page $id 1]
+    ttk::button $f.bar.prev -text "\u2039" -width 3 -style ToolSurface.TButton -command [list ::ddoc::page $id -1]
     pack $f.bar.add $f.bar.del -side left -padx {0 2}
-    pack $f.bar.count -side right -padx 8
+    pack $f.bar.next $f.bar.count $f.bar.prev -side right -padx 2
+    ::tip::attach $f.bar.prev "Previous page of rows  (Alt+Left)"
+    ::tip::attach $f.bar.next "Next page of rows  (Alt+Right)"
+    bind $f <Alt-Right> [list ::ddoc::page $id 1]
+    bind $f <Alt-Left>  [list ::ddoc::page $id -1]
 
-    ::grid::create $f.g -editable 1 -commit [list ::ddoc::commit $id] \
+    set ro [readonly $id]
+    if {$ro} { $f.bar.add state disabled ; $f.bar.del state disabled }
+    ::grid::create $f.g -editable [expr {!$ro}] -commit [list ::ddoc::commit $id] \
         -drill [list ::ddoc::drill $id] -changed [list ::ddoc::updateCount $id]
     ttk::frame $f.msg -style Panel.TFrame -padding {12 5}
     ttk::label $f.msg.l -text "" -style PanelDim.TLabel
@@ -334,6 +342,9 @@ proc ::ddoc::create {id f mk} {
     pack $f.bar -side top -fill x
     pack $f.msg -side bottom -fill x
     pack $f.g -side top -fill both -expand 1
+    ::ui::bindMod $f.g.t z "[list ::ddoc::undo $id] ; break"
+    ::ui::bindMod $f.g.t Z "[list ::ddoc::redo $id] ; break"
+    ::ui::bindMod $f.g.t y "[list ::ddoc::redo $id] ; break"
     bind $f.g <<GridDelete>> [list ::ddoc::deleteRows $id]
     bind $f.g.t <Delete> [list ::ddoc::deleteRows $id]
     bind $f.g <<GridError>> [list ::ddoc::showError $id]
@@ -341,6 +352,10 @@ proc ::ddoc::create {id f mk} {
     return $f
 }
 
+proc ::ddoc::readonly {id} {
+    variable D
+    return [::store::readonly [lindex [split $D($id,mk) .] 0]]
+}
 proc ::ddoc::note {id text {kind dim}} {
     set f [docf $id]
     $f.msg.l configure -text $text -foreground [expr {$kind eq "bad" ? $::theme::c(bad) : $::theme::c(dim)}]
@@ -350,12 +365,13 @@ proc ::ddoc::showError {id} {
     note $id "\u2716  $::grid::G($f.g,lasterror)" bad
 }
 proc ::ddoc::hint {id} {
+    if {[readonly $id]} { note $id "This database is open read-only." ; return }
     note $id "Double-click a cell to edit it. Changes stay in memory until you Commit."
 }
 
 # Read the view straight from the store into the grid's result format.
 proc ::ddoc::reload {id} {
-    variable D ; variable maxRows
+    variable D ; variable pageSize
     set f [docf $id]
     set mk $D($id,mk)
     if {[catch {::store::layout $mk} layout]} {
@@ -368,13 +384,17 @@ proc ::ddoc::reload {id} {
         lassign $c n t
         lappend cols $n ; lappend types $t
         if {$t eq "V"} { dict set drill $i $n } else { lappend props $n }
+        if {$t eq "B"} { dict set drill $i @$n }
         incr i
     }
     set total [::store::size $mk]
-    set n [expr {min($total, $maxRows)}]
-    set raw [::store::rows $mk $props 0 $n]
+    # clamp the page after rows were deleted
+    if {$D($id,offset) >= $total} { set D($id,offset) [expr {max(0, ($total - 1) / $pageSize * $pageSize)}] }
+    set off $D($id,offset)
+    set n [expr {min($total - $off, $pageSize)}]
+    set raw [::store::rows $mk $props $off $n]
     set rows {} ; set rowids {}
-    set r 0
+    set r $off
     foreach vals $raw {
         set out {} ; set k 0
         foreach c $layout {
@@ -388,19 +408,36 @@ proc ::ddoc::reload {id} {
         incr r
     }
     ::grid::load $f.g [dict create cols $cols types $types rows $rows rowids $rowids drill $drill \
-        source $mk truncated 0 editable 1]
-    if {$total > $n} {
-        note $id "Showing the first [::app::commas $n] of [::app::commas $total] rows."
-    } elseif {$total == 0} {
+        source $mk truncated 0 editable 1 rowbase $off]
+    if {$total == 0} {
         note $id "This view is empty. Click Add Row to create the first row."
     } else { hint $id }
 }
 
+# pager label and buttons:  "1-5,000 of 500,000 rows"
 proc ::ddoc::updateCount {id} {
+    variable D ; variable pageSize
     set f [docf $id]
     if {![winfo exists $f.g]} return
-    set total [::store::size $::ddoc::D($id,mk)]
-    $f.bar.count configure -text "[::app::commas $total] row[expr {$total == 1 ? {} : {s}}]"
+    set total [::store::size $D($id,mk)]
+    set off $D($id,offset)
+    set last [expr {min($total, $off + $pageSize)}]
+    if {$total <= $pageSize} {
+        $f.bar.count configure -text "[::app::commas $total] row[expr {$total == 1 ? {} : {s}}]"
+        $f.bar.prev state disabled ; $f.bar.next state disabled
+    } else {
+        $f.bar.count configure -text "[::app::commas [expr {$off + 1}]] - [::app::commas $last] of [::app::commas $total] rows"
+        $f.bar.prev state [expr {$off > 0 ? "!disabled" : "disabled"}]
+        $f.bar.next state [expr {$last < $total ? "!disabled" : "disabled"}]
+    }
+}
+proc ::ddoc::page {id dir} {
+    variable D ; variable pageSize
+    set total [::store::size $D($id,mk)]
+    set new [expr {$D($id,offset) + $dir * $pageSize}]
+    if {$new < 0 || $new >= $total} return
+    set D($id,offset) $new
+    reload $id
 }
 
 proc ::ddoc::commit {id rowid col value} {
@@ -409,7 +446,9 @@ proc ::ddoc::commit {id rowid col value} {
     if {[::store::readonly [lindex [split $mk .] 0]]} { error "This database is open read-only." }
     set d [::store::findCol [::store::layout $mk] $col]
     set v [::store::coerce [lindex $d 0] [lindex $d 1] $value]
+    set old [::store::cell $mk $rowid [lindex $d 0]]
     ::store::setCell $mk $rowid [lindex $d 0] $v
+    if {$old ne $v} { push $id [list cell $rowid [lindex $d 0] $old $v] }
     hint $id
     ::app::dataChanged 0
 }
@@ -417,7 +456,12 @@ proc ::ddoc::commit {id rowid col value} {
 proc ::ddoc::drill {id rowid sub} {
     variable D
     set mk $D($id,mk)
-    ::app::openData "$mk!$rowid.$sub" "[label $mk]\[$rowid\].$sub"
+    if {[string index $sub 0] eq "@"} {
+        ::bytes::view $mk $rowid [string range $sub 1 end] [readonly $id] $id
+        reload $id
+        return
+    }
+    ::app::openData "$mk!$rowid.$sub" "[viewLabel $mk]\[$rowid\].$sub"
 }
 
 proc ::ddoc::addRow {id} {
@@ -425,8 +469,11 @@ proc ::ddoc::addRow {id} {
     set f [docf $id]
     if {[catch {
         if {[::store::readonly [lindex [split $D($id,mk) .] 0]]} { error "This database is open read-only." }
-        ::store::appendRow $D($id,mk) {} {}
+        set idx [::store::appendRow $D($id,mk) {} {}]
+        push $id [list add $idx {}]
     } err]} { note $id "\u2716  $err" bad ; return }
+    variable pageSize
+    set D($id,offset) [expr {($idx / $pageSize) * $pageSize}]
     reload $id
     ::grid::selectLast $f.g
     ::app::dataChanged 0
@@ -443,10 +490,82 @@ proc ::ddoc::deleteRows {id} {
     if {$r ne "Delete"} return
     if {[catch {
         if {[::store::readonly [lindex [split $D($id,mk) .] 0]]} { error "This database is open read-only." }
+        set snaps {}
+        foreach i [lsort -integer -unique $ids] { lappend snaps [list $i [::store::captureRow $D($id,mk) $i]] }
         ::store::deleteRows $D($id,mk) $ids
+        push $id [list del $snaps]
     } err]} { note $id "\u2716  $err" bad ; return }
     reload $id
     ::app::dataChanged 0
+    note $id "Deleted $n row[expr {$n == 1 ? {} : {s}}]. Press Ctrl+Z to undo."
+}
+
+# ---- undo / redo ----------------------------------------------------------------------
+# Actions:  {cell rowid col old new}   {add idx snapshot}   {del {{idx snapshot} ...}}
+# Each is validated against the live data first and refused if it has since changed
+# (for example by a query run in another tab), rather than risking a wrong write.
+proc ::ddoc::push {id action} {
+    variable D
+    lappend D($id,undo) $action
+    if {[llength $D($id,undo)] > 200} { set D($id,undo) [lrange $D($id,undo) end-199 end] }
+    set D($id,redo) {}
+}
+proc ::ddoc::clearUndo {} {
+    variable D
+    foreach k [array names D *,undo] { set D($k) {} }
+    foreach k [array names D *,redo] { set D($k) {} }
+}
+proc ::ddoc::undo {id} { step $id undo redo }
+proc ::ddoc::redo {id} { step $id redo undo }
+
+proc ::ddoc::step {id from to} {
+    variable D
+    if {![llength $D($id,$from)]} { note $id "Nothing to [expr {$from eq "undo" ? {undo} : {redo}}]." ; return }
+    if {[readonly $id]} return
+    set mk $D($id,mk)
+    set action [lindex $D($id,$from) end]
+    set verb [expr {$from eq "undo" ? "Undid" : "Redid"}]
+    if {[catch {
+        switch -- [lindex $action 0] {
+            cell {
+                lassign $action _ rowid col old new
+                set want [expr {$from eq "undo" ? $new : $old}] ; set put [expr {$from eq "undo" ? $old : $new}]
+                if {$rowid >= [::store::size $mk] || [::store::cell $mk $rowid $col] ne $want} {
+                    error "the cell was changed elsewhere"
+                }
+                ::store::setCell $mk $rowid $col $put
+                set msg "$verb edit of '$col' in row [expr {$rowid + 1}]."
+            }
+            add {
+                lassign $action _ idx snap
+                if {$from eq "undo"} {
+                    if {$idx != [::store::size $mk] - 1} { error "rows were added or removed elsewhere" }
+                    set snap [::store::captureRow $mk $idx]
+                    ::store::deleteRows $mk [list $idx]
+                    set action [list add $idx $snap]
+                } else {
+                    ::store::restoreRow $mk $idx $snap
+                }
+                set msg "$verb adding row [expr {$idx + 1}]."
+            }
+            del {
+                set snaps [lindex $action 1]
+                if {$from eq "undo"} {
+                    foreach s $snaps { ::store::restoreRow $mk [lindex $s 0] [lindex $s 1] }
+                } else {
+                    set idx {} ; foreach s $snaps { lappend idx [lindex $s 0] }
+                    if {[lindex $idx end] >= [::store::size $mk]} { error "rows were added or removed elsewhere" }
+                    ::store::deleteRows $mk $idx
+                }
+                set msg "$verb deleting [llength $snaps] row[expr {[llength $snaps] == 1 ? {} : {s}}]."
+            }
+        }
+    } err]} { note $id "\u2716  Can't [expr {$from eq {undo} ? {undo} : {redo}}]: $err." bad ; return }
+    set D($id,$from) [lrange $D($id,$from) 0 end-1]
+    lappend D($id,$to) $action
+    reload $id
+    ::app::dataChanged 0
+    note $id $msg
 }
 
 # ============================================================================
@@ -479,8 +598,8 @@ proc ::design::create {id f mk} {
     ::ui::hoverTree $f.t
     $f.t heading #0 -text "Column" -anchor w
     $f.t heading type -text "Type" -anchor w
-    $f.t column #0 -width 300 -stretch 0
-    $f.t column type -width 160 -stretch 1
+    $f.t column #0 -width [::theme::px 300] -stretch 0
+    $f.t column type -width [::theme::px 160] -stretch 1
     ttk::scrollbar $f.v -orient vertical -command [list $f.t yview]
     $f.t configure -yscrollcommand [list $f.v set]
     ttk::frame $f.msg -style Panel.TFrame -padding {12 5}
@@ -490,6 +609,10 @@ proc ::design::create {id f mk} {
     pack $f.msg -side bottom -fill x
     pack $f.v -side right -fill y
     pack $f.t -side left -fill both -expand 1
+    if {[::store::readonly [lindex [split $mk .] 0]]} {
+        foreach b {addc adds edit drop} { $f.bar.$b state disabled }
+        $f.msg.l configure -text "This database is open read-only."
+    }
     bind $f.t <Double-1> [list ::design::editColumn $id]
     bind $f.t <Delete> [list ::design::dropColumn $id]
     refresh $id
@@ -530,7 +653,7 @@ proc ::design::picked {id} {
 }
 
 # apply a new layout and refresh everything
-proc ::design::apply {id script} {
+proc ::design::applyChange {id script} {
     variable X
     set mk $X($id,mk)
     if {[catch {
@@ -562,7 +685,7 @@ proc ::design::addColumn {id} {
         [list ::design::validate $id]]]
     if {$r eq ""} return
     set mk $X($id,mk)
-    apply $id [list ::store::restructure $mk [concat [::store::layout $mk] \
+    applyChange $id [list ::store::restructure $mk [concat [::store::layout $mk] \
         [list [list [dict get $r name] [letter [dict get $r type]] {}]]]]
 }
 proc ::design::addSubview {id} {
@@ -573,7 +696,7 @@ proc ::design::addSubview {id} {
         "A subview is a nested table: every row of this view holds its own list of rows."]]
     if {$r eq ""} return
     set mk $X($id,mk)
-    apply $id [list ::store::restructure $mk [concat [::store::layout $mk] \
+    applyChange $id [list ::store::restructure $mk [concat [::store::layout $mk] \
         [list [list [dict get $r name] V [list [list [dict get $r first] [letter [dict get $r type]] {}]]]]]]
 }
 proc ::design::editColumn {id} {
@@ -586,11 +709,11 @@ proc ::design::editColumn {id} {
         [list name "Name" entry $sel] \
         [list type "Type" combo [::store::typeName [lindex $d 1]] [types]]] "Save" \
         [list ::design::validateEdit $id $sel] \
-        "The data is copied into the changed column, which then moves to the end."]]
+        "The data is copied across into the changed column."]]
     if {$r eq ""} return
     set new [dict get $r name] ; set T [letter [dict get $r type]]
     if {$new eq $sel && $T eq [lindex $d 1]} return
-    apply $id [list ::store::rebuildColumn $mk $sel $new $T]
+    applyChange $id [list ::store::rebuildColumn $mk $sel $new $T]
 }
 proc ::design::validateEdit {id old d} { validate $id [dict merge $d [dict create old $old]] }
 
@@ -603,5 +726,81 @@ proc ::design::dropColumn {id} {
     set new {}
     foreach c [::store::layout $mk] { if {[lindex $c 0] ne $sel} { lappend new $c } }
     if {![llength $new]} { ::ui::problem "A view needs at least one column." ; return }
-    apply $id [list ::store::restructure $mk $new]
+    applyChange $id [list ::store::restructure $mk $new]
+}
+
+# ============================================================================
+#  Bytes viewer: hex dump of a binary cell, with export / replace-from-file
+# ============================================================================
+namespace eval ::bytes { variable maxDump 4096 }
+
+proc ::bytes::dump {data} {
+    variable maxDump
+    set n [string length $data]
+    set show [string range $data 0 [expr {$maxDump - 1}]]
+    set out {}
+    for {set off 0} {$off < [string length $show]} {incr off 16} {
+        set chunk [string range $show $off [expr {$off + 15}]]
+        binary scan $chunk H* hx
+        regsub -all {..} $hx {& } hx
+        set ascii [regsub -all {[^\x20-\x7e]} $chunk .]
+        lappend out [format "%08x  %-48s |%s|" $off $hx $ascii]
+    }
+    if {$n > $maxDump} { lappend out "... [expr {$n - $maxDump}] more bytes not shown (Export to see all)" }
+    return [join $out \n]
+}
+
+proc ::bytes::view {mk rowid col readonly {docId ""}} {
+    set data [::store::cell $mk $rowid $col]
+    set w [::ui::modal "Bytes: $col"]
+    set n [string length $data]
+    ttk::label $w.body.info -style SurfaceDim.TLabel \
+        -text "[::app::commas $n] byte[expr {$n == 1 ? {} : {s}}]   -   [::ddoc::viewLabel $mk]\[$rowid\].$col"
+    text $w.body.t -width 78 -height 18 -font MkMono -borderwidth 0 -highlightthickness 0 -padx 10 -pady 8 \
+        -wrap none -state normal
+    $w.body.t insert 1.0 [expr {$n ? [dump $data] : "(empty)"}]
+    $w.body.t configure -state disabled
+    ::theme::reg $w.body.t {%w configure -background $::theme::c(editor) -foreground $::theme::c(fg) -selectbackground $::theme::c(sel)}
+    pack $w.body.info -side top -anchor w -pady {0 8}
+    pack $w.body.t -side top -fill both -expand 1
+    ttk::button $w.bar.close -text Close -width 10 -style Accent.TButton -command {set ::ui::result close}
+    ttk::button $w.bar.exp -text "Export..." -width 10 -command [list ::bytes::export $mk $rowid $col]
+    ttk::button $w.bar.rep -text "Replace..." -width 10 -command [list ::bytes::replace $w $mk $rowid $col $docId]
+    ttk::button $w.bar.clr -text "Clear" -width 8 -command [list ::bytes::clear $w $mk $rowid $col $docId]
+    pack $w.bar.close -side right
+    pack $w.bar.exp -side left
+    if {!$readonly} { pack $w.bar.rep $w.bar.clr -side left -padx {8 0} }
+    bind $w <Return> {set ::ui::result close}
+    ::ui::run $w $w.bar.close
+}
+proc ::bytes::export {mk rowid col} {
+    set f [tk_getSaveFile -title "Export bytes" -initialfile $col.bin]
+    if {$f eq ""} return
+    if {[catch {
+        set out [open $f wb] ; puts -nonewline $out [::store::cell $mk $rowid $col] ; close $out
+    } err]} { ::ui::problem $err }
+}
+proc ::bytes::record {docId mk rowid col old new} {
+    if {$docId ne "" && $old ne $new} { ::ddoc::push $docId [list cell $rowid $col $old $new] }
+}
+proc ::bytes::replace {w mk rowid col docId} {
+    set f [tk_getOpenFile -title "Replace with file contents"]
+    if {$f eq ""} return
+    if {[catch {
+        set in [open $f rb] ; set data [read $in] ; close $in
+        set old [::store::cell $mk $rowid $col]
+        ::store::setCell $mk $rowid $col $data
+        record $docId $mk $rowid $col $old $data
+        ::app::dataChanged 0
+    } err]} { ::ui::problem $err ; return }
+    set ::ui::result changed
+}
+proc ::bytes::clear {w mk rowid col docId} {
+    if {[catch {
+        set old [::store::cell $mk $rowid $col]
+        ::store::setCell $mk $rowid $col ""
+        record $docId $mk $rowid $col $old ""
+        ::app::dataChanged 0
+    } err]} { ::ui::problem $err ; return }
+    set ::ui::result changed
 }

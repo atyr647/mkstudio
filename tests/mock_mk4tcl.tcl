@@ -203,6 +203,18 @@ proc ::mkmock::cmd_row {cmd path args} {
             dict lappend vo($id) rows $r
             return $path![expr {[llength [dict get $vo($id) rows]] - 1}]
         }
+        insert {
+            # like real Mk4tcl: `mk::row insert cursor ?count?` inserts blank rows
+            lassign [_resolve $path] id idx
+            set count [expr {[llength $args] ? [lindex $args 0] : 1}]
+            set rows [dict get $vo($id) rows]
+            if {$idx > [llength $rows] - 0 || $idx >= [llength $rows]} { error "view index is too large" }
+            for {set i 0} {$i < $count} {incr i} {
+                set rows [linsert $rows $idx [_defaults [dict get $vo($id) layout]]]
+            }
+            dict set vo($id) rows $rows
+            return $path
+        }
         delete {
             lassign [_resolve $path] id idx
             dict set vo($id) rows [lreplace [dict get $vo($id) rows] $idx $idx]

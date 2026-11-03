@@ -8,6 +8,7 @@ set ::env(HOME) /tmp/mks_home_[pid] ; file mkdir $::env(HOME)
 lassign $argv scenario out theme
 if {$theme eq ""} { set theme dark }
 set ::app::cfg(theme) $theme
+if {[info exists ::env(SCALE)]} { tk scaling $::env(SCALE) }
 ::app::main {}
 wm geometry . 1360x820+0+0
 update
@@ -28,6 +29,59 @@ set tag [::store::createSample $f]
 ::app::afterDbChange
 
 switch -- $scenario {
+    realworld {
+        set rw [::store::openFile /tmp/realworld.mk -readonly]
+        ::app::afterDbChange
+        ::app::openData $rw.dirs dirs
+        ::ddoc::drill [lindex [::app::docs] 0] 2 files
+        shot $out
+    }
+    bytes {
+        set rw [::store::openFile /tmp/realworld.mk -readonly]
+        ::app::afterDbChange
+        set id [::app::openData $rw.dirs dirs]
+        ::ddoc::drill $id 2 files
+        set id2 [lindex [::app::docs] end]
+        after 700 { exec import -window root $::out ; set ::ui::result close }
+        ::ddoc::drill $id2 1 @contents
+    }
+    big {
+        set b [::store::openFile /tmp/big.mk -readonly]
+        ::app::afterDbChange
+        set t0 [clock milliseconds]
+        set id [::app::openData $b.big big]
+        puts stderr "open data tab (500k rows): [expr {[clock milliseconds]-$t0}] ms"
+        set t0 [clock milliseconds]
+        ::ddoc::page $id 1 ; ::ddoc::page $id 1
+        puts stderr "two page turns: [expr {[clock milliseconds]-$t0}] ms"
+        shot $out
+    }
+    ctxgrid {
+        set id [::app::openData $tag.products products]
+        set g [::app::docFrame $id].g
+        update
+        $g.t selection set r2
+        ::grid::popupMenu $g 100 80 [expr {[winfo rootx $g.t] + 120}] [expr {[winfo rooty $g.t] + 100}]
+        ::menus::activate [::menus::current] 2
+        settle 300
+        exec import -window root $out
+    }
+    ctxeditor {
+        set id [::app::newQuery "SELECT id, name FROM employees\nWHERE id < 5;" $tag 0]
+        set ed [::app::docFrame $id].ed
+        update
+        ::editor::popupMenu $ed [expr {[winfo rootx $ed.t] + 200}] [expr {[winfo rooty $ed.t] + 60}]
+        ::menus::activate [::menus::current] 3
+        settle 300
+        exec import -window root $out
+    }
+    focus {
+        set id [::app::newQuery "SELECT * FROM employees LIMIT 5" $tag 1]
+        update
+        focus .tb.run
+        settle 300
+        exec import -window root $out
+    }
     welcome {
         ::app::closeDB $tag 1
         set ::app::cfg(recent) [list /home/ada/projects/inventory.mk /home/ada/projects/crm/customers.mk \

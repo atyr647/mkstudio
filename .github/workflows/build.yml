@@ -1,0 +1,60 @@
+name: build
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: write   # needed only to attach starpacks to a tagged release
+
+jobs:
+  test-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y tcl8.6 xvfb imagemagick
+
+      - name: Fetch tclkit runtimes (SHA1-verified)
+        run: tools/fetch-runtimes.sh
+
+      - name: Lint
+        run: tclsh8.6 tests/lint.tcl
+
+      - name: Engine tests (stand-in Metakit)
+        run: tclsh8.6 tests/test_mkql.tcl
+
+      - name: Engine tests (real Metakit, Tcl 8.6)
+        run: REAL_MK=1 tools/ext/tclkit-8.6.3-linux-x86_64 tests/test_mkql.tcl
+
+      - name: Engine contract (real Metakit)
+        run: REAL_MK=1 tools/ext/tclkit-8.6.3-linux-x86_64 tests/engine_contract.tcl
+
+      - name: UI logic (real Metakit, Tcl 8.6)
+        run: REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.6.3-linux-x86_64 tests/gui_logic.tcl
+
+      - name: UI logic (real Metakit, Tcl 8.5)
+        run: REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.5.17-linux-x86_64 tests/gui_logic.tcl
+
+      - name: Build starpacks (Linux, Windows, macOS)
+        run: ./build.sh all
+
+      - name: Verify embedded payloads
+        run: tools/ext/tclkit-8.6.3-linux-x86_64 tests/verify_payload.tcl dist/*
+
+      - name: Launch the Linux starpack
+        run: tests/smoke_starpack.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: starpacks
+          path: dist/*
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

@@ -1,2 +1,4 @@
-build/
 *.mk
+build/
+dist/
+tools/ext/

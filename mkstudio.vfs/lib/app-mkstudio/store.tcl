@@ -98,9 +98,24 @@ proc ::store::openFile {path args} {
         # very old Mk4tcl without -nocommit: fall back to the plain open
         mk::file open $tag $path {*}[expr {$readonly ? {-readonly} : {}}]
     }
+    # Mk4tcl will "open" ANY file (a text file just looks like a database with no
+    # views).  Refuse files that are neither Metakit nor empty, before anything
+    # could be committed into them.  Metakit datafiles start with "JL" (or "LJ");
+    # a starkit/starpack has no such header but does contain views.
+    if {!$create && [file size $path] > 0 && ![hasMetakitSignature $path] && ![llength [mk::file views $tag]]} {
+        catch {mk::file close $tag}
+        error "This file isn't a Metakit database, so it was not opened:\n$path"
+    }
     lappend tags $tag
     set file($tag) $path ; set ro($tag) $readonly ; set dirty($tag) 0
     return $tag
+}
+
+proc ::store::hasMetakitSignature {path} {
+    if {[catch {
+        set h [open $path rb] ; set sig [read $h 2] ; close $h
+    }]} { return 0 }
+    return [expr {$sig eq "JL" || $sig eq "LJ"}]
 }
 
 proc ::store::closeFile {tag} {
@@ -247,6 +262,42 @@ proc ::store::deleteRows {path indices} {
     touchPath $path
 }
 
+# Snapshot a row, including every nested subview row, for undo.
+#   -> {vals {prop value ...} subs {name {snapshot snapshot ...} ...}}
+proc ::store::captureRow {path idx} {
+    set vals {} ; set subs {}
+    foreach c [layout $path] {
+        lassign $c n t
+        if {$t eq "V"} {
+            set rows {}
+            set cnt [mk::view size $path!$idx.$n]
+            for {set i 0} {$i < $cnt} {incr i} { lappend rows [captureRow $path!$idx.$n $i] }
+            lappend subs $n $rows
+        } else {
+            lappend vals $n [mk::get $path!$idx $n]
+        }
+    }
+    return [list vals $vals subs $subs]
+}
+
+# Put a snapshot back at position idx (appending when idx is past the end).
+# Real Mk4tcl's `mk::row insert` only takes a count, so insert blank and fill.
+proc ::store::restoreRow {path idx snap} {
+    set n [mk::view size $path]
+    if {$idx >= $n} {
+        set idx $n
+        mk::row append $path
+    } else {
+        mk::row insert $path!$idx 1
+    }
+    foreach {p v} [dict get $snap vals] { mk::set $path!$idx $p $v }
+    foreach {name rows} [dict get $snap subs] {
+        foreach r $rows { restoreRow $path!$idx.$name [mk::view size $path!$idx.$name] $r }
+    }
+    touchPath $path
+    return $idx
+}
+
 proc ::store::touchPath {path} { touch [lindex [split $path .!] 0] }
 
 # -- changing structure ------------------------------------------------------
@@ -272,7 +323,7 @@ proc ::store::restructure {path layout} {
 # Rename and/or retype a top-level scalar column of a view, preserving data.
 # Metakit identifies a property by (name, type), so this adds the new column,
 # copies the values across (coercing where needed), and drops the old one.
-# The rebuilt column ends up last in the layout.
+# The rebuilt column keeps its original position in the layout.
 proc ::store::rebuildColumn {path oldName newName newType} {
     set layout [layout $path]
     set oldType ""
@@ -293,7 +344,12 @@ proc ::store::rebuildColumn {path oldName newName newType} {
     restructure $path [concat $base [list $T]]
     restructure $path [concat $base [list $T $N]]
     copyColumn $path $tmp $newName $newType
-    restructure $path [concat $base [list $N]]
+    # put the column back where it was (restructuring keeps data whatever the order)
+    set final {}
+    foreach c $layout {
+        if {[lindex $c 0] eq $oldName} { lappend final $N } else { lappend final $c }
+    }
+    restructure $path $final
 }
 
 proc ::store::copyColumn {path from to type} {

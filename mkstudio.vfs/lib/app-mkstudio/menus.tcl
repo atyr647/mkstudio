@@ -87,10 +87,10 @@ proc ::menus::build {m parent} {
     for {set i 0} {$i <= $last} {incr i} {
         if {[$m type $i] in {separator tearoff}} continue
         set lw [expr {max($lw, [font measure MkUI [entryLabel $m $i]])}]
-        catch {set aw [expr {max($aw, [font measure MkUI [$m entrycget $i -accelerator]])}]}
+        catch {set aw [expr {max($aw, [font measure MkUI [::ui::accel [$m entrycget $i -accelerator]]])}]}
     }
     set rowh [expr {[font metrics MkUI -linespace] + 12}]
-    set width [expr {max(220, 28 + $lw + ($aw ? $aw + 40 : 0) + 34)}]
+    set width [expr {max([::theme::px 220], 28 + $lw + ($aw ? $aw + 40 : 0) + 34)}]
 
     set items {}
     frame $top.f.pad0 -height 4 -background $::theme::c(raised)
@@ -111,7 +111,7 @@ proc ::menus::build {m parent} {
         label $r.m -width 2 -font MkUI -borderwidth 0 -anchor center
         label $r.l -text [entryLabel $m $i] -font MkUI -borderwidth 0 -anchor w
         label $r.c -text [expr {$type eq "cascade" ? "\u203A" : ""}] -font MkUI -borderwidth 0 -width 2
-        set acc "" ; catch {set acc [$m entrycget $i -accelerator]}
+        set acc "" ; catch {set acc [::ui::accel [$m entrycget $i -accelerator]]}
         label $r.a -text $acc -font MkUI -borderwidth 0 -anchor e
         pack $r.m -side left -padx {6 2}
         pack $r.l -side left

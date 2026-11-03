@@ -43,8 +43,8 @@ proc ::explorer::create {win args} {
     ttk::treeview $w.t -style Panel.Treeview -columns {detail} -show tree -selectmode browse \
         -yscrollcommand [list $w.v set]
     ttk::scrollbar $w.v -orient vertical -command [list $w.t yview]
-    $w.t column #0 -stretch 1 -minwidth 120
-    $w.t column detail -stretch 0 -width 92 -anchor e
+    $w.t column #0 -stretch 1 -minwidth [::theme::px 120]
+    $w.t column detail -stretch 0 -width [::theme::px 92] -anchor e
     pack $w.head -side top -fill x
     pack $w.search -side top -fill x
     pack $w.v -side right -fill y
@@ -60,6 +60,10 @@ proc ::explorer::create {win args} {
     bind $w.t <Control-Button-1> [list ::explorer::onMenu %x %y %X %Y]
     bind $w.t <F5>               "[list ::explorer::refresh] ; break"
     bind $w.t <Delete>           [list ::explorer::act dropSelected]
+    bind $w.t <Return>           "[list ::explorer::activate] ; break"
+    bind $w.t <KP_Enter>         "[list ::explorer::activate] ; break"
+    bind $w.t <Key-Menu>         "[list ::explorer::keyMenu] ; break"
+    bind $w.t <Shift-F10>        "[list ::explorer::keyMenu] ; break"
     refresh
     return $w
 }
@@ -242,6 +246,30 @@ proc ::explorer::onSelect {} {
     if {$opts(-select) ne ""} { uplevel #0 [list {*}$opts(-select) [selected]] }
 }
 
+# Enter on the selected item: open a view's rows, drop a column name into the query,
+# or expand/collapse containers.
+proc ::explorer::activate {} {
+    variable w
+    set item [$w.t focus]
+    if {$item eq ""} { set item [lindex [$w.t selection] 0] }
+    if {$item eq ""} return
+    set m [meta $item]
+    switch -- [dict get $m kind] {
+        view { act editRows $m }
+        col  { act insertName $m }
+        hint { act openDB $m }
+        default { populate $item ; $w.t item $item -open [expr {![$w.t item $item -open]}] }
+    }
+}
+# context menu from the keyboard (Menu key / Shift+F10), anchored at the selected row
+proc ::explorer::keyMenu {} {
+    variable w
+    set item [$w.t focus]
+    if {$item eq ""} return
+    lassign [$w.t bbox $item] x y cw ch
+    onMenu [expr {$x + 20}] [expr {$y + 4}] [expr {[winfo rootx $w.t] + $x + 24}] [expr {[winfo rooty $w.t] + $y + $ch}]
+}
+
 proc ::explorer::onDouble {x y} {
     variable w
     set item [$w.t identify row $x $y]
@@ -379,7 +407,7 @@ proc ::props::create {win} {
     ttk::label $w.title -text "" -style Panel.TLabel -font MkTitle -padding {14 4 14 0}
     ttk::label $w.sub -text "" -style PanelDim.TLabel -padding {14 0 14 10}
     ttk::treeview $w.t -style Panel.Treeview -columns {value} -show tree -selectmode browse
-    $w.t column #0 -width 110 -stretch 0
+    $w.t column #0 -width [::theme::px 110] -stretch 0
     $w.t column value -width 120 -stretch 1 -anchor w
     ttk::scrollbar $w.v -orient vertical -command [list $w.t yview]
     $w.t configure -yscrollcommand [list $w.v set]

@@ -37,9 +37,8 @@ namespace eval ::mkql {
         CONCAT REPLACE NOW
     }
     variable aggs {COUNT SUM AVG MIN MAX}
-    variable maxRows 100000          ;# cap for un-sorted SELECTs
-    variable progressHook {}         ;# called between chunks; UI uses it to stay responsive
-    variable cancel 0
+    # shared with the UI through the engine seam (see engine.tcl)
+    namespace upvar ::engine maxRows maxRows progressHook progressHook cancel cancel
     variable SRC ""
     variable toks {}
     variable ti 0
@@ -47,6 +46,10 @@ namespace eval ::mkql {
     # comment | block comment | 'string' | "ident" | number | word | operator | stray char
     variable tokenRe {(--[^\n]*)|(/\*(?:[^*]|\*(?!/))*\*/)|('(?:[^']|'')*')|("(?:[^"]|"")*")|((?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)|([A-Za-z_][A-Za-z0-9_$]*)|(<>|!=|<=|>=|==|\|\||[-+*/%=<>(),;.\[\]!@])|(\S)}
 }
+
+set ::engine::keywords $::mkql::keywords
+set ::engine::functions [concat $::mkql::aggs $::mkql::functions]
+set ::engine::tokenRe $::mkql::tokenRe
 
 # ============================================================================
 #  Lexer
@@ -1129,27 +1132,29 @@ proc ::mkql::execSelect {q defaultDb} {
     }
 
     if {[llength $order]} {
-        set keyed {} ; set idx 0
-        foreach r $recs {
-            lassign $r out c grp
-            set keys {}
-            foreach o $order {
-                set e [lindex $o 0]
+        # Stable multi-key sort: sort by the LAST key first, then each earlier one.
+        # Keys are typed up front so Tcl's native lsort does the work (a Tcl
+        # comparator per pair is ~100x slower on large results).
+        set n [llength $recs]
+        set perm {}
+        for {set i 0} {$i < $n} {incr i} { lappend perm $i }
+        for {set k [expr {[llength $order] - 1}]} {$k >= 0} {incr k -1} {
+            set o [lindex $order $k]
+            set e [lindex $o 0]
+            set kc {}
+            foreach r $recs {
+                lassign $r out c grp
                 if {[lindex $e 0] eq "outcol"} {
-                    lappend keys [lindex $out [lindex $e 1]]
+                    lappend kc [lindex $out [lindex $e 1]]
                 } else {
-                    lappend keys [ev $e $c [expr {$isAgg ? $grp : "NOGROUP"}]]
+                    lappend kc [ev $e $c [expr {$isAgg ? $grp : "NOGROUP"}]]
                 }
             }
-            lappend keyed [list $idx $keys]
-            incr idx
+            set perm [sortPerm $perm $kc [expr {[lindex $o 1] eq "desc"}]]
+            if {$::mkql::progressHook ne ""} { uplevel #0 $::mkql::progressHook }
         }
-        set dirs {}
-        foreach o $order { lappend dirs [lindex $o 1] }
-        set ::mkql::sortDirs $dirs
-        set sorted [lsort -command ::mkql::cmpKeyed $keyed]
         set recs2 {}
-        foreach k $sorted { lappend recs2 [lindex $recs [lindex $k 0]] }
+        foreach i $perm { lappend recs2 [lindex $recs $i] }
         set recs $recs2
     }
 
@@ -1206,6 +1211,38 @@ proc ::mkql::execSelect {q defaultDb} {
         source [expr {$plain ? $mk : ""}] drill $drill truncated $truncated editable $plain]
 }
 
+# Reorder `perm` (a list of record indices) by keys `kc` (indexed by record
+# index).  Stable, so earlier sort passes act as tie-breakers.
+proc ::mkql::sortPerm {perm kc desc} {
+    set allnum 1 ; set alltext 1
+    foreach v $kc {
+        if {[isnum $v]} { set alltext 0 } else { set allnum 0 }
+        if {!$allnum && !$alltext} break
+    }
+    set dir [expr {$desc ? "-decreasing" : "-increasing"}]
+    set keys {}
+    if {$allnum} {
+        foreach i $perm { lappend keys [tonum [lindex $kc $i]] }
+        set idx [lsort -real -indices $dir $keys]
+    } elseif {$alltext} {
+        foreach i $perm { lappend keys [lindex $kc $i] }
+        set idx [lsort -ascii -nocase -indices $dir $keys]
+    } else {
+        # mixed numbers and text in one column: SQL-ish rules via the comparator
+        set pairs {}
+        foreach i $perm { lappend pairs [list $i [lindex $kc $i]] }
+        set sorted [lsort -command ::mkql::cmpPair $pairs]
+        if {$desc} { set sorted [lreverse $sorted] }
+        set out {}
+        foreach p $sorted { lappend out [lindex $p 0] }
+        return $out
+    }
+    set out {}
+    foreach j $idx { lappend out [lindex $perm $j] }
+    return $out
+}
+proc ::mkql::cmpPair {a b} { compare [lindex $a 1] [lindex $b 1] }
+
 proc ::mkql::cmpKeyed {a b} {
     variable sortDirs
     set ka [lindex $a 1] ; set kb [lindex $b 1]
@@ -1216,6 +1253,16 @@ proc ::mkql::cmpKeyed {a b} {
         incr i
     }
     return 0
+}
+
+# Called inside long write loops: keeps the UI alive and honours Cancel.
+proc ::mkql::tick {n what} {
+    variable progressHook ; variable cancel
+    if {$n % 500 != 0} return
+    if {$progressHook ne ""} { uplevel #0 $progressHook }
+    if {$cancel} {
+        fail "Cancelled after $n $what. Changes made so far are still pending - Roll Back to undo them."
+    }
 }
 
 # ---- value coercion for writes ---------------------------------------------
@@ -1244,6 +1291,7 @@ proc ::mkql::layoutLookup {layout name} {
 }
 
 proc ::mkql::execInsert {st defaultDb} {
+    variable cancel
     lassign $st _ path cols rows
     lassign [resolvePath $path $defaultDb] mk tag layout label
     checkWritable $tag
@@ -1275,11 +1323,14 @@ proc ::mkql::execInsert {st defaultDb} {
         lappend prepared $vals
         incr n
     }
-    foreach vals $prepared { ::store::appendRow $mk $names $vals }
+    set cancel 0
+    set k 0
+    foreach vals $prepared { ::store::appendRow $mk $names $vals ; tick [incr k] "inserted rows" }
     return [msg "($n row[expr {$n == 1 ? {} : {s}}] inserted into $label)" $n]
 }
 
 proc ::mkql::execUpdate {st defaultDb} {
+    variable cancel
     lassign $st _ path sets where
     lassign [resolvePath $path $defaultDb] mk tag layout label
     checkWritable $tag
@@ -1296,8 +1347,9 @@ proc ::mkql::execUpdate {st defaultDb} {
     if {$where ne ""} { set bwhere [bindAst $where] }
     lassign [usedLists $layout] props subs
     set ctxs [scanRows $mk $props $subs $bwhere 0]
-    set n 0
+    set n 0 ; set cancel 0
     foreach c $ctxs {
+        tick $n "updated rows"
         set i [dict get $c _rowid]
         # evaluate everything first, then write, so SET a=b, b=a behaves
         set newvals {}
@@ -1305,7 +1357,10 @@ proc ::mkql::execUpdate {st defaultDb} {
             lassign $s col type e
             lappend newvals [coerce $col $type [ev $e $c]]
         }
-        foreach s $bsets v $newvals { ::store::setCell $mk $i [lindex $s 0] $v }
+        # skip writes that change nothing: in Metakit a string write shifts the rest of the column
+        foreach s $bsets v $newvals {
+            if {[::store::cell $mk $i [lindex $s 0]] ne $v} { ::store::setCell $mk $i [lindex $s 0] $v }
+        }
         incr n
     }
     return [msg "($n row[expr {$n == 1 ? {} : {s}}] updated in $label)" $n]
@@ -1396,7 +1451,7 @@ proc ::mkql::execAlter {st defaultDb} {
             if {$d eq ""} { fail "No column '$a' in '$label'" }
             if {[lindex $d 1] eq "V"} { fail "Renaming a subview is not supported; create a new one and copy its rows" }
             ::store::rebuildColumn $mk [lindex $d 0] $b [lindex $d 1]
-            return [msg "Column '[lindex $d 0]' renamed to '$b' (moved to the end of the layout)."]
+            return [msg "Column '[lindex $d 0]' renamed to '$b'."]
         }
         modify {
             lassign $arg a t
@@ -1404,7 +1459,7 @@ proc ::mkql::execAlter {st defaultDb} {
             if {$d eq ""} { fail "No column '$a' in '$label'" }
             if {[lindex $d 1] eq "V"} { fail "'$a' is a subview and has no type to change" }
             ::store::rebuildColumn $mk [lindex $d 0] [lindex $d 0] $t
-            return [msg "Column '[lindex $d 0]' is now [::store::typeName $t] (moved to the end of the layout)."]
+            return [msg "Column '[lindex $d 0]' is now [::store::typeName $t]."]
         }
     }
 }

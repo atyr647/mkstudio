@@ -22,6 +22,18 @@ namespace eval ::theme {
         comment #667186 errbg #4a2226  badHover #f48686
         find #4d4220    findCur #9a7a1c
     }
+    # WCAG-AAA style: pure black, white text, yellow accent, strong borders
+    set palettes(contrast) {
+        bg #000000      panel #000000     surface #000000   editor #000000
+        raised #1a1a1a  hover #333333     border #ffffff    fg #ffffff
+        dim #d9d9d9     faint #a6a6a6     accent #ffd400    accentFg #000000
+        accentDim #0a2a6e  sel #ffd400    selFg #000000     ok #4dff88
+        warn #ffd400    bad #ff7b7b       stripe #0f0f0f    headBg #1a1a1a
+        gutter #c8c8c8  curline #1c1c1c   kw #7cc0ff        str #ffb347
+        num #7dff9a     fn #e6a8ff        type #5ff0e0      op #ffffff
+        comment #b8b8b8 errbg #5a0000     badHover #ffa3a3
+        find #5a4a00    findCur #ffd400
+    }
     set palettes(light) {
         bg #eceef2      panel #f5f6f9     surface #ffffff   editor #ffffff
         raised #e3e6ec  hover #dde2ea     border #d3d8e1    fg #1f2430
@@ -60,6 +72,18 @@ proc ::theme::initFonts {} {
     foreach f {TkDefaultFont TkTextFont TkMenuFont TkHeadingFont TkCaptionFont TkTooltipFont} {
         catch {font configure $f -family $ui -size 10}
     }
+}
+
+# Display scale: 1.0 at the classic 96 dpi (Tk scaling 1.333); 2.0 on a 2x display.
+# Fixed pixel sizes go through px so they grow with the fonts instead of clipping.
+proc ::theme::scale {} {
+    set s [expr {[tk scaling] / 1.3333333}]
+    return [expr {$s < 1.0 ? 1.0 : $s}]
+}
+proc ::theme::px {n} { return [expr {int(round($n * [scale]))}] }
+# a row height that fits the UI font with comfortable padding
+proc ::theme::rowHeight {{extra 10}} {
+    return [expr {max([px 24], [font metrics MkUI -linespace] + $extra)}]
 }
 
 # colour lookup
@@ -135,48 +159,48 @@ proc ::theme::styles {} {
     ttk::style configure Raised.TLabel -background $c(raised) -foreground $c(fg)
     ttk::style configure RaisedDim.TLabel -background $c(raised) -foreground $c(dim) -font MkSmall
     ttk::style configure ToolRaised.TButton -background $c(raised) -foreground $c(fg) -padding {6 2} \
-        -borderwidth 0 -focusthickness 0
+        -borderwidth 0 -focusthickness 2 -focuscolor $c(accent)
     ttk::style map ToolRaised.TButton -background [list pressed $c(border) active $c(hover)]
     ttk::style configure Link.TLabel -background $c(surface) -foreground $c(accent)
 
     # buttons ----------------------------------------------------------------
     ttk::style configure TButton -background $c(raised) -foreground $c(fg) -padding {12 5} \
-        -borderwidth 1 -bordercolor $c(border) -focusthickness 0 -anchor center
+        -borderwidth 1 -bordercolor $c(border) -focusthickness 2 -focuscolor $c(accent) -anchor center
     ttk::style map TButton -background [list pressed $c(border) active $c(hover) disabled $c(panel)] \
         -bordercolor [list focus $c(accent)]
     ttk::style configure Tool.TButton -background $c(bg) -foreground $c(fg) -padding {7 5} \
-        -borderwidth 0 -focusthickness 0
+        -borderwidth 0 -focusthickness 2 -focuscolor $c(accent)
     ttk::style map Tool.TButton -background [list pressed $c(border) active $c(hover) disabled $c(bg)] \
         -foreground [list disabled $c(faint)]
     ttk::style configure ToolPanel.TButton -background $c(panel) -foreground $c(dim) -padding {5 3} \
-        -borderwidth 0 -focusthickness 0
+        -borderwidth 0 -focusthickness 2 -focuscolor $c(accent)
     ttk::style map ToolPanel.TButton -background [list pressed $c(border) active $c(hover)] \
         -foreground [list active $c(fg)]
     ttk::style configure ToolSurface.TButton -background $c(surface) -foreground $c(fg) -padding {8 4} \
-        -borderwidth 0 -focusthickness 0
+        -borderwidth 0 -focusthickness 2 -focuscolor $c(accent)
     ttk::style map ToolSurface.TButton -background [list pressed $c(border) active $c(hover)] \
         -foreground [list disabled $c(faint)]
     ttk::style configure Accent.TButton -background $c(accent) -foreground $c(accentFg) -padding {14 6} \
-        -borderwidth 0 -focusthickness 0 -font MkUIBold
+        -borderwidth 0 -focusthickness 2 -focuscolor $c(accent) -font MkUIBold
     ttk::style map Accent.TButton -background [list pressed $c(kw) active $c(kw) disabled $c(raised)] \
         -foreground [list disabled $c(faint)]
     ttk::style configure Run.TButton -background $c(bg) -foreground $c(ok) -padding {9 5} \
-        -borderwidth 0 -focusthickness 0 -font MkUIBold
+        -borderwidth 0 -focusthickness 2 -focuscolor $c(accent) -font MkUIBold
     ttk::style map Run.TButton -background [list pressed $c(border) active $c(hover) disabled $c(bg)] \
         -foreground [list disabled $c(faint)]
     ttk::style configure Danger.TButton -background $c(bad) -foreground #ffffff -padding {14 6} \
-        -borderwidth 0 -focusthickness 0 -font MkUIBold
+        -borderwidth 0 -focusthickness 2 -focuscolor $c(accent) -font MkUIBold
     ttk::style map Danger.TButton -background [list pressed $c(bad) active $c(badHover)]
     ttk::style configure Link.TButton -background $c(surface) -foreground $c(accent) -padding {2 2} \
-        -borderwidth 0 -focusthickness 0 -anchor w
+        -borderwidth 0 -focusthickness 2 -focuscolor $c(accent) -anchor w
     ttk::style map Link.TButton -background [list active $c(surface)] -foreground [list active $c(kw)]
 
     # checks, entries ----------------------------------------------------------
     ttk::style configure Surface.TCheckbutton -background $c(surface) -foreground $c(fg) \
-        -indicatorbackground $c(editor) -indicatorforeground $c(accent) -focusthickness 0
+        -indicatorbackground $c(editor) -indicatorforeground $c(accent) -focusthickness 2 -focuscolor $c(accent)
     ttk::style map Surface.TCheckbutton -background [list active $c(surface)]
     ttk::style configure TCheckbutton -background $c(bg) -indicatorbackground $c(editor) \
-        -indicatorforeground $c(accent) -focusthickness 0
+        -indicatorforeground $c(accent) -focusthickness 2 -focuscolor $c(accent)
     ttk::style configure TEntry -fieldbackground $c(editor) -foreground $c(fg) -bordercolor $c(border) \
         -lightcolor $c(editor) -darkcolor $c(editor) -padding {6 4} -insertcolor $c(fg) -borderwidth 1
     ttk::style map TEntry -bordercolor [list focus $c(accent)] -lightcolor [list focus $c(accent)] \
@@ -201,7 +225,7 @@ proc ::theme::styles {} {
             [list $o.Scrollbar.thumb -expand 1 -sticky nswe]]
     }
     ttk::style configure TScrollbar -troughcolor $c(bg) -background $c(raised) -bordercolor $c(bg) \
-        -lightcolor $c(raised) -darkcolor $c(raised) -arrowsize 0 -gripcount 0 -width 11 -borderwidth 0
+        -lightcolor $c(raised) -darkcolor $c(raised) -arrowsize 0 -gripcount 0 -width [px 11] -borderwidth 0
     ttk::style map TScrollbar -background [list pressed $c(faint) active $c(faint)] \
         -lightcolor [list pressed $c(faint) active $c(faint)] -darkcolor [list pressed $c(faint) active $c(faint)]
 
@@ -212,11 +236,11 @@ proc ::theme::styles {} {
 
     # treeview ---------------------------------------------------------------------
     ttk::style configure Treeview -background $c(surface) -fieldbackground $c(surface) -foreground $c(fg) \
-        -rowheight 24 -borderwidth 0 -bordercolor $c(surface) -lightcolor $c(surface) -darkcolor $c(surface) \
-        -indent 16
+        -rowheight [rowHeight] -borderwidth 0 -bordercolor $c(surface) -lightcolor $c(surface) -darkcolor $c(surface) \
+        -indent [px 16]
     ttk::style map Treeview -background [list selected $c(sel)] -foreground [list selected $c(selFg)]
     ttk::style layout Treeview {Treeview.padding -sticky nswe -children {Treeview.treearea -sticky nswe}}
-    ttk::style configure Panel.Treeview -background $c(panel) -fieldbackground $c(panel) -rowheight 24 \
+    ttk::style configure Panel.Treeview -background $c(panel) -fieldbackground $c(panel) -rowheight [rowHeight] \
         -bordercolor $c(panel) -lightcolor $c(panel) -darkcolor $c(panel)
     ttk::style map Panel.Treeview -background [list selected $c(sel)] -foreground [list selected $c(selFg)]
     ttk::style layout Panel.Treeview {Treeview.padding -sticky nswe -children {Treeview.treearea -sticky nswe}}
@@ -224,7 +248,7 @@ proc ::theme::styles {} {
         -padding {8 5} -borderwidth 0 -bordercolor $c(border) -lightcolor $c(headBg) -darkcolor $c(headBg) \
         -font MkSmall
     ttk::style map Treeview.Heading -background [list active $c(hover)] -foreground [list active $c(fg)]
-    ttk::style configure Grid.Treeview -rowheight 24
+    ttk::style configure Grid.Treeview -rowheight [rowHeight]
     ttk::style layout Grid.Treeview {Treeview.padding -sticky nswe -children {Treeview.treearea -sticky nswe}}
     ttk::style map Grid.Treeview -background [list selected $c(sel)] -foreground [list selected $c(selFg)]
 }
