@@ -8,8 +8,19 @@ source $here/../mkstudio.vfs/lib/app-mkstudio/store.tcl
 lassign $argv db log stop
 proc logline {text} { global log ; set h [open $log a] ; fconfigure $h -translation lf ; puts $h $text ; close $h }
 expr {srand([pid])}
+# The test shortens the abandonment limits (an empty lock file older than MKS_LOCK_EMPTY_STALE seconds counts as left by a
+# dead process).  On an overloaded machine a process can be starved for longer than that between creating the lock file and
+# writing its pid into it, and is then - correctly, by the protocol - overtaken.  The real limit is 5 s.  Such a process
+# reports SLOW (its acquisition took more than half the shortened limit) and the harness excuses overlaps it is part of.
+set emptyStale [expr {[info exists ::env(MKS_LOCK_EMPTY_STALE)] ? $::env(MKS_LOCK_EMPTY_STALE) : 5}]
+set slowMs [expr {int($emptyStale * 500)}]
 while {![file exists $stop]} {
-    if {[catch {store::openFile $db} tag]} { after [expr {1 + int(rand() * 8)}] ; continue }
+    set t0 [clock milliseconds]
+    if {[catch {store::openFile $db} tag]} {
+        if {[clock milliseconds] - $t0 > $slowMs} { logline "SLOW [pid] [expr {[clock milliseconds] - $t0}]" }
+        after [expr {1 + int(rand() * 8)}] ; continue
+    }
+    if {[clock milliseconds] - $t0 > $slowMs} { logline "SLOW [pid] [expr {[clock milliseconds] - $t0}]" }
     # Inside the critical section: write our pid into <db>.inside, hold for a moment, and check on the way out that
     # nobody else wrote to it meanwhile.  Someone else writing there while we are inside means two processes held the
     # lock at the same time.  (No process-liveness test: a killed process simply never checks again, and a leftover

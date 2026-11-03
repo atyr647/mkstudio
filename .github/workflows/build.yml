@@ -285,7 +285,9 @@ jobs:
           MNT="$RUNNER_TEMP/dmg"; mkdir -p "$MNT"
           hdiutil attach "$DMG" -mountpoint "$MNT" -nobrowse -quiet
           ls -la "$MNT"
-          codesign --verify --deep "$MNT/MK Studio.app" || echo "(codesign --verify is not clean for an appended starpack; the checks that matter follow: it runs from the image and starts as an app)"
+          # (the bundle is not sealed - codesign refuses a starpack as a bundle's main executable - so no bundle verification;
+          # the executable's own signature is what Apple silicon checks, and what follows runs it)
+          codesign --verify "$MNT/MK Studio.app/Contents/MacOS/mkstudio" && echo "executable signature ok"
           "$MNT/MK Studio.app/Contents/MacOS/mkstudio" --selftest "$RUNNER_TEMP/st2.txt"
           cat "$RUNNER_TEMP/st2.txt"; grep -q "^ok $v mk4tcl yes" "$RUNNER_TEMP/st2.txt"
           # the app must also start as an app (a window appears and it keeps running)

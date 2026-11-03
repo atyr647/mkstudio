@@ -12,7 +12,14 @@ BASE=${VER%%-*}                       # 1.0.0-rc.1 -> 1.0.0 (CFBundleShortVersio
 W=$(mktemp -d) ; trap 'rm -rf "$W"' EXIT
 APP="$W/stage/MK Studio.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN" "$APP/Contents/MacOS/mkstudio" && chmod +x "$APP/Contents/MacOS/mkstudio"
+# A starpack carries its payload after the Mach-O image.  codesign signs such a file fine on its own, but refuses the same
+# file once it is the main executable of a bundle ("main executable failed strict validation", with or without sealing the
+# bundle).  So the bare starpack is signed ad hoc here, BEFORE it goes into the bundle, and the bundle itself is left
+# unsealed.  Apple silicon insists on a valid signature on the executable, which this provides; what counts is that the
+# finished app runs, which CI tests from the mounted .dmg.
+cp "$BIN" "$W/mkstudio.bin" && chmod +x "$W/mkstudio.bin"
+codesign --force --sign - "$W/mkstudio.bin"
+cp "$W/mkstudio.bin" "$APP/Contents/MacOS/mkstudio"
 cp "$HERE/../icons/mkstudio.icns" "$APP/Contents/Resources/mkstudio.icns"
 cp "$HERE/../../LICENSE" "$HERE/../../THIRD_PARTY_NOTICES" "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -43,15 +50,6 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 plutil -lint "$APP/Contents/Info.plist"
-# A starpack carries its payload after the Mach-O image.  codesign signs such a file fine on its own (the wrap step in CI
-# does), but refuses to seal the whole bundle around it ("main executable failed strict validation").  So: try the bundle
-# first; if that is refused, sign the executable alone - Apple silicon only insists on a valid signature on the executable
-# - and say so.  What counts is that the finished app runs, which CI tests from the mounted .dmg.
-if ! codesign --force --deep --sign - "$APP"; then
-  echo "note: the bundle could not be sealed around the starpack; signing the executable alone"
-  codesign --force --sign - "$APP/Contents/MacOS/mkstudio"
-fi
-codesign --verify --deep "$APP" || echo "note: codesign --verify is not clean for a bundle around an appended starpack; the app is tested by running it"
 ln -s /Applications "$W/stage/Applications"
 mkdir -p "$OUT"
 DMG="$OUT/MKStudio-$VER-macos-$ARCH.dmg"
