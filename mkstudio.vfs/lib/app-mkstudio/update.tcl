@@ -346,6 +346,20 @@ proc ::update::install {info {progress {}} {target ""}} {
     }
     if {$progress ne ""} { {*}$progress "Installing..." }
     set old $exe.old
+    variable deferred ; set deferred 0
+    if {$::tcl_platform(platform) eq "windows"} {
+        # A running starpack keeps its own file open (the starkit mount) without sharing it for rename or delete, so on Windows
+        # the program cannot be replaced while it runs (measured on a real runner: "permission denied" on the rename).  The
+        # verified download stays next to it as <name>.new and a small script waits for the program to exit, swaps the files
+        # (keeping the old one as <name>.old) and - if <name>.restart exists by then - starts the new one.
+        if {[catch {stageWindows $exe $new} err]} {
+            file delete -force $new $dir
+            error "Could not prepare the update ($err); nothing was changed."
+        }
+        set deferred 1
+        file delete -force $dir
+        return $exe
+    }
     file delete -force $old
     file rename -force $exe $old
     if {[catch {file rename -force $new $exe} err]} {
@@ -356,11 +370,36 @@ proc ::update::install {info {progress {}} {target ""}} {
     file delete -force $dir
     return $exe
 }
+# Windows: write and start the script that completes the update once the program has exited.
+namespace eval ::update { variable deferred 0 }
+proc ::update::stageWindows {exe new} {
+    if {[regexp {[%^!&|<>"]} $exe]} { error "the program's path contains characters a batch file cannot handle safely: $exe" }
+    set w [file nativename $exe]
+    set script $exe.update.cmd
+    set lines [list "@echo off" "set \"EXE=$w\"" "set \"NEW=%EXE%.new\"" "set \"OLD=%EXE%.old\"" "set \"MARK=%EXE%.restart\"" "set /a tries=0" ":wait" "set /a tries+=1" \
+        "if %tries% gtr 900 goto giveup" "move /Y \"%EXE%\" \"%OLD%\" >nul 2>&1" "if errorlevel 1 goto again" \
+        "move /Y \"%NEW%\" \"%EXE%\" >nul 2>&1" "if errorlevel 1 goto restore" "if exist \"%MARK%\" goto start" "goto done" \
+        ":start" "del \"%MARK%\" >nul 2>&1" "start \"\" \"%EXE%\"" ":done" "(goto) 2>nul & del \"%~f0\"" \
+        ":again" "ping -n 2 127.0.0.1 >nul" "goto wait" \
+        ":restore" "move /Y \"%OLD%\" \"%EXE%\" >nul 2>&1" ":giveup" "exit /b 1"]
+    set h [open $script w] ; fconfigure $h -translation crlf ; puts $h [join $lines "\n"] ; close $h
+    exec cmd /c [file nativename $script] > NUL 2> NUL &
+    return $script
+}
+# ask the helper script (Windows) to start the new program as soon as it has replaced the old one
+proc ::update::requestRestart {} {
+    set exe [info nameofexecutable]
+    catch {set h [open $exe.restart w] ; close $h}
+}
 # at start-up: remove a half-finished download.  <name>.old (the version before the last update) is KEPT: it is the way back -
 # rename it over the program if the new version misbehaves; the next update replaces it.
 proc ::update::cleanup {} {
     if {![info exists ::starkit::mode] || $::starkit::mode ne "starpack"} return
-    catch {file delete -force [info nameofexecutable].new}
+    set exe [info nameofexecutable]
+    # (an update waiting for this program to exit - Windows - keeps its .new and its script)
+    if {[file exists $exe.update.cmd]} return
+    catch {file delete -force $exe.new}
+    catch {file delete -force $exe.restart}
 }
 # what `--selftest FILE` writes:  "ok <version> mk4tcl <yes|no>"
 proc ::update::selftestText {} {

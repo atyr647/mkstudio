@@ -87,7 +87,10 @@ daily check at start-up is on by default and can be switched off in the same men
 A stand-alone program in a writable folder can then **replace itself**: it downloads the new file, checks its SHA-256 against the
 release's `SHA256SUMS` (no checksum tool = no automatic install), starts it once with `--selftest` and compares the version it
 reports, and only then swaps it in; the old one stays beside it as `mkstudio.old` (rename it back to roll back). Anything
-wrong at any step changes nothing. Installed copies (`.deb`, the `.app`, a program in a protected folder) are not touched:
+wrong at any step changes nothing. **On Windows a running starpack cannot be renamed or replaced** (it keeps its own file open; the
+first CI run of the real self-update test failed with "permission denied" exactly there), so the verified download is staged
+next to the program as `mkstudio.exe.new` and a small helper script installs it the moment MK Studio closes - or closes and
+restarts it if you choose *Close and Restart*. Installed copies (`.deb`, the `.app`, a program in a protected folder) are not touched:
 the dialog opens the release page for the new installer. Pre-releases are only offered to someone already running one.
 `tests/test_update.tcl` covers all of it against a fake release feed on disk: version order, JSON, choosing a release,
 real download, wrong checksum, truncated download, a new program that does not start, one that reports the wrong version,

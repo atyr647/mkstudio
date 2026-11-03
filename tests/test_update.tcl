@@ -243,17 +243,35 @@ if {!$haveTool} { puts "  (no curl/wget/PowerShell here: download tests skipped)
         set r [::update::install $info [list apply {{m} { lappend ::realSteps $m }}] $old]
         puts "  real self-update of a running program: [expr {[clock milliseconds] - $t0}] ms ([llength $::realSteps] steps)"
         check real_install_path [file normalize $r] [file normalize $old]
+        if {$::tcl_platform(platform) eq "windows"} {
+            # Windows cannot replace a running starpack (it keeps its own file open): the update is staged and completed by a
+            # helper script as soon as the program has exited.  Here the "program" is the held-open old copy.
+            check real_windows_update_is_deferred $::update::deferred 1
+            ok real_windows_new_program_staged [file exists $old.new]
+            check real_windows_nothing_replaced_while_running [::update::sha256 $old] $oldHash
+            catch {exec taskkill /F /PID $holdPid}                            ;# the program exits ...
+            for {set i 0} {$i < 400 && ![file exists $old.old]} {incr i} { after 100 }   ;# ... the helper completes the swap
+            ok real_windows_helper_swapped_the_files [file exists $old.old]
+            for {set i 0} {$i < 100 && [file exists $old.update.cmd]} {incr i} { after 100 }
+            ok real_windows_helper_cleaned_up [expr {![file exists $old.update.cmd]}]
+        }
         check real_new_program_in_place [::update::sha256 $old] $spHash
         ok real_old_program_kept_as_dot_old [expr {[file exists $old.old] && [::update::sha256 $old.old] eq $oldHash}]
         ok real_no_download_left [expr {![file exists $old.new]}]
-        ok real_the_running_old_process_is_unharmed [alive $holdPid]
+        if {$::tcl_platform(platform) ne "windows"} { ok real_the_running_old_process_is_unharmed [alive $holdPid] }
         # the program now at the path is the real starpack: it starts and says its version
         set out $app/selftest.txt ; file delete $out
         check real_new_program_starts [catch {exec $old --selftest $out}] 0
         ok real_new_program_reports_its_version [expr {[file exists $out] && [string match "ok $::version::current mk4tcl yes*" [readall $out]]}] [expr {[file exists $out] ? [readall $out] : "no output"}]
-        # a second update over the .old left by the first (Windows: .old is the renamed running file - it must be replaceable)
+        # a second update over the .old left by the first
         set r2 [catch {::update::install $info "" $old} msg2]
         check real_second_update_works $r2 0
+        if {$::tcl_platform(platform) eq "windows"} {
+            # nothing is running now: the helper swaps at once
+            for {set i 0} {$i < 200 && [file exists $old.new]} {incr i} { after 100 }
+            ok real_windows_second_update_completed [expr {![file exists $old.new]}]
+            check real_windows_second_update_content [::update::sha256 $old] $spHash
+        }
         if {$::tcl_platform(platform) eq "windows"} { catch {exec taskkill /F /PID $holdPid} } else { catch {exec kill $holdPid} }
         for {set i 0} {$i < 100 && [alive $holdPid]} {incr i} { after 50 }
         file delete -force $app $rf

@@ -1190,6 +1190,12 @@ proc ::app::updateDialog {info} {
         return
     }
     ::crash::crumb "updated to $new"
+    if {$::update::deferred} {
+        # Windows: the program cannot replace its own running file; a helper does it as soon as MK Studio closes
+        set r [::ui::ask "Update ready" "MK Studio $new has been downloaded and checked. It is installed the moment MK Studio closes (the old version is kept as [file tail [info nameofexecutable]].old)." {"Close and Restart" Later} ok]
+        if {$r eq "Close and Restart"} { ::update::requestRestart ; quit }
+        return
+    }
     set r [::ui::ask "Updated" "MK Studio $new is installed. Restart to use it." {"Restart Now" Later} ok]
     if {$r eq "Restart Now"} { set restartAfterQuit 1 ; quit ; set restartAfterQuit 0 }
 }
