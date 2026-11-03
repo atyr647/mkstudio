@@ -32,5 +32,52 @@ check missing_file [catch {store::openFile /nonexistent/x.mk}] 1
 set txt [tmp not_metakit.txt] ; set h [open $txt w] ; puts $h "just some text" ; close $h ; set sz [file size $txt]
 check not_metakit [catch {store::openFile $txt}] 1
 check not_metakit_untouched [file size $txt] $sz
+# ---- an interrupted commit is put right when the database is next opened for writing --------------------------------
+# (the byte-level evidence for this is tests/test_power_loss.tcl; this checks the behaviour of the store itself)
+set g [tmp interrupted.mk] ; foreach x [glob -nocomplain $g*] { file delete $x }
+set t [store::createSample $g] ; store::commit $t ; store::closeFile $t
+check commit_leaves_no_record [file exists $g.commit] 0
+set sizeA [file size $g] ; set hdrA [dict get [store::headerInfo $g] header]
+check header_offset_is_file_size [dict get [store::headerInfo $g] offset] $sizeA
+set t [store::openFile $g]
+store::setCell $t.products 0 stock 4242 ; store::commit $t ; store::closeFile $t
+set sizeB [file size $g]
+check commit_grew_the_file [expr {$sizeB > $sizeA}] 1
+# simulate: killed after the new data was appended but before the header was rewritten
+file copy -force $g $g.done
+set h [open $g r+b] ; seek $h 0 start ; puts -nonewline $h [binary format H* $hdrA] ; close $h      ;# old header, longer file
+set ro [store::openFile $g -readonly]
+# (what Metakit makes of such a file depends on the commit: an empty database for a big append, the old state for a small one)
+store::closeFile $ro
+check readonly_open_does_not_repair [file size $g] $sizeB
+set t [store::openFile $g]
+check repaired_to_old_size [file size $g] $sizeA
+check repaired_data_is_the_old_state [stock $t] [lindex [dict get [mkql::run {SELECT stock FROM products WHERE sku = 'MK-001'} $t] rows] 0 0]
+check repair_is_reported [expr {[store::repairedNote $t] ne ""}] 1
+check old_views_back [store::views $t] {departments employees orders products}
+store::closeFile $t
+check repair_note_gone_after_close [store::repairedNote $t] ""
+# the commit record: found at open => the header and size are put back, even if the file was fully written
+file copy -force $g.done $g
+set h [open $g.commit w] ; puts -nonewline $h "$hdrA $sizeA" ; close $h
+set t [store::openFile $g]
+check record_rolls_back_to_before_the_commit [file size $g] $sizeA
+check record_removed [file exists $g.commit] 0
+store::closeFile $t
+# a record for a commit that never wrote anything is just removed
+set h [open $g.commit w] ; puts -nonewline $h "$hdrA $sizeA" ; close $h
+set t [store::openFile $g] ; check record_for_untouched_file_removed [list [file exists $g.commit] [file size $g]] [list 0 $sizeA] ; store::closeFile $t
+# a file shorter than the record says cannot be repaired: it is left alone and the user is warned
+set sh [tmp interrupted_short.mk] ; foreach x [glob -nocomplain $sh*] { file delete $x }
+file copy -force $g $sh ; set hh [open $sh r+b] ; chan truncate $hh [expr {$sizeA - 100}] ; close $hh
+set h [open $sh.commit w] ; puts -nonewline $h "$hdrA $sizeA" ; close $h
+catch {set t [store::openFile $sh] ; set note [store::repairedNote $t] ; store::closeFile $t}
+check short_file_warned [string match "Warning*" $note] 1
+# a normal commit still works and leaves nothing behind
+set t [store::openFile $g]
+store::setCell $t.products 0 stock 7 ; store::commit $t
+check normal_commit_after_repair [list [stock $t] [file exists $g.commit]] [list 7 0]
+store::closeFile $t
+set t [store::openFile $g] ; check commit_survived_reopen [stock $t] 7 ; store::closeFile $t
 puts "$pass passed, $fail failed"
 exit [expr {$fail ? 1 : 0}]

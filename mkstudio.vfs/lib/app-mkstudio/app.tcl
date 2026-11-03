@@ -604,7 +604,12 @@ proc ::app::openOne {path} {
     addRecent $path
     afterDbChange
     ::explorer::expandDb $tag
-    setStatus "Opened '$tag'  ([file tail $path])" ok
+    if {[::store::repairedNote $tag] ne ""} {
+        # the program or the computer stopped in the middle of a commit last time; the database was put back as it was
+        setStatus "Opened '$tag'. [::store::repairedNote $tag]" warn
+    } else {
+        setStatus "Opened '$tag'  ([file tail $path])" ok
+    }
     return $tag
 }
 proc ::app::newDB {} {

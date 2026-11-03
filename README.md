@@ -88,8 +88,8 @@ Tests (all in `tests/`):
 - `test_provider_lifecycle.tcl`, `provider_contract.tcl` + `test_provider_contract.tcl` - the lifetime of streaming results
   and the cache (edits, restructuring, Roll Back, close/reopen, two databases, destroyed results; byte budget, LRU,
   multi-database eviction), and an engine-independent conformance suite any engine's providers can be run through
-- `persist.tcl`, `test_crash_safety.tcl`, `test_lock_protocol.tcl`, `test_lock_crash.tcl` - persistence, crash safety, the
-  write-lock protocol (incl. racing against mkit-sql's own implementation) and the lock under crashes (next section)
+- `persist.tcl`, `test_crash_safety.tcl`, `test_power_loss.tcl`, `test_lock_protocol.tcl`, `test_lock_crash.tcl` - persistence,
+  crash safety, power loss (synthesised and real-kill states, three ways of opening them), the write-lock protocol (incl. racing against mkit-sql's own implementation) and the lock under crashes (next section)
 - `bench_mutation.tcl` - bulk `UPDATE`/`DELETE` of MK Studio's engine vs mkit-sql on identical files, results compared
 - `test_grid.tcl` - the virtualised grid driven with real mouse and key events (100,000 rows in memory, a Metakit view,
   selection ranges, keyboard, sorting, the sort cache, editing in a scrolled grid, streaming results incl. staleness and
@@ -108,12 +108,60 @@ cover data commits and structural commits (add / drop a column). Negative contro
 a hand-made torn commit, a corrupted value and a truncated file). It also checks that uncommitted edits never touch the
 file (byte-identical after a kill) and that Roll Back restores cells, added/deleted rows and structure exactly.
 
-Result on every kill: **never a torn or corrupt file** - the file holds either the old commit or the new one. (In roughly a quarter to a half
-of the kills the process died inside `commit`, so both the old and the new outcome are exercised.)
+**A correction.** An earlier version of this section said "never a torn or corrupt file". That was true of what the random
+kills hit and **wrong as a claim**: a commit's writes happen in a burst of a few milliseconds at its end, the random kills
+almost always landed before or after it, and a kill *inside* the burst leaves a file that Metakit opens as an **empty
+database** - no error, no views (one macOS CI trial hit it by luck; strace fault injection hits it every time). See the next
+section; this is now repaired when the database is next opened for writing, and tested at every write of a real commit.
 
-What this does **not** show: *power loss* or a failing disk. The tests kill the process, not the machine; the OS keeps
-and flushes what was written. Metakit commits by appending, then switching the header, which is the right design for
-that, but I cannot demonstrate durability across power failure here.
+## Power loss (best effort)
+
+Killing a process is not a power cut: the operating system keeps what the process had already written. A power cut loses
+whatever had not reached the disk, in any order, and there is no way to pull the plug from a test. What can be done:
+
+1. **Look at what a commit really does.** `strace` of a Metakit commit: a few small in-place writes, then the new data and
+   tail *appended* after the end of the file, and **last** an 8-byte header write at offset 0 that holds the new end of file.
+   There is **no `fsync`, `fdatasync` or `msync` anywhere** - Metakit never forces anything to disk.
+2. **Synthesise the files a power cut could leave** (`tests/test_power_loss.tcl`): run a commit, keep the file before (A) and
+   after (B), find the 4 KiB pages (and 512-byte sectors) that differ, and build states in which any subset of them reached
+   the disk - in write order (`ORDERED`, which is also what a *kill* leaves), the new header without the new data
+   (`HEADER`), any subset (`REORDER`), any subset of sectors (`TORN`) - across seven kinds of commit (edit a cell, edit a
+   number, append rows, delete rows, rewrite everything, add a column, change two views). Every file is opened in a separate
+   process (Metakit can crash on garbage) and compared with the exact content of A and of B.
+3. **Ground truth on Linux:** the same commit is *really killed* after its 1st, 2nd, 3rd ... Nth write to the database file
+   with `strace` fault injection, and the file it leaves is judged. This is what validates the synthetic model.
+
+Results (about 500 checks; Tcl 8.6 and 8.5; `raw` = Metakit alone):
+
+| states a power cut or kill can leave | raw Metakit | + cut back an unfinished append | + the commit record (what MK Studio does) |
+|---|---|---|---|
+| write-ordered prefixes (= a kill mid-commit), 35 | 7 right, **28 an empty database** | 35 old state | 35 old state |
+| new header, data missing / partial, 70 | 19 right, **51 wrong** | 19 right, 51 wrong | **70 old state** |
+| any subset of 4 KiB pages, 175 | 59 right, **116 wrong** | 112 right, 63 wrong | **175 old state** |
+| any subset of 512-byte sectors, 126 | 27 right, **94 wrong, 3 crashes, 2 hangs** | 80 right, 42 wrong, 4 hangs | **126 old state** |
+| real kills at 18 points of a real commit | 2 right, **16 empty databases** | | **18 old state** |
+
+"Wrong" means the file opened (or Metakit crashed or hung) but did not hold exactly the old or exactly the new state - most
+often an empty database, silently. So **Metakit alone is not crash-safe in the middle of a commit, and not power-loss safe
+at all.** What MK Studio now does (`store.tcl`):
+
+- before a commit starts it writes `<file>.commit` (the committed header and size) and, where the system has `sync`
+  (Linux, macOS), forces it and the file to disk; after the commit it forces the file to disk and removes the record;
+- when a database is opened *for writing* (with the lock held) and a record is found, the header and size are put back: the
+  database is exactly what it was before that commit; with no record, a file longer than its header says is cut back to the
+  header's offset. The user is told ("An unfinished commit was undone ...");
+- read-only opens never repair anything (they may see the unfinished state).
+
+Cost: a commit takes about 0.25 s longer on a 30 MB database (the two `sync`s).
+
+**Limits - please read.** The result is "the last confirmed commit, or the one before it, never a mixture", *given* the
+model: pages reach the disk in any order, an 8-byte write is atomic (it lies in one sector), and `sync` really forces data
+out. It does not cover a disk that lies about having written (some cheap SSDs and USB sticks), a filesystem that loses a
+whole file, a power cut during the *first* commit of a new file, or data lost from a commit that was already confirmed - and
+**on Windows there is no `sync` command**, so there the record and the repair work (kills are fully covered) but nothing is
+forced to disk: power-loss safety is only as good as the OS's own write ordering. A commit that was in flight when the power
+failed is lost (rolled back), by design: it was never confirmed to the user. `mkit-sql` on its own storage layer
+(`db.tcl`) does not have this protocol; in MK Studio it shares `store.tcl`, so it does.
 
 What it **did** find: Metakit does no locking. A second process that opens the file *while another commits* sometimes
 sees a mixed or unreadable state (between under 1% and 12% of the probe's reads, depending on timing), and two writers

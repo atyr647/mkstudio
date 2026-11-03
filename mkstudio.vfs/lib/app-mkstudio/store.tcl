@@ -347,11 +347,13 @@ proc ::store::openFile {path args} {
     }
     if {!$create && ![file exists $path]} { error "File not found: $path" }
     set holder [lockHolder $path]
-    set lf "" ; set mine ""
+    set lf "" ; set mine "" ; set repairNote ""
     if {!$readonly} {
         if {$holder ne ""} { lockedError $path $holder }
         set mine [takeLock $path]                        ;# before opening, so a refusal touches nothing
         set lf [expr {$mine eq "" ? "" : [lockPath $path]}]
+        # with the lock held nobody else is mid-commit: put right a commit that was interrupted
+        if {[file exists $path] && [catch {repairFile $path} repairNote]} { set repairNote "" }
     }
     set tag [makeTag $path]
     set opts {-nocommit}
@@ -373,6 +375,7 @@ proc ::store::openFile {path args} {
         error "This file isn't a Metakit database, so it was not opened:\n$path"
     }
     lappend tags $tag
+    if {$repairNote ne ""} { variable repaired ; set repaired($tag) $repairNote }
     set file($tag) $path ; set ro($tag) $readonly ; set dirty($tag) 0
     touchGen $tag
     if {$readonly} {
@@ -405,13 +408,106 @@ proc ::store::closeFile {tag} {
     if {$i >= 0} { set tags [lreplace $tags $i $i] }
     unset -nocomplain file($tag) ro($tag) dirty($tag)
     cacheClear $tag
-    unset -nocomplain ::store::gen($tag)
+    unset -nocomplain ::store::gen($tag) ::store::repaired($tag)
 }
 
+# ---- interrupted commits and power loss -------------------------------------------------------------------------
+# What a Metakit commit does to the file (strace of a real commit, see tests/test_power_loss.tcl):
+#   1. a few small in-place writes (an 8-byte marker in the old tail),
+#   2. the new data and a new tail APPENDED after the end of the file,
+#   3. LAST, the 8-byte header at offset 0, which holds the offset of the new end of the file.
+# There is no fsync/fdatasync/msync anywhere.  Consequences, both measured:
+#   * a crash between 2 and 3 leaves the OLD header and a LONGER file.  Metakit does not notice: it opens it as an
+#     EMPTY database (no views, no error).  Plain kill tests rarely land in that few-millisecond window; a
+#     deterministic one (strace fault injection) hits it every time.
+#   * after a POWER CUT the pages may reach the disk in any order, e.g. the new header without the new data.
+# The repairs below make both recoverable:
+#   * before a commit starts, <file>.commit records the committed header and size (and is forced to disk where the OS
+#     has `sync`); after it, the file is forced to disk and the record is removed.  If the record is found when the
+#     database is opened for writing, the commit never finished (or was never confirmed): the header and size are put
+#     back and the database is exactly what it was before that commit.
+#   * without a record, a file longer than its header says (an unfinished append) is cut back to the header's offset.
+# Not covered: a disk that loses data it said was written, or a system with no way to force data out (Windows has no
+# `sync` command, so there the protocol is as good as the OS's own write ordering - best effort).
+namespace eval ::store { variable durable 1 }   ;# 0 turns the `sync` calls off (the record and the repair stay)
+
+proc ::store::commitRecord {path} { return $path.commit }
+
+# {size S offset H header <8 bytes as hex>} for a Metakit file with the usual header, "" for anything else
+proc ::store::headerInfo {path} {
+    if {[catch {set h [open $path rb] ; set d [read $h 8] ; close $h}] || [string length $d] < 8} { return "" }
+    set magic [string range $d 0 1]
+    if {$magic eq "JL"} { binary scan $d x4I off } elseif {$magic eq "LJ"} { binary scan $d x4i off } else { return "" }
+    if {[string index $d 2] ne "\x1a"} { return "" }
+    binary scan $d H* hex
+    return [dict create size [file size $path] offset $off header $hex]
+}
+# force the files (and the folder entry) to disk where the system can: coreutils `sync FILE...` (Linux), else a plain `sync`
+proc ::store::syncDisk {args} {
+    variable durable
+    if {!$durable || $::tcl_platform(platform) eq "windows"} return
+    set paths {}
+    foreach p $args { lappend paths $p ; lappend paths [file dirname $p] }
+    if {[catch {exec sync {*}[lsort -unique $paths]}]} { catch {exec sync} }
+}
+# Called before mk::file commit: remember the state we can fall back to.
+proc ::store::beginCommit {path} {
+    set info [headerInfo $path]
+    if {$info eq ""} { return 0 }
+    set rec [commitRecord $path]
+    if {[catch {
+        set h [open $rec w] ; puts -nonewline $h "[dict get $info header] [dict get $info size]" ; close $h
+    }]} { return 0 }
+    syncDisk $rec $path
+    return 1
+}
+proc ::store::endCommit {path} {
+    syncDisk $path
+    catch {file delete [commitRecord $path]}
+}
+# Put right an interrupted commit.  Needs the write lock.  Returns "" (nothing to do) or what was done.
+proc ::store::repairFile {path} {
+    set rec [commitRecord $path]
+    set info [headerInfo $path]
+    if {[file exists $rec]} {
+        if {[catch {set h [open $rec r] ; set d [string trim [read $h]] ; close $h}]} { return "" }
+        lassign [split $d " "] hex size
+        if {[string length $hex] == 16 && [string is integer -strict $size] && $info ne ""} {
+            if {[file size $path] == $size && [dict get $info header] eq $hex} {
+                file delete $rec                                      ;# the commit never wrote anything
+                return ""
+            }
+            if {[file size $path] >= $size} {
+                set h [open $path r+b]
+                seek $h 0 start ; puts -nonewline $h [binary format H* $hex] ; flush $h
+                chan truncate $h $size
+                close $h
+                syncDisk $path
+                file delete $rec
+                return "An unfinished commit was undone: the database is as it was before that commit."
+            }
+            # the file is SHORTER than it was before the commit: nothing we can put back
+            return "Warning: this file is shorter than it was at its last commit - the database may be damaged."
+        }
+        file delete $rec
+    }
+    if {$info ne "" && [dict get $info size] > [dict get $info offset]} {
+        set h [open $path r+b] ; chan truncate $h [dict get $info offset] ; close $h
+        return "The unfinished end of an interrupted commit was discarded."
+    }
+    return ""
+}
+# interrupted commits repaired during open, by tag - for the application to tell the user
+namespace eval ::store { variable repaired ; array set repaired {} }
+proc ::store::repairedNote {tag} { variable repaired ; if {[info exists repaired($tag)]} { return $repaired($tag) } ; return "" }
+
 proc ::store::commit {tag} {
-    variable dirty
+    variable dirty ; variable file
+    set record 0
+    if {$dirty($tag) > 0} { set record [beginCommit $file($tag)] }
     mk::file commit $tag
     set dirty($tag) 0
+    if {$record} { endCommit $file($tag) }
 }
 
 # Discard uncommitted work.  Newer Mk4tcl has `mk::file rollback`; for older

@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y tcl8.6 xvfb imagemagick
+        run: sudo apt-get update && sudo apt-get install -y tcl8.6 xvfb imagemagick strace
 
       - name: Fetch tclkit runtimes (SHA1-verified)
         run: tools/fetch-runtimes.sh
@@ -51,6 +51,11 @@ jobs:
         run: |
           MKS_CRASH_TRIALS=15 tools/ext/tclkit-8.6.3-linux-x86_64 tests/run.tcl tests/test_crash_safety.tcl
           MKS_CRASH_TRIALS=8 tools/ext/tclkit-8.5.17-linux-x86_64 tests/run.tcl tests/test_crash_safety.tcl
+
+      - name: Power loss, best effort (synthesised after-power-cut files; real kills at every point of a real commit)
+        run: |
+          REAL_MK=1 tools/ext/tclkit-8.6.3-linux-x86_64 tests/run.tcl tests/test_power_loss.tcl
+          MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views REAL_MK=1 tools/ext/tclkit-8.5.17-linux-x86_64 tests/run.tcl tests/test_power_loss.tcl
 
       - name: Write-lock protocol, crash points and chaos (Tcl 8.6 and 8.5)
         run: |
@@ -107,9 +112,9 @@ jobs:
         timeout-minutes: 10
         run: |
           fail=0
-          for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_lock_protocol test_lock_crash test_grid gui_logic; do
+          for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_lock_protocol test_lock_crash test_grid gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
-            MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_TEST_LOG="$(cygpath -w "$log")" timeout 300 "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
+            MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$(cygpath -w "$log")" timeout 300 "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
           done
           exit $fail
@@ -218,9 +223,9 @@ jobs:
         timeout-minutes: 10
         run: |
           fail=0
-          for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_lock_protocol test_lock_crash test_grid gui_logic; do
+          for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_lock_protocol test_lock_crash test_grid gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
-            MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_TEST_LOG="$log" perl -e 'alarm 300; exec @ARGV' "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
+            MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$log" perl -e 'alarm 300; exec @ARGV' "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
           done
           exit $fail
