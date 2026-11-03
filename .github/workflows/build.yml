@@ -112,37 +112,51 @@ jobs:
   # ---------------------------------------------------------------- macOS: run it for real
   macos:
     needs: linux
-    # macos-15-intel runs the universal runtime natively; macos-latest is Apple silicon
-    # and runs its x86_64 slice under Rosetta.
+    # macos-15-intel is x86_64; macos-latest is Apple silicon (arm64).  The prebuilt Mac
+    # tclkits (Tk 8.6.3 and 8.5.17, 2014) crash on current macOS, so a current Tcl/Tk 8.6
+    # kit with Metakit storage is built natively on each machine with KitCreator.
     strategy:
       fail-fast: false
       matrix:
         os: [macos-15-intel, macos-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
+    timeout-minutes: 60
     env:
       REAL_MK: '1'
-      # Tk 8.6.3 crashes on current macOS (setCanCycle: unrecognized selector), so the Mac
-      # runtime under test is the 8.5.17 kit, which this app also supports.
-      KIT: tools/ext/tclkit-8.5.17-macosx-universal
+      TCL_VERSION: 8.6.16
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+
+      - name: Cache the tclkit
+        id: cache
+        uses: actions/cache@v4
         with:
-          name: starpacks
-          path: dist
+          path: kitcreator/tclkit-${{ env.TCL_VERSION }}
+          key: tclkit-${{ matrix.os }}-${{ env.TCL_VERSION }}-v1
 
-      - name: Install Rosetta (Apple silicon only)
-        if: matrix.os == 'macos-latest'
-        run: /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
+      - name: Build a current tclkit (Tcl/Tk + Metakit) with KitCreator
+        if: steps.cache.outputs.cache-hit != 'true'
+        timeout-minutes: 45
+        run: |
+          curl -fsSL "https://kitcreator.rkeene.org/fossil/tarball/kitcreator.tar.gz?uuid=trunk" -o kc.tgz
+          tar xzf kc.tgz
+          cd kitcreator
+          # Metakit is old C++: ask the compiler for a language level it accepts
+          export CXXFLAGS="-std=c++11 -Wno-register -Wno-deprecated -w"
+          export CFLAGS="-w"
+          ./kitcreator ${TCL_VERSION} || { echo "::error::KitCreator failed"; tail -60 build/*.log 2>/dev/null || true; exit 1; }
+          ls -la tclkit-${TCL_VERSION}
 
-      - name: Fetch tclkit runtimes
-        run: tools/fetch-runtimes.sh
+      - name: Use the built tclkit
+        run: |
+          KIT="$GITHUB_WORKSPACE/kitcreator/tclkit-${TCL_VERSION}"
+          chmod +x "$KIT"
+          echo "KIT=$KIT" >> "$GITHUB_ENV"
+          file "$KIT"
 
-      - name: Engine, contract, persistence and UI tests on macOS (real Metakit)
+      - name: Engine, contract, persistence and UI tests on macOS (real Metakit, current Tk)
         timeout-minutes: 10
         run: |
-          chmod +x "$KIT"
           fail=0
           for t in test_mkql engine_contract persist gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
@@ -160,16 +174,20 @@ jobs:
         run: |
           cp "$KIT" "$RUNNER_TEMP/runtime" && chmod +x "$RUNNER_TEMP/runtime"
           mkdir -p dist
-          "$KIT" tools/wrap.tcl "$RUNNER_TEMP/runtime" mkstudio.vfs dist/mkstudio-macos-tk85-universal
-          chmod +x dist/mkstudio-macos-tk85-universal
-          "$KIT" tests/verify_payload.tcl dist/mkstudio-macos-tk85-universal
+          OUT=dist/mkstudio-macos-$(uname -m)
+          "$KIT" tools/wrap.tcl "$RUNNER_TEMP/runtime" mkstudio.vfs "$OUT"
+          chmod +x "$OUT"
+          "$KIT" tests/verify_payload.tcl "$OUT"
+          # an appended payload invalidates the signature; Apple silicon refuses unsigned code
+          codesign --force --sign - "$OUT" || echo "(codesign not applied)"
+          echo "OUT=$OUT" >> "$GITHUB_ENV"
 
       - name: Launch the macOS starpack
         timeout-minutes: 5
         run: |
           DB="$RUNNER_TEMP/smoke.mk"
           "$KIT" tests/make_sample.tcl "$DB"
-          ./dist/mkstudio-macos-tk85-universal "$DB" &
+          "./$OUT" "$DB" &
           PID=$!
           sleep 12
           if ! kill -0 $PID 2>/dev/null; then echo "starpack exited early"; exit 1; fi
@@ -183,7 +201,7 @@ jobs:
           name: macos-${{ matrix.os }}
           path: |
             macos-starpack.png
-            dist/mkstudio-macos-tk85-universal
+            dist/mkstudio-macos-*
           if-no-files-found: ignore
 
   release:
