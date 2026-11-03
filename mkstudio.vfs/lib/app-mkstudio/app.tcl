@@ -1096,7 +1096,7 @@ proc ::app::bindKeys {} {
     bind . <F4>             {::app::togglePane showPr ; break}
     ::ui::bindMod . Tab {::app::cycleTab 1 ; break}
     bind . <Control-Shift-Tab> {::app::cycleTab -1 ; break}
-    bind . <Control-ISO_Left_Tab> {::app::cycleTab -1 ; break}
+    ::ui::bindSafe . <Control-ISO_Left_Tab> {::app::cycleTab -1 ; break}
     ::ui::bindMod . equal {::editor::zoom {} 1 ; break}
     ::ui::bindMod . plus {::editor::zoom {} 1 ; break}
     ::ui::bindMod . minus {::editor::zoom {} -1 ; break}

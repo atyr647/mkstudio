@@ -28,6 +28,10 @@ foreach f [lsort [glob -directory $dir *.tcl]] {
     set n 0
     foreach line [split $src \n] {
         incr n
+        # X11-only keysyms make a plain `bind` fail on Windows/macOS: they must go through ::ui::bindSafe
+        if {[regexp {ISO_Left_Tab|XF86|SunProps} $line] && ![string match "*bindSafe*" $line] && ![string match "\\#*" [string trimleft $line]]} {
+            puts "UNGUARDED X11-only keysym at [file tail $f]:$n" ; incr fails
+        }
         if {[string match "\\#*" [string trimleft $line]]} continue
         foreach w {lmap try finally throw tailcall} {
             if {[regexp "(^|\[\\\[;\{\] *)$w " $line]} { puts "8.6-only '$w' at [file tail $f]:$n" ; incr fails }

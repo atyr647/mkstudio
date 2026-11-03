@@ -379,7 +379,7 @@ proc ::grid::edit {w item ci} {
     bind $t.edit <Return>    [list ::grid::editDone $w 1 down]
     bind $t.edit <KP_Enter>  [list ::grid::editDone $w 1 down]
     bind $t.edit <Tab>       "[list ::grid::editDone $w 1 right] ; break"
-    bind $t.edit <ISO_Left_Tab> "[list ::grid::editDone $w 1 left] ; break"
+    ::ui::bindSafe $t.edit <ISO_Left_Tab> "[list ::grid::editDone $w 1 left] ; break"
     bind $t.edit <Escape>    [list ::grid::editDone $w 0 none]
     bind $t.edit <FocusOut>  [list ::grid::editDone $w 1 none]
 }

@@ -186,6 +186,14 @@ proc ::ui::formOk {w fields validate} {
 # unwrap the {ok dict} produced by form
 proc ::ui::formResult {r} { if {$r eq ""} { return "" } ; return [lindex $r 1] }
 
+# Bind a sequence that may not exist on every windowing system (for example the X11
+# keysym ISO_Left_Tab, which Tk on Windows and macOS rejects with "bad event type or
+# keysym").  Returns 1 if the binding was made.  An unguarded bind of such a key
+# made the whole app fail at start-up on Windows and macOS.
+proc ::ui::bindSafe {w seq script} {
+    return [expr {![catch {bind $w $seq $script}]}]
+}
+
 # Bind Ctrl+<key>, and on macOS Command+<key> as well (Command is the platform's
 # primary modifier there; Control keeps working too).
 proc ::ui::bindMod {w key script} {

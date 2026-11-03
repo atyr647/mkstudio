@@ -40,7 +40,7 @@ proc ::editor::create {w args} {
     bind $t <KeyRelease>    [list ::editor::cursorMoved $w]
     bind $t <ButtonRelease-1> [list ::editor::cursorMoved $w]
     bind $t <Tab>           "[list ::editor::indent $w 1] ; break"
-    bind $t <ISO_Left_Tab>  "[list ::editor::indent $w -1] ; break"
+    ::ui::bindSafe $t <ISO_Left_Tab>  "[list ::editor::indent $w -1] ; break"
     bind $t <Shift-Tab>     "[list ::editor::indent $w -1] ; break"
     bind $t <Return>        "[list ::editor::newline $w] ; break"
     bind $t <KP_Enter>      "[list ::editor::newline $w] ; break"
