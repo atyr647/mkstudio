@@ -33,7 +33,7 @@ Version: $DEBVER
 Section: database
 Priority: optional
 Architecture: amd64
-Depends: libc6 (>= 2.17), libx11-6, libxft2, libfontconfig1
+Depends: libc6 (>= 2.28), libx11-6, libxft2, libfontconfig1
 Installed-Size: $SIZE
 Maintainer: atyr647 <atyr647@users.noreply.github.com>
 Homepage: https://github.com/atyr647/mkstudio
