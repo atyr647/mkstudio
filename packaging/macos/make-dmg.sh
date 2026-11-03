@@ -43,10 +43,15 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 plutil -lint "$APP/Contents/Info.plist"
-codesign --force --deep --sign - "$APP"
-# (a starpack carries its payload after the Mach-O image, which --strict refuses; the kernel only checks the image, and
-# CI starts the app from the finished .dmg)
-codesign --verify --deep "$APP" || echo "note: codesign --verify reports the appended payload; the app is tested by running it"
+# A starpack carries its payload after the Mach-O image.  codesign signs such a file fine on its own (the wrap step in CI
+# does), but refuses to seal the whole bundle around it ("main executable failed strict validation").  So: try the bundle
+# first; if that is refused, sign the executable alone - Apple silicon only insists on a valid signature on the executable
+# - and say so.  What counts is that the finished app runs, which CI tests from the mounted .dmg.
+if ! codesign --force --deep --sign - "$APP"; then
+  echo "note: the bundle could not be sealed around the starpack; signing the executable alone"
+  codesign --force --sign - "$APP/Contents/MacOS/mkstudio"
+fi
+codesign --verify --deep "$APP" || echo "note: codesign --verify is not clean for a bundle around an appended starpack; the app is tested by running it"
 ln -s /Applications "$W/stage/Applications"
 mkdir -p "$OUT"
 DMG="$OUT/MKStudio-$VER-macos-$ARCH.dmg"
