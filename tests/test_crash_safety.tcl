@@ -182,6 +182,9 @@ proc killTrials {mode allowExtra count} {
         set t0 [clock microseconds]
         while {([clock microseconds] - $t0) < $delay * 1000} {}
         killpid $pid
+        # judge the file only once the process is really gone: on a busy runner a SIGKILLed process can take a
+        # while to die, and reading while it is still finishing a write is the concurrent-reader case, not a crash
+        set gone [waitFor {expr {![store::pidAlive $pid]}} 15000]
         after 150
         set started [readnum $prog.started] ; set committed [readnum $prog.committed]
         # a child killed while rewriting a progress file leaves it empty: then all we know is that it was at most
@@ -190,7 +193,7 @@ proc killTrials {mode allowExtra count} {
         set problem [verify $work $allowExtra]
         if {$problem ne ""} {
             incr bad
-            puts "TRIAL $trial ($mode) CORRUPT: $problem   (started $started committed $committed)"
+            puts "TRIAL $trial ($mode) CORRUPT: $problem   (started $started committed $committed, process gone: $gone, file size [file size $work])"
             file copy -force $work [tmp crash_failed_$mode.$trial.mk]
             continue
         }
