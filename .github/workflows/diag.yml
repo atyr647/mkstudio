@@ -1,0 +1,35 @@
+name: diag
+# Throwaway diagnostics for the Windows runtime (not part of the product).  Runs only when started by hand or when
+# the diagnostic itself changes.
+on:
+  workflow_dispatch:
+  push:
+    branches: ['ccr-f017368d-kguqg8']
+    paths: ['tests/diag_win_ps.tcl', '.github/workflows/diag.yml']
+jobs:
+  windows-ps:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: The new Windows kit (cached by the build workflow)
+        uses: actions/cache/restore@v4
+        with:
+          path: kit-out/tclkit-8.6.16-windows-x86_64.exe
+          key: kit-windows-${{ hashFiles('tools/build-kit.sh') }}
+          fail-on-cache-miss: true
+      - name: The old prebuilt Windows kit
+        run: tools/fetch-runtimes.sh
+      - name: PowerShell from the NEW kit
+        run: |
+          log="$RUNNER_TEMP/new.log"; rm -f "$log"
+          MKS_TEST_LOG="$(cygpath -w "$log")" timeout 300 kit-out/tclkit-8.6.16-windows-x86_64.exe tests/run.tcl tests/diag_win_ps.tcl || true
+          cat "$log"
+      - name: PowerShell from the OLD kit
+        run: |
+          log="$RUNNER_TEMP/old.log"; rm -f "$log"
+          MKS_TEST_LOG="$(cygpath -w "$log")" timeout 300 tools/ext/tclkit-8.6.3-win32-x86_64.exe tests/run.tcl tests/diag_win_ps.tcl || true
+          cat "$log"
