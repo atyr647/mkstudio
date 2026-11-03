@@ -134,4 +134,4 @@ ok killed_session_report_has_crumbs [expr {[string match "*query executed*" $rep
 
 file delete -force $dir
 puts "$pass passed, $fail failed"
-if {$fail} { exit 1 }
+exit [expr {$fail ? 1 : 0}]        ;# (explicit: a Windows GUI tclkit would otherwise wait in its event loop)

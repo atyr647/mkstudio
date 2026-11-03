@@ -77,7 +77,7 @@ Section "Offer MK Studio under 'Open with' for .mk and .mk4 files" SecAssoc
   WriteRegStr HKCU "Software\Classes\MKStudio.Database\shell\open\command" "" '"$INSTDIR\mkstudio.exe" "%1"'
   WriteRegStr HKCU "Software\Classes\.mk\OpenWithProgids" "MKStudio.Database" ""
   WriteRegStr HKCU "Software\Classes\.mk4\OpenWithProgids" "MKStudio.Database" ""
-  System::Call 'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)'
+  ; (no SHChangeNotify here: it waits for every shell window to answer, and hung a silent install on a CI runner)
 SectionEnd
 
 Section "Uninstall"

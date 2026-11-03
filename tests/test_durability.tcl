@@ -174,4 +174,4 @@ set store::backups 1
 
 foreach x {dur_sync dur_first dur_sum dur_sum2 dur_bak dur_nobak} { clean [tmp $x.mk] }
 puts "$pass passed, $fail failed"
-if {$fail} { exit 1 }
+exit [expr {$fail ? 1 : 0}]        ;# (explicit: a Windows GUI tclkit would otherwise wait in its event loop)

@@ -203,4 +203,4 @@ unset -nocomplain ::env(MKS_UPDATE_API)
 # selftest text
 ok selftest_text [string match "ok $::version::current mk4tcl *" [::update::selftestText]]
 puts "$pass passed, $fail failed"
-if {$fail} { exit 1 }
+exit [expr {$fail ? 1 : 0}]        ;# (explicit: a Windows GUI tclkit would otherwise wait in its event loop)

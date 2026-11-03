@@ -128,7 +128,7 @@ jobs:
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
             # forcing data to disk starts PowerShell twice per commit: only the durability test does it for real
             D=0; [ "$t" = test_durability ] && D=1
-            MKS_DURABLE=$D MKS_EXPECT_FLUSH=1 MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$(cygpath -w "$log")" timeout 300 "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
+            MKS_TEST_TIMEOUT=480 MKS_DURABLE=$D MKS_EXPECT_FLUSH=1 MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$(cygpath -w "$log")" timeout 540 "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
           done
           exit $fail
@@ -404,7 +404,7 @@ jobs:
   windows-installer:
     needs: package
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 12
     defaults:
       run:
         shell: bash
@@ -419,7 +419,8 @@ jobs:
           v=$(grep -o 'current [0-9][^ ]*' mkstudio.vfs/lib/app-mkstudio/version.tcl | cut -d' ' -f2)
           SETUP=$(ls packages/MKStudio-*-windows-x64-setup.exe)
           INST=$(cygpath -u "$LOCALAPPDATA")/Programs/"MK Studio"
-          "$SETUP" /S
+          # (every call has a time limit: a silent installer that never returns once cost a 15-minute job)
+          timeout 120 "$SETUP" /S || echo "installer exit code $?"
           for i in $(seq 1 60); do [ -f "$INST/mkstudio.exe" ] && [ -f "$INST/Uninstall.exe" ] && break; sleep 1; done
           ls -la "$INST"
           test -f "$INST/mkstudio.exe"
@@ -432,11 +433,11 @@ jobs:
           for i in $(seq 1 30); do [ -s "$RUNNER_TEMP/st.txt" ] && break; sleep 1; done
           cat "$RUNNER_TEMP/st.txt"; grep -q "^ok $v mk4tcl yes" "$RUNNER_TEMP/st.txt"
           # installing again over a copy that exists is an upgrade
-          "$SETUP" /S
+          timeout 120 "$SETUP" /S || echo "installer exit code $?"
           for i in $(seq 1 30); do sleep 1; [ -f "$INST/mkstudio.exe" ] && break; done
           test -f "$INST/mkstudio.exe"
           # uninstall (the uninstaller copies itself away and returns at once: wait for the files to go)
-          "$INST/Uninstall.exe" /S
+          timeout 120 "$INST/Uninstall.exe" /S || echo "uninstaller exit code $?"
           for i in $(seq 1 60); do [ ! -f "$INST/mkstudio.exe" ] && break; sleep 1; done
           test ! -f "$INST/mkstudio.exe"
           test ! -f "$APPDATA/Microsoft/Windows/Start Menu/Programs/MK Studio/MK Studio.lnk"

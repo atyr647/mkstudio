@@ -9,10 +9,14 @@ source $here/util.tcl
 set script [lindex $argv 0]
 set argv [lrange $argv 1 end]
 proc bgerror {msg} { puts "BACKGROUND ERROR: $msg\n$::errorInfo" ; exit 1 }
-after 240000 { puts "TIMEOUT: [lindex $::argv0 0] did not finish within 4 minutes" ; exit 3 }
+set ::timeoutMin [expr {[info exists ::env(MKS_TEST_TIMEOUT)] ? $::env(MKS_TEST_TIMEOUT) : 240}]   ;# seconds
+after [expr {$::timeoutMin * 1000}] { puts "TIMEOUT: [lindex $::argv0 0] did not finish within $::timeoutMin seconds" ; exit 3 }
 set ws [expr {[llength [info commands tk]] ? [tk windowingsystem] : "no display"}]
 puts "== running [file tail $script] on Tcl [info patchlevel] ($ws)"
 if {[catch {source $script} err opts]} {
     puts "UNCAUGHT ERROR: $err\n[dict get $opts -errorinfo]"
     exit 1
 }
+# A script that simply ends has passed.  (A Windows GUI tclkit would otherwise sit in its event loop until the watchdog
+# fired: three tests did exactly that for 4 minutes each.)  Tests that need the event loop vwait inside the script.
+exit 0
