@@ -28,24 +28,37 @@ jobs:
         run: tclsh8.6 tests/lint.tcl
       - name: Engine tests (stand-in Metakit)
         run: tclsh8.6 tests/test_mkql.tcl
-      - name: Engine tests (real Metakit, Tcl 8.6)
-        run: REAL_MK=1 tools/ext/tclkit-8.6.3-linux-x86_64 tests/test_mkql.tcl
-      - name: Engine contract (real Metakit)
-        run: REAL_MK=1 tools/ext/tclkit-8.6.3-linux-x86_64 tests/engine_contract.tcl
+      # Every suite runs on BOTH Tcl runtimes (8.6.3 and 8.5.17) against real Metakit; the ones that can also
+      # run on the pure-Tcl stand-in do that too.
+      - name: Engine, contract, persistence, semantics, provider lifecycle and contract (real Metakit, Tcl 8.6 and 8.5)
+        run: |
+          for kit in tools/ext/tclkit-8.6.3-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+            echo "=== $kit"
+            for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract; do
+              echo "--- $t"; REAL_MK=1 $kit tests/$t.tcl
+            done
+          done
+      - name: Stand-in Metakit (pure Tcl)
+        run: |
+          for t in test_mkql test_engine_semantics test_provider_lifecycle test_provider_contract; do tclsh8.6 tests/$t.tcl; done
       - name: Optimised executor == reference executor (random queries; stand-in, Metakit 8.6, Metakit 8.5)
         run: |
           MKS_FUZZ=1000 tclsh8.6 tests/test_engine_diff.tcl
           MKS_FUZZ=1500 REAL_MK=1 tools/ext/tclkit-8.6.3-linux-x86_64 tests/test_engine_diff.tcl
           MKS_FUZZ=800 MKS_SEED=5 REAL_MK=1 tools/ext/tclkit-8.5.17-linux-x86_64 tests/test_engine_diff.tcl
 
-      - name: Crash-safe editing and write lock (real Metakit, kills a committing process)
-        run: MKS_CRASH_TRIALS=15 tools/ext/tclkit-8.6.3-linux-x86_64 tests/run.tcl tests/test_crash_safety.tcl
+      - name: Crash-safe editing (real Metakit, kills a committing process; Tcl 8.6 and 8.5)
+        run: |
+          MKS_CRASH_TRIALS=15 tools/ext/tclkit-8.6.3-linux-x86_64 tests/run.tcl tests/test_crash_safety.tcl
+          MKS_CRASH_TRIALS=8 tools/ext/tclkit-8.5.17-linux-x86_64 tests/run.tcl tests/test_crash_safety.tcl
 
-      - name: Write-lock protocol (foreign implementations, racing processes)
-        run: REAL_MK=1 tools/ext/tclkit-8.6.3-linux-x86_64 tests/run.tcl tests/test_lock_protocol.tcl
+      - name: Write-lock protocol, crash points and chaos (Tcl 8.6 and 8.5)
+        run: |
+          for kit in tools/ext/tclkit-8.6.3-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+            REAL_MK=1 $kit tests/run.tcl tests/test_lock_protocol.tcl
+            REAL_MK=1 $kit tests/run.tcl tests/test_lock_crash.tcl
+          done
 
-      - name: Persistence and safety (real Metakit)
-        run: tools/ext/tclkit-8.6.3-linux-x86_64 tests/persist.tcl
       - name: Grid virtualisation (real Metakit, Tcl 8.6 and 8.5)
         run: |
           REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.6.3-linux-x86_64 tests/test_grid.tcl
@@ -94,9 +107,9 @@ jobs:
         timeout-minutes: 10
         run: |
           fail=0
-          for t in test_mkql engine_contract persist test_engine_diff test_crash_safety test_lock_protocol test_grid gui_logic; do
+          for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_lock_protocol test_lock_crash test_grid gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
-            MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_TEST_LOG="$(cygpath -w "$log")" timeout 300 "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
+            MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_TEST_LOG="$(cygpath -w "$log")" timeout 300 "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
           done
           exit $fail
@@ -205,9 +218,9 @@ jobs:
         timeout-minutes: 10
         run: |
           fail=0
-          for t in test_mkql engine_contract persist test_engine_diff test_crash_safety test_lock_protocol test_grid gui_logic; do
+          for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_lock_protocol test_lock_crash test_grid gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
-            MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_TEST_LOG="$log" perl -e 'alarm 300; exec @ARGV' "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
+            MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_TEST_LOG="$log" perl -e 'alarm 300; exec @ARGV' "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
           done
           exit $fail
@@ -250,6 +263,40 @@ jobs:
             macos-starpack.png
             dist/mkstudio-macos-*
           if-no-files-found: ignore
+
+  # ---------------------------------------------------------------- mkit-sql: does the other repo still fit?
+  # mkit-sql lives in its own repository and follows the same lock protocol, goes behind MK Studio's query
+  # window and will use the streaming-provider contract.  These checks run its own contract/integration tests
+  # against THIS checkout, race its lock implementation against ours, and compare bulk-mutation speed.  They
+  # report but do not block a release (the other repository can change on its own).
+  interop:
+    needs: linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: atyr647/mkit-sql
+          path: mkit-sql
+      - name: Install tools
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+      - name: Fetch tclkit runtimes
+        run: tools/fetch-runtimes.sh
+      - name: Lock protocol - mixed races and crash points with mkit-sql's implementation
+        run: MKITSQL_DIR="$PWD/mkit-sql" REAL_MK=1 MKS_RACE_ROUNDS=3 tools/ext/tclkit-8.6.3-linux-x86_64 tests/run.tcl tests/test_lock_protocol.tcl
+      - name: mkit-sql's own lock tests, interoperating with this store.tcl
+        working-directory: mkit-sql
+        run: MKSTUDIO_DIR="$GITHUB_WORKSPACE" MKIT_MK4TCL=builtin "$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.3-linux-x86_64" tests/locking.tcl
+      - name: mkit-sql's MK Studio contract and integration tests, against this checkout
+        working-directory: mkit-sql
+        run: |
+          KIT="$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.3-linux-x86_64"
+          MKSTUDIO_DIR="$GITHUB_WORKSPACE" MKIT_MK4TCL=builtin "$KIT" tests/studio_contract.tcl
+          MKSTUDIO_DIR="$GITHUB_WORKSPACE" MKIT_MK4TCL=builtin xvfb-run -a "$KIT" tests/studio_integration.tcl
+      - name: Bulk mutation, MK Studio vs mkit-sql (identical workloads, results must be identical)
+        run: MKITSQL_DIR="$PWD/mkit-sql" REAL_MK=1 tools/ext/tclkit-8.6.3-linux-x86_64 tests/bench_mutation.tcl 100000
 
   release:
     needs: [linux, windows, macos]

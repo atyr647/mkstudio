@@ -11,8 +11,9 @@ while {![file exists $go]} { after 1 }
 set rc [catch {store::openFile $db} tag opts]
 set h [open $result w]
 if {!$rc} {
-    puts $h WIN ; close $h
+    puts $h "WIN [pid] [clock milliseconds]" ; close $h
     after $hold
+    set h [open $result a] ; puts $h "RELEASING [clock milliseconds]" ; close $h
     store::closeFile $tag
 } else {
     set code [dict get $opts -errorcode]

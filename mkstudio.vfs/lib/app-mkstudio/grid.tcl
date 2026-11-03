@@ -269,7 +269,7 @@ proc ::grid::mksrc {w method args} {
             set perm {}
             for {set i 0} {$i < $n} {incr i} { lappend perm $i }
             set KS($w,order) [sortPerm $perm $kc [expr {$dir eq "desc"}]]
-            ::store::cachePut $tag $ckey $n $KS($w,order)
+            ::store::cachePut $tag $ckey $KS($w,order)
         }
     }
 }

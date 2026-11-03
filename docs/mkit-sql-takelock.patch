@@ -1,0 +1,19 @@
+diff --git a/mkitsql/db.tcl b/mkitsql/db.tcl
+index 4b8d974..a29d31f 100644
+--- a/mkitsql/db.tcl
++++ b/mkitsql/db.tcl
+@@ -95,7 +95,13 @@ proc ::mkitsql::db::takeLock {path} {
+     set lf [lockPath $path] ; set mine [lockContent]
+     for {set attempt 0} {$attempt < 5} {incr attempt} {
+         if {![catch {open $lf {WRONLY CREAT EXCL} 0644} h]} { puts -nonewline $h $mine ; close $h ; return $mine }
+-        if {![file exists $lf]} { return "" }                                        ;# could not create it for another reason
++        if {![file exists $lf]} {
++            # create failed and there is no file: a read-only folder / no permission (run unlocked) - or a competitor
++            # deleted the stale lock between our create and this check (retry; returning "" here lets two processes
++            # both believe they own the file)
++            if {[string match -nocase "*permission*" $h] || [string match -nocase "*read-only*" $h] || ![file writable [file dirname $lf]]} { return "" }
++            continue
++        }
+         set holder [lockHolder $path]
+         if {$holder ne ""} { return [lockedError $holder $path] }
+         # stale: remove it under a short-lived mutex, re-checking inside, so a competitor that is doing the

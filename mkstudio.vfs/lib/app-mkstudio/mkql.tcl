@@ -957,6 +957,8 @@ proc ::mkql::usedLists {layout} {
 #   use:     (optional) database name to switch to
 proc ::mkql::execStatement {ast defaultDb} {
     # lazy results read the live data: keep them as they are before anything is changed
+    variable cancel
+    set cancel 0                                           ;# a Cancel pressed during an earlier statement is history
     if {[lindex $ast 0] in {insert update delete create drop alter rollback}} { lzFreezeAll }
     switch -- [lindex $ast 0] {
         select { return [execSelect [lindex $ast 1] $defaultDb] }
@@ -1283,13 +1285,29 @@ proc ::mkql::execInsert {st defaultDb} {
         lappend prepared $vals
         incr n
     }
-    set cancel 0
+    # every value is converted above, so nothing is changed if one is bad; the appends below are not
+    # cancellable (a statement either happens completely or not at all) but keep the window alive
     set k 0
-    foreach vals $prepared { ::store::appendRow $mk $names $vals ; tick [incr k] "inserted rows" }
+    foreach vals $prepared { ::store::appendRow $mk $names $vals ; pump [incr k] }
     return [msg "($n row[expr {$n == 1 ? {} : {s}}] inserted into $label)" $n]
 }
 
-proc ::mkql::tickWrite {n} { tick $n "written rows" }
+# keeps the window alive in a write loop; deliberately does NOT honour Cancel - a statement is all or nothing
+proc ::mkql::pump {n} {
+    variable progressHook
+    if {$n % 500 == 0 && $progressHook ne ""} { uplevel #0 $progressHook }
+}
+proc ::mkql::tickWrite {n} { pump $n }
+# the same for long READS inside the store (column fetches): here Cancel is honoured
+proc ::mkql::pumpCancel {} {
+    variable progressHook ; variable cancel
+    # (only while a query is running - the hook is set for that - so a stale Cancel can't stop a column sort)
+    if {$progressHook ne ""} {
+        uplevel #0 $progressHook
+        if {$cancel} { fail "Query cancelled" }
+    }
+}
+set ::store::pump ::mkql::pumpCancel
 
 proc ::mkql::execUpdate {st defaultDb} {
     variable cancel

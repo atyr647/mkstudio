@@ -18,7 +18,7 @@ namespace eval ::store {
     variable ro      ;# tag -> read-only flag
     variable dirty   ;# tag -> number of uncommitted mutations
     variable gen     ;# tag -> generation (see ::store::generation)
-    variable lockOwned   ;# tag -> lock file we created (and must remove)
+    variable lockOwned   ;# tag -> {lock-file content} of the lock we hold (and must remove)
     variable lockedBy    ;# tag -> "pid host" of another process that holds a write lock (read-only opens)
     variable types {
         S {String  string}  I {Integer int}  L {Long long}
@@ -78,6 +78,10 @@ proc ::store::makeTag {path} {
 # database for good; a lock from another host is always respected.  Programs that don't follow the
 # protocol are not stopped - it is advisory.
 namespace eval ::store {
+    # how long an empty/garbled lock file, and a takeover mutex, may sit there before they count as abandoned
+    # (protocol constants - 10 s and 30 s; only tests shorten them)
+    variable emptyStale [expr {[info exists ::env(MKS_LOCK_EMPTY_STALE)] ? $::env(MKS_LOCK_EMPTY_STALE) : 10}]
+    variable mutexStale [expr {[info exists ::env(MKS_LOCK_MUTEX_STALE)] ? $::env(MKS_LOCK_MUTEX_STALE) : 30}]
     variable lockRole ""       ;# a long-lived owner says what it is, e.g. "server" ...
     variable lockEndpoint ""   ;# ... and where clients should talk to it, e.g. "tcp://host:5433"
 }
@@ -90,13 +94,37 @@ proc ::store::pidAlive {pid} {
         if {[catch {exec tasklist /FI "PID eq $pid" /NH /FO CSV} out]} { return 0 }
         return [expr {[string first "\"$pid\"" $out] >= 0}]
     }
-    return [expr {![catch {exec kill -0 $pid}]}]
+    if {[file isdirectory /proc/self]} {
+        if {![file isdirectory /proc/$pid]} { return 0 }
+        # a zombie (killed, but its parent has not collected it yet) still has a /proc entry - it is not running
+        return [expr {[procState $pid] ni {Z X x}}]
+    }
+    # elsewhere: kill -0 fails both for "no such process" and for "not yours to signal" - the latter is alive
+    if {[catch {exec kill -0 $pid} msg]} {
+        return [expr {[string match -nocase "*permitted*" $msg] || [string match -nocase "*EPERM*" $msg]}]
+    }
+    # it can be signalled - but a killed process nobody has collected yet (a zombie) is not running
+    if {![catch {exec ps -o stat= -p $pid} st] && [string match Z* [string trim $st]]} { return 0 }
+    return 1
 }
 proc ::store::thisHost {} { if {[catch {info hostname} h]} { return unknown } ; return $h }
 
+# the state letter of a process on Linux (R S D T Z ...), "" when unknown
+proc ::store::procState {pid} {
+    if {[catch {set h [open /proc/$pid/stat r] ; set d [read $h] ; close $h}]} { return "" }
+    return [lindex [string range $d [expr {[string last ")" $d] + 2}] end] 0]
+}
+# a token that changes when a pid is reused (field 22 of /proc/<pid>/stat); "" where there is no such thing
+proc ::store::procStart {pid} {
+    if {[catch {set h [open /proc/$pid/stat r] ; set d [read $h] ; close $h}]} { return "" }
+    set rest [string range $d [expr {[string last ")" $d] + 2}] end]
+    return [lindex $rest 19]
+}
+# "<pid> <host> <start> [<role> [<endpoint>]]"  (start is "-" where unknown; role "-" when only an endpoint is given)
 proc ::store::lockText {} {
     variable lockRole ; variable lockEndpoint
-    set t "[pid] [thisHost]"
+    set st [procStart [pid]]
+    set t "[pid] [thisHost] [expr {$st eq {} ? {-} : $st}]"
     if {$lockRole ne "" || $lockEndpoint ne ""} { append t " [expr {$lockRole eq {} ? {-} : $lockRole}]" }
     if {$lockEndpoint ne ""} { append t " $lockEndpoint" }
     return $t
@@ -104,26 +132,34 @@ proc ::store::lockText {} {
 proc ::store::readLock {path} {
     set lf [lockPath $path]
     if {[catch {set h [open $lf r] ; set d [string trim [read $h]] ; close $h}]} { return "" }
-    lassign [split $d " "] pid host role endpoint
-    return [dict create pid $pid host $host role [expr {$role eq "-" ? "" : $role}] endpoint $endpoint text $d]
+    lassign [split $d " "] pid host start role endpoint
+    return [dict create pid $pid host $host start [expr {$start eq "-" ? "" : $start}] \
+        role [expr {$role eq "-" ? "" : $role}] endpoint $endpoint text $d]
 }
 
 # What is the state of the lock on this database?  A dict:
 #   state    free | ours | stale | held       ("held": a live (or remote) other process owns it)
-#   pid host role endpoint                     (when there is a lock file)
+#   pid host start role endpoint               (when there is a lock file)
 proc ::store::lockInfo {path} {
     set l [readLock $path]
     if {![file exists [lockPath $path]]} { return [dict create state free] }
     if {$l eq ""} { return [dict create state free] }            ;# unreadable / vanished meanwhile
     set state held
-    if {![string is integer -strict [dict get $l pid]]} {
+    set pid [dict get $l pid] ; set host [dict get $l host] ; set start [dict get $l start]
+    if {![string is integer -strict $pid] || $host eq ""} {
         # empty or garbled: its creator is probably between creating and writing it; if it stays that
-        # way for a few seconds the creator died and the lock is stale
-        if {![catch {file mtime [lockPath $path]} mt] && [clock seconds] - $mt > 5} { set state stale }
-    } elseif {[dict get $l pid] eq [pid] && [dict get $l host] eq [thisHost]} {
+        # way for a while the creator died and the lock is stale
+        if {![catch {file mtime [lockPath $path]} mt] && [clock seconds] - $mt > $::store::emptyStale} { set state stale }
+    } elseif {$pid eq [pid] && $host eq [thisHost]} {
         set state ours
-    } elseif {[dict get $l host] eq [thisHost] && ![pidAlive [dict get $l pid]]} {
-        set state stale
+    } elseif {$host eq [thisHost]} {
+        if {![pidAlive $pid]} {
+            set state stale
+        } else {
+            # alive - but is it the process that wrote the lock, or a newer one that got the same pid?
+            set now [procStart $pid]
+            if {$start ne "" && $now ne "" && $now ne $start} { set state stale }
+        }
     }
     return [dict merge $l [dict create state $state]]
 }
@@ -141,43 +177,60 @@ proc ::store::lockedError {path holder} {
     return -code error -errorcode [list STORE LOCKED $hpid $hhost $hrole $hend] \
         "This database is open for editing in another process ($who):\n$path"
 }
+# test hook: a command called at named points of acquiring and releasing, so tests can kill the process there
+namespace eval ::store { variable lockHook "" }
+proc ::store::lockStep {name} { variable lockHook ; if {$lockHook ne ""} { {*}$lockHook $name } }
 
 # Create the lock file atomically (O_EXCL) so two processes starting at once cannot both win.
-# Returns the lock path, "" when no lock could be made (read-only folder: carry on unlocked), or
-# raises STORE LOCKED when somebody else owns it.  Taking over a stale lock is serialised by a
-# guard file, so two processes that both see the same stale lock cannot each delete the other's
-# fresh one: exactly one of them wins.
+# Returns the text written, "" when no lock could be made (read-only folder: carry on unlocked), or
+# raises STORE LOCKED when somebody else owns it.  Replacing a stale lock happens under a mutex file
+# (<file>.lock.takeover), inside which the lock is judged again, deleted and re-created, so processes
+# that all see the same stale lock cannot delete each other's fresh one: exactly one wins.  The mutex
+# name and the 30 s abandonment rule are part of the protocol (mkit-sql uses the same).
 proc ::store::takeLock {path} {
-    set lf [lockPath $path]
-    for {set attempt 0} {$attempt < 4} {incr attempt} {
-        if {![catch {set h [open $lf {WRONLY CREAT EXCL}]}]} {
-            puts -nonewline $h [lockText] ; close $h
-            return $lf
+    set lf [lockPath $path] ; set mine [lockText]
+    for {set attempt 0} {$attempt < 6} {incr attempt} {
+        if {![catch {open $lf {WRONLY CREAT EXCL}} h]} {
+            lockStep created
+            puts -nonewline $h $mine ; close $h
+            lockStep written
+            # tidy up a takeover mutex abandoned by a crashed process
+            if {![catch {file mtime $lf.takeover} mt] && [clock seconds] - $mt > $::store::mutexStale} { catch {file delete $lf.takeover} }
+            return $mine
         }
-        if {![file exists $lf]} { return "" }              ;# cannot create here (read-only folder)
+        lockStep create-failed
+        if {![file exists $lf]} {
+            # The create failed and there is no file.  Either the folder won't let us make one (read-only,
+            # no permission: carry on unlocked) or a competitor deleted the stale lock between our create and
+            # this check (retry!).  Treating the second case as the first let two processes both "win".
+            if {[string match -nocase "*permission*" $h] || [string match -nocase "*read-only*" $h] || ![file writable [file dirname $lf]]} { return "" }
+            continue
+        }
         set holder [lockHolder $path]
         if {$holder ne ""} { lockedError $path $holder }
-        # stale (or ours from an earlier run): replace it, one process at a time
-        set guard $lf.guard
-        set got 0
-        for {set w 0} {$w < 50 && !$got} {incr w} {
-            if {![catch {set h [open $guard {WRONLY CREAT EXCL}] ; close $h}]} { set got 1 ; break }
-            # a guard abandoned by a crash must not block for ever
-            if {![catch {file mtime $guard} mt] && [clock seconds] - $mt > 10} { catch {file delete $guard} ; continue }
-            after 40
+        set mx $lf.takeover
+        if {![catch {open $mx {WRONLY CREAT EXCL}} mh]} {
+            close $mh
+            lockStep mutex
+            if {[lockHolder $path] eq ""} {
+                catch {file delete $lf}
+                lockStep deleted
+                set rc [catch {open $lf {WRONLY CREAT EXCL}} h]
+                catch {file delete $mx}
+                if {!$rc} { puts -nonewline $h $mine ; close $h ; return $mine }
+            } else { catch {file delete $mx} }
+        } elseif {![catch {file mtime $mx} mt] && [clock seconds] - $mt > $::store::mutexStale} {
+            catch {file delete $mx}                         ;# a takeover that crashed
+        } else {
+            after 25
         }
-        if {!$got} continue
-        set again [lockHolder $path]                        ;# look again now that nobody else is replacing it
-        if {$again eq "" && [dict get [lockInfo $path] state] in {stale ours}} { catch {file delete $lf} }
-        catch {file delete $guard}
-        if {$again ne ""} { lockedError $path $again }
     }
-    return ""
+    return -code error -errorcode [list STORE LOCKED 0 unknown "" ""] \
+        "Could not take the lock on this database (another process is starting at the same moment), please repeat:\n$path"
 }
-# Remove OUR lock - and only ours: if it was replaced by another owner meanwhile, leave it alone.
-proc ::store::releaseLock {lf} {
-    set path [string range $lf 0 end-5]
-    if {[dict get [lockInfo $path] state] eq "ours"} { catch {file delete $lf} }
+# Remove OUR lock - only if the file still holds exactly what we wrote.  `lf` is the lock file, `mine` its content.
+proc ::store::releaseLock {lf mine} {
+    if {![catch {set h [open $lf r] ; set d [read $h] ; close $h}] && $d eq $mine} { catch {file delete $lf} }
 }
 proc ::store::lockedByOther {tag} { variable lockedBy ; if {[info exists lockedBy($tag)]} { return $lockedBy($tag) } ; return "" }
 
@@ -187,39 +240,82 @@ proc ::store::path {tag}     { variable file ; return $file($tag) }
 proc ::store::readonly {tag} { variable ro   ; return $ro($tag) }
 proc ::store::dirty {tag}    { variable dirty; return $dirty($tag) }
 proc ::store::touch {tag}    { variable dirty ; incr dirty($tag) ; touchGen $tag }
-# changes whenever anything in the database may have changed (edits, structure, Roll Back);
-# derived data (sorted orders, column copies) is valid only for the generation it was built from
-proc ::store::generation {tag} { variable gen ; if {[info exists gen($tag)]} { return $gen($tag) } ; return 0 }
+# A database's generation is a number drawn from ONE counter shared by every database in the process, so
+# it never repeats: not after further changes, not after Roll Back, and not when the same file (or the same
+# tag) is closed and opened again.  It changes whenever anything in the database may have changed, and is
+# -1 while the database is not open.  Derived data (sorted orders, column copies, streaming results) is
+# valid only for the generation it was built from, so it can never be mistaken for another state.
+namespace eval ::store { variable genSeq 0 ; variable pump "" }
+proc ::store::generation {tag} { variable gen ; if {[info exists gen($tag)]} { return $gen($tag) } ; return -1 }
+proc ::store::touchGen {tag} { variable gen ; variable genSeq ; set gen($tag) [incr genSeq] }
 
 # ---- derived-data cache ----------------------------------------------------------------------------
-# A column copy or a sort order costs a full pass over the view (about 1.4 s for 500,000 rows).  Keep a
-# few, guarded by the generation, so sorting again, flipping the direction or running another
-# ORDER BY ... LIMIT on the same column is instant.  Bounded by the number of values held.
+# A column copy or a sort order costs a full pass over the view (about 1.4 s for 500,000 rows) and a lot of
+# memory in Tcl (every element is an object: ~50-60 bytes for a number, more for a string).  Keep a few,
+# guarded by the generation, so sorting again, flipping the direction or running another
+# ORDER BY ... LIMIT on the same column is instant.  The budget is in (estimated) BYTES, shared by all
+# open databases, and the least recently used entries are evicted first.
+#   ::store::cacheConfigure -budget <MB>      (default 256; env MKS_CACHE_MB; 0 turns the cache off)
+#   ::store::cacheStats                        dict: entries bytes budget hits misses evictions
 namespace eval ::store {
-    variable cache [dict create]   ;# key -> {tag generation cost value}, oldest first
-    variable cacheCost 0
-    variable cacheBudget 4000000
+    variable cache [dict create]   ;# key -> {tag generation bytes value}, least recently used first
+    variable cacheBytes 0
+    variable cacheBudget [expr {[info exists ::env(MKS_CACHE_MB)] && [string is integer -strict $::env(MKS_CACHE_MB)] ? $::env(MKS_CACHE_MB) * 1048576 : 268435456}]
+    variable cacheHits 0 ; variable cacheMisses 0 ; variable cacheEvictions 0
+}
+proc ::store::cacheConfigure {args} {
+    variable cacheBudget
+    foreach {k v} $args {
+        switch -- $k {
+            -budget { set cacheBudget [expr {int($v * 1048576)}] ; cacheTrim 0 }
+            default { error "unknown option $k (use -budget <MB>)" }
+        }
+    }
+    return [expr {$cacheBudget / 1048576.0}]
+}
+proc ::store::cacheStats {} {
+    variable cache ; variable cacheBytes ; variable cacheBudget ; variable cacheHits ; variable cacheMisses ; variable cacheEvictions
+    return [dict create entries [dict size $cache] bytes $cacheBytes budget $cacheBudget hits $cacheHits misses $cacheMisses evictions $cacheEvictions]
+}
+# about how much memory a list of values occupies as Tcl objects
+proc ::store::estimateBytes {list} {
+    set n [llength $list]
+    if {$n == 0} { return 64 }
+    set step [expr {max(1, $n / 64)}] ; set sum 0 ; set k 0
+    for {set i 0} {$i < $n} {incr i $step} { incr sum [string length [lindex $list $i]] ; incr k }
+    return [expr {$n * (48 + $sum / $k) + 64}]
 }
 proc ::store::cacheGet {tag key} {
-    variable cache
-    if {![dict exists $cache $key]} { return {} }
+    variable cache ; variable cacheHits ; variable cacheMisses
+    if {![dict exists $cache $key]} { incr cacheMisses ; return {} }
     lassign [dict get $cache $key] t g c v
-    if {$g != [generation $tag]} { cacheDrop $key ; return {} }
+    if {$g != [generation $tag]} { cacheDrop $key ; incr cacheMisses ; return {} }
+    # most recently used goes to the back
+    dict unset cache $key ; dict set cache $key [list $t $g $c $v]
+    incr cacheHits
     return [list $v]
 }
 proc ::store::cacheDrop {key} {
-    variable cache ; variable cacheCost
+    variable cache ; variable cacheBytes
     if {![dict exists $cache $key]} return
-    set cacheCost [expr {$cacheCost - [lindex [dict get $cache $key] 2]}]
+    set cacheBytes [expr {$cacheBytes - [lindex [dict get $cache $key] 2]}]
     dict unset cache $key
 }
-proc ::store::cachePut {tag key cost value} {
-    variable cache ; variable cacheCost ; variable cacheBudget
+proc ::store::cacheTrim {incoming} {
+    variable cache ; variable cacheBytes ; variable cacheBudget ; variable cacheEvictions
+    while {$cacheBytes + $incoming > $cacheBudget && [dict size $cache]} {
+        cacheDrop [lindex [dict keys $cache] 0] ; incr cacheEvictions
+    }
+}
+# `bytes` defaults to an estimate of the value's size
+proc ::store::cachePut {tag key value {bytes {}}} {
+    variable cache ; variable cacheBytes ; variable cacheBudget
     cacheDrop $key
-    if {$cost > $cacheBudget} return                          ;# too big to keep
-    while {$cacheCost + $cost > $cacheBudget && [dict size $cache]} { cacheDrop [lindex [dict keys $cache] 0] }
-    dict set cache $key [list $tag [generation $tag] $cost $value]
-    incr cacheCost $cost
+    if {$bytes eq ""} { set bytes [estimateBytes $value] }
+    if {$bytes > $cacheBudget} return                          ;# too big to keep
+    cacheTrim $bytes
+    dict set cache $key [list $tag [generation $tag] $bytes $value]
+    incr cacheBytes $bytes
 }
 proc ::store::cacheClear {{tag {}}} {
     variable cache
@@ -246,10 +342,11 @@ proc ::store::openFile {path args} {
     }
     if {!$create && ![file exists $path]} { error "File not found: $path" }
     set holder [lockHolder $path]
-    set lf ""
+    set lf "" ; set mine ""
     if {!$readonly} {
         if {$holder ne ""} { lockedError $path $holder }
-        set lf [takeLock $path]                          ;# before opening, so a refusal touches nothing
+        set mine [takeLock $path]                        ;# before opening, so a refusal touches nothing
+        set lf [expr {$mine eq "" ? "" : [lockPath $path]}]
     }
     set tag [makeTag $path]
     set opts {-nocommit}
@@ -257,7 +354,7 @@ proc ::store::openFile {path args} {
     if {[catch {mk::file open $tag $path {*}$opts}]} {
         # very old Mk4tcl without -nocommit: fall back to the plain open
         if {[catch {mk::file open $tag $path {*}[expr {$readonly ? {-readonly} : {}}]} err]} {
-            if {$lf ne ""} { releaseLock $lf }
+            if {$lf ne ""} { releaseLock $lf $mine }
             error $err
         }
     }
@@ -267,15 +364,16 @@ proc ::store::openFile {path args} {
     # a starkit/starpack has no such header but does contain views.
     if {!$create && [file size $path] > 0 && ![hasMetakitSignature $path] && ![llength [mk::file views $tag]]} {
         catch {mk::file close $tag}
-        if {$lf ne ""} { releaseLock $lf }
+        if {$lf ne ""} { releaseLock $lf $mine }
         error "This file isn't a Metakit database, so it was not opened:\n$path"
     }
     lappend tags $tag
     set file($tag) $path ; set ro($tag) $readonly ; set dirty($tag) 0
+    touchGen $tag
     if {$readonly} {
         if {$holder ne ""} { set lockedBy($tag) $holder }
     } elseif {$lf ne ""} {
-        set lockOwned($tag) $lf
+        set lockOwned($tag) [list $lf $mine]
     }
     return $tag
 }
@@ -287,9 +385,15 @@ proc ::store::hasMetakitSignature {path} {
     return [expr {$sig eq "JL" || $sig eq "LJ"}]
 }
 
+# Commands called with the tag just BEFORE a database is closed (streaming results freeze themselves here).
+namespace eval ::store { variable closeHooks {} }
+proc ::store::onClose {cmd} { variable closeHooks ; if {$cmd ni $closeHooks} { lappend closeHooks $cmd } }
+
 proc ::store::closeFile {tag} {
-    variable tags ; variable file ; variable ro ; variable dirty ; variable lockOwned ; variable lockedBy
-    if {[info exists lockOwned($tag)]} { releaseLock $lockOwned($tag) ; unset lockOwned($tag) }
+    variable tags ; variable file ; variable ro ; variable dirty ; variable lockOwned ; variable lockedBy ; variable closeHooks
+    foreach h $closeHooks { catch {{*}$h $tag} }
+    if {[info exists lockOwned($tag)]} { releaseLock {*}$lockOwned($tag) ; unset lockOwned($tag) }
+    lockStep released
     unset -nocomplain lockedBy($tag)
     catch {mk::file close $tag}
     set i [lsearch -exact $tags $tag]
@@ -318,7 +422,6 @@ proc ::store::rollback {tag} {
     set dirty($tag) 0
     touchGen $tag
 }
-proc ::store::touchGen {tag} { variable gen ; if {[info exists gen($tag)]} { incr gen($tag) } else { set gen($tag) 1 } }
 
 # -- reading structure -------------------------------------------------------
 # Metakit keeps a deleted view in `mk::file views` (with an empty layout) until
@@ -451,9 +554,13 @@ proc ::store::column {path prop {indices all}} {
         set tag [lindex [split $path .!] 0]
         set hit [cacheGet $tag [list col $path $prop]]
         if {[llength $hit]} { return [lindex $hit 0] }
+        variable pump
         set n [mk::view size $path]
-        for {set i 0} {$i < $n} {incr i} { lappend out [mk::get $path!$i $prop] }
-        cachePut $tag [list col $path $prop] $n $out
+        for {set i 0} {$i < $n} {incr i} {
+            lappend out [mk::get $path!$i $prop]
+            if {$pump ne "" && $i % 50000 == 49999} { {*}$pump }         ;# lets a long read be cancelled
+        }
+        cachePut $tag [list col $path $prop] $out
     } else {
         foreach i $indices { lappend out [mk::get $path!$i $prop] }
     }

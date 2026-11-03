@@ -901,6 +901,7 @@ namespace eval ::mkql {
     variable LZ                ;# provider state
     array set LZ {}
     variable lzSeq 0
+    variable freezeMax 1000000   ;# results with more rows than this are not copied into memory when frozen
 }
 
 # canonical column names mentioned by an expression
@@ -1058,6 +1059,10 @@ proc ::mkql::lzRows {h first n} {
 
 proc ::mkql::lzsrc {h method args} {
     variable LZ
+    if {![info exists LZ($h,mk)]} {
+        # destroyed (or never existed): behave like an empty, out-of-date result instead of failing
+        switch -- $method { count { return 0 } stale { return 1 } rows { return {} } rowid - cell { return "" } destroy - freeze - put { return } sort { error "These results are no longer available." } }
+    }
     switch -- $method {
         count { return [llength $LZ($h,ids)] }
         stale {
@@ -1107,7 +1112,7 @@ proc ::mkql::lzsrc {h method args} {
         }
         freeze {
             # keep the rows as they are NOW (before the data changes): read them all into memory
-            if {$LZ($h,frozen) ne "" || [lzsrc $h stale] || [llength $LZ($h,ids)] > 1000000} return   ;# (beyond that it simply goes out of date)
+            if {$LZ($h,frozen) ne "" || [lzsrc $h stale] || [llength $LZ($h,ids)] > $::mkql::freezeMax} return   ;# (beyond that it simply goes out of date)
             # (in base order: the display order, if the user sorted, is applied on top, as for live rows)
             set rows {} ; set save $LZ($h,order) ; set LZ($h,order) {}
             for {set f 0} {$f < [llength $LZ($h,ids)]} {incr f 2000} { lappend rows {*}[lzRows $h $f 2000] }
@@ -1126,6 +1131,15 @@ proc ::mkql::lzNums {kc} {
     foreach v $kc { if {[regexp {(\d+) row} $v -> n]} { lappend o $n } else { lappend o $v } }
     return $o
 }
+# a database being closed: its live results keep what they show (they cannot read it any more)
+proc ::mkql::lzFreezeTag {tag} {
+    variable LZ
+    foreach k [array names LZ *,tag] {
+        if {$LZ($k) eq $tag} { catch {lzsrc [lindex [split $k ,] 0] freeze} }
+    }
+}
+::store::onClose ::mkql::lzFreezeTag
+
 # Before the engine changes data, turn every live lazy result of that database into a snapshot.
 proc ::mkql::lzFreezeAll {} {
     variable LZ

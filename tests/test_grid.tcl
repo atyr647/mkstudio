@@ -238,9 +238,8 @@ ok generation_bumps_on_rollback [expr {[::store::generation $tb] > $g1}]
 ::grid::loadStore .gt.k $tb.big 0
 ::grid::sortBy .gt.k 2 ; ::grid::sortBy .gt.k 2
 check cache_not_stale_after_rollback [.gt.k.t set s0 c2] 1008.5
-set ::store::cacheBudget 10 ; ::store::cachePut $tb [list x] 5 a ; ::store::cachePut $tb [list y] 5 b ; ::store::cachePut $tb [list z] 5 c
-check cache_evicts_oldest [list [llength [::store::cacheGet $tb [list x]]] [llength [::store::cacheGet $tb [list z]]]] {0 1}
-set ::store::cacheBudget 4000000 ; ::store::cacheClear
+set ::store::cacheHits 0 ; set ::store::cacheMisses 0
+::store::cacheClear
 # keep=1 keeps the scroll position after a reload
 ::grid::scrollTo .gt.k 777
 ::grid::loadStore .gt.k $tb.big 1

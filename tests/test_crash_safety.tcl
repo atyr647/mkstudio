@@ -221,7 +221,7 @@ killpid $pid ; after 300                                    ;# the holder CRASHE
 check lock_left_behind_by_crash [file exists [store::lockPath $work]]
 set t [store::openFile $work]                                ;# ...and is recognised as stale
 check lock_stale_taken_over [expr {[store::lockedByOther $t] eq ""}]
-check lock_now_ours [expr {[string trim [readfile [store::lockPath $work]]] eq "[pid] [store::thisHost]"}]
+check lock_now_ours [regexp "^[pid] [store::thisHost] \\S+\$" [string trim [readfile [store::lockPath $work]]]] 1
 store::closeFile $t
 check lock_released_on_close [expr {![file exists [store::lockPath $work]]}]
 # a lock claiming a dead local process is ignored; one from another host is respected

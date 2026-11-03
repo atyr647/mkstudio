@@ -81,7 +81,16 @@ Tests (all in `tests/`):
   DELETE / UPDATE are checked byte for byte (every column type, bytes, floats, subview rows) against an independent
   model through the in-place and the rebuild paths, and chains of bulk changes in one transaction must end in the same
   table either way. On the stand-in and on real Metakit under both Tcl versions
-- `persist.tcl`, `test_crash_safety.tcl`, `test_lock_protocol.tcl` - persistence, crash safety and the write-lock protocol (next section)
+- `test_engine_semantics.tcl` - behaviour beyond "same rows": a query with one failing row fails with the *same message* or
+  succeeds in both executors across a matrix of WHERE / LIMIT / ORDER BY / aggregate variants (also streamed); row order
+  and ties; failed or cancelled `UPDATE` / `DELETE` / `INSERT` change nothing (also through the bulk-rebuild path);
+  cancellation of scans and long column reads; a stale Cancel never poisons the next statement
+- `test_provider_lifecycle.tcl`, `provider_contract.tcl` + `test_provider_contract.tcl` - the lifetime of streaming results
+  and the cache (edits, restructuring, Roll Back, close/reopen, two databases, destroyed results; byte budget, LRU,
+  multi-database eviction), and an engine-independent conformance suite any engine's providers can be run through
+- `persist.tcl`, `test_crash_safety.tcl`, `test_lock_protocol.tcl`, `test_lock_crash.tcl` - persistence, crash safety, the
+  write-lock protocol (incl. racing against mkit-sql's own implementation) and the lock under crashes (next section)
+- `bench_mutation.tcl` - bulk `UPDATE`/`DELETE` of MK Studio's engine vs mkit-sql on identical files, results compared
 - `test_grid.tcl` - the virtualised grid driven with real mouse and key events (100,000 rows in memory, a Metakit view,
   selection ranges, keyboard, sorting, the sort cache, editing in a scrolled grid, streaming results incl. staleness and
   freezing, empty results)
@@ -121,9 +130,14 @@ and holds while it has the file open for writing.
 - a process only ever removes *its own* lock.
 
 `tests/test_lock_protocol.tcl` checks this against hand-written independent implementations of the protocol and races six
-real processes for a free lock and for the same stale lock. It found a real defect in my first version: when several
-processes found the same stale lock, three or four of them could each "take it over" and all believe they owned the
-file. Takeover is now serialised by a guard file, and the race test fails if the guard is removed.
+real processes for a free lock and for the same stale lock - half of them mkit-sql's own implementation when
+`MKITSQL_DIR` is set. `tests/test_lock_crash.tcl` kills a process at every step of acquiring, taking over and releasing,
+then runs a chaos loop (eight processes, random SIGKILLs, mutual exclusion checked from inside: 0 violations in ~400
+acquisitions per run). Between them they found three real defects, all fixed: several processes could each "take over"
+the same stale lock; a process whose stale lock was deleted by a competitor at the wrong instant carried on *without any
+lock* (this one is also in mkit-sql - see [`docs/mkit-sql-integration.md`](docs/mkit-sql-integration.md) and the 7-line
+patch there); and a zombie (killed, not yet collected) counted as a live owner. The two implementations had also drifted
+apart (third field, mutex name, limits) and are now one protocol.
 
 The lock only protects cooperating programs - others that open the file ignore it - and relies on `O_EXCL`, which is
 reliable on local file systems and modern NFS. Read-only folders skip the lock. Derived data (sorted orders, column
@@ -158,6 +172,11 @@ never slow, and a run of consecutive deletes is one call. If the copy fails the 
 nothing is half-changed. The app keeps the UI responsive, skips writes that change nothing, and Roll Back
 undoes a whole run (and is fast). Going much beyond this needs a different storage layout, not a smarter loop.
 
+**Compared with mkit-sql's rebuild** (200,000 rows, identical statements and files, results identical row for row):
+a 100,000-row scattered delete 4.5 s vs 6.7 s; 4,000 scattered deletes 5.9 s vs 23.6 s (mkit-sql rebuilds only from 20,000
+changes; the break-even is ~1,000); `UPDATE name = name || 'xx'` on every row 6.9 s vs 18.4 s (its cost is the update
+pipeline, not the rebuild). Details and a recommendation to keep one algorithm: `docs/mkit-sql-integration.md`.
+
 How the speed-ups work, and their limits:
 
 - **The grid is virtualised.** The treeview holds only the rows that fit in the window (about 30); scrolling re-labels
@@ -169,14 +188,20 @@ How the speed-ups work, and their limits:
   ids with cached column copies. Because a streamed result reads live data, it is guarded by the database's generation:
   if the data changes some other way (an edit in a data tab) a banner says the result is out of date and to run the query
   again, and when a statement in the same window changes data, the results are first frozen into memory so they keep
-  showing what the query returned. The unsorted-result cap (100,000 rows) does not apply to streamed results. Sorting a
+  showing what the query returned; closing the database freezes them too, and a result too big to freeze goes stale for
+  good - a generation number is never reused, so reopening the file cannot bring it back to life. The unsorted-result cap (100,000 rows) does not apply to streamed results. Sorting a
   streamed result by a column header evaluates that column for every row (about as slow as materialising it).
-- **Sorting and repeated queries.** Column copies and sort orders are cached per database generation (bounded to 4 million
-  values), so flipping a sort direction, sorting again, or running another `ORDER BY ... LIMIT` on the same column is
-  instant. Million-row sorts are still a full pass the first time (~3 s a million); Metakit has no indexes, so the cache is
+- **Sorting and repeated queries.** Column copies and sort orders are cached per database generation in a **byte budget**
+  shared by all open databases (default 256 MB, `store::cacheConfigure -budget MB` or `MKS_CACHE_MB`, 0 turns it off;
+  an estimate of the Tcl-object size, least-recently-used eviction, a database's entries dropped when it closes), so
+  flipping a sort direction, sorting again, or running another `ORDER BY ... LIMIT` on the same column is instant.
+  A million-row sort order costs roughly 50 MB of Tcl objects plus the column copy it was built from. Million-row sorts are still a full pass the first time (~3 s a million); Metakit has no indexes, so the cache is
   the "index" - it lives for the session and is discarded the moment the data changes.
 - **Filters are answered inside Metakit** (`mk::select`) when a top-level `AND` term has the right shape. The whole
   `WHERE` still runs on the surviving rows unless every term was pushed exactly.
+- **Statements are all-or-nothing.** A failed or cancelled `UPDATE`, `DELETE` or `INSERT` changes nothing (the original
+  executor left the rows written before the failure; that was a defect, so this is deliberately *not* equivalent to it).
+  Cancel is honoured while reading and evaluating, never while writing.
 - **Strict equivalence.** Pushdown, top-k, `COUNT(*)` and streaming look at fewer rows than a plain scan would, which
   could hide an error such as `text * 2` or a division by zero on a row the plain scan reaches. They are therefore only
   used when `mkplan.tcl` can *prove* that nothing they skip can raise (type-aware: stored number columns, constant
