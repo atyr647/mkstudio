@@ -98,8 +98,9 @@ Wrapping needs no `sdx`: `tools/wrap.tcl` appends the application's Metakit payl
 
 **macOS** has no usable prebuilt tclkit (the 2014 Tk 8.6.3 / 8.5.17 Mac builds crash on current macOS the first time a
 window opens), so CI compiles a current Tcl/Tk 8.6 + Metakit kit with [KitCreator](https://kitcreator.rkeene.org/) on the Mac
-runner (~8 min, cached), runs the tests with it, wraps the starpack with it and ad-hoc code-signs it
-(Apple silicon refuses unsigned code). Download the Mac starpacks from the workflow's artifacts; `./build.sh macos`
+runner (~8 min, cached), runs the tests with it and wraps the starpack with it (`codesign` cannot sign a starpack again - its
+payload follows the Mach-O image - so it keeps the ad-hoc signature the linker gave the runtime, which is what Apple silicon
+checks; no certificate is involved). Download the Mac starpacks from the workflow's artifacts; `./build.sh macos`
 explains how to do the same by hand.
 
 Run from source (needs a Tk with Mk4tcl, e.g. a tclkit): `tclkit mkstudio.vfs/main.tcl [file.mk ...]`

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build "MK Studio.app" and a .dmg from a macOS starpack (run on a Mac):
 #   packaging/macos/make-dmg.sh <version> <starpack> <outdir>
-# The app is signed ad hoc (no Apple developer certificate), so on first start macOS asks you to confirm:
+# The app carries only the ad-hoc signature of the tclkit (no Apple developer certificate), so on first start macOS asks you to confirm:
 # right-click the app > Open.  The README says so.
 set -e
 VER=$1 ; BIN=$2 ; OUT=$3
@@ -12,14 +12,11 @@ BASE=${VER%%-*}                       # 1.0.0-rc.1 -> 1.0.0 (CFBundleShortVersio
 W=$(mktemp -d) ; trap 'rm -rf "$W"' EXIT
 APP="$W/stage/MK Studio.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-# A starpack carries its payload after the Mach-O image.  codesign signs such a file fine on its own, but refuses the same
-# file once it is the main executable of a bundle ("main executable failed strict validation", with or without sealing the
-# bundle).  So the bare starpack is signed ad hoc here, BEFORE it goes into the bundle, and the bundle itself is left
-# unsealed.  Apple silicon insists on a valid signature on the executable, which this provides; what counts is that the
-# finished app runs, which CI tests from the mounted .dmg.
-cp "$BIN" "$W/mkstudio.bin" && chmod +x "$W/mkstudio.bin"
-codesign --force --sign - "$W/mkstudio.bin"
-cp "$W/mkstudio.bin" "$APP/Contents/MacOS/mkstudio"
+# The starpack is copied as it is.  It cannot be signed again: codesign refuses a file that carries a payload after its
+# Mach-O image ("main executable failed strict validation"), whether bare or inside a bundle - the CI log of the earlier
+# attempts shows it for both.  The kernel only checks the Mach-O image, and the tclkit's own (linker-made, ad-hoc)
+# signature covers that, so the program starts on Apple silicon; CI runs it from the finished .dmg to prove it.
+cp "$BIN" "$APP/Contents/MacOS/mkstudio" && chmod +x "$APP/Contents/MacOS/mkstudio"
 cp "$HERE/../icons/mkstudio.icns" "$APP/Contents/Resources/mkstudio.icns"
 cp "$HERE/../../LICENSE" "$HERE/../../THIRD_PARTY_NOTICES" "$APP/Contents/Resources/"
 cat > "$APP/Contents/Info.plist" <<PLIST

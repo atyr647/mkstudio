@@ -21,8 +21,8 @@ Please try it on copies of databases you care about and report what you find.
 There is no code-signing certificate behind them. In practice:
 
 - **Windows** SmartScreen shows "Windows protected your PC" - choose *More info > Run anyway*.
-- **macOS** the program inside the app is signed ad hoc only (the app bundle itself is not sealed: `codesign` refuses a
-  starpack as a bundle's main executable); the first time, right-click the app > *Open* and confirm.
+- **macOS** the program carries only the ad-hoc signature its Tcl runtime was built with (`codesign` refuses to sign a
+  starpack again, and the app bundle is not sealed); the first time, right-click the app > *Open* and confirm.
 - **Linux** nothing to confirm.
 - The checksums catch a damaged download, **not** a malicious one: if someone took over the project's GitHub account they could
   publish matching checksums. Download from the project's own releases page only.

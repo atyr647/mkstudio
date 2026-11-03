@@ -267,7 +267,8 @@ jobs:
           chmod +x "$OUT"
           "$KIT" tests/verify_payload.tcl "$OUT"
           # an appended payload invalidates the signature; Apple silicon refuses unsigned code
-          codesign --force --sign - "$OUT" || echo "(codesign not applied)"
+          codesign --force --sign - "$OUT" || echo "(codesign cannot re-sign a starpack - its payload follows the Mach-O image; the tclkit keeps its own ad-hoc signature)"
+          codesign -dv "$OUT" 2>&1 | head -6 || true
           echo "OUT=$OUT" >> "$GITHUB_ENV"
 
       - name: --version and --selftest of the macOS starpack
@@ -285,9 +286,8 @@ jobs:
           MNT="$RUNNER_TEMP/dmg"; mkdir -p "$MNT"
           hdiutil attach "$DMG" -mountpoint "$MNT" -nobrowse -quiet
           ls -la "$MNT"
-          # (the bundle is not sealed - codesign refuses a starpack as a bundle's main executable - so no bundle verification;
-          # the executable's own signature is what Apple silicon checks, and what follows runs it)
-          codesign --verify "$MNT/MK Studio.app/Contents/MacOS/mkstudio" && echo "executable signature ok"
+          # (no signature verification: codesign refuses a file with a payload after its Mach-O image; what follows runs it)
+          codesign -dv "$MNT/MK Studio.app/Contents/MacOS/mkstudio" 2>&1 | head -6 || true
           "$MNT/MK Studio.app/Contents/MacOS/mkstudio" --selftest "$RUNNER_TEMP/st2.txt"
           cat "$RUNNER_TEMP/st2.txt"; grep -q "^ok $v mk4tcl yes" "$RUNNER_TEMP/st2.txt"
           # the app must also start as an app (a window appears and it keeps running)
