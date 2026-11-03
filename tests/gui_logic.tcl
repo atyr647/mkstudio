@@ -1,0 +1,44 @@
+# Drives the real UI code paths that need no dialogs.  wish tests/gui_logic.tcl
+set here [file dirname [file normalize [info script]]]
+set ::mkstudio_root [file join $here .. mkstudio.vfs]
+source $here/mock_mk4tcl.tcl
+lappend auto_path $::mkstudio_root/lib
+package require app-mkstudio
+set ::env(HOME) /tmp/mks_home_logic ; file mkdir $::env(HOME)
+::app::main {}
+set pass 0 ; set fail 0
+proc check {n got want} { global pass fail ; if {$got eq $want} {incr pass} else {incr fail ; puts "FAIL $n: got <$got> want <$want>"} }
+set f /tmp/logic_demo.mk ; file delete $f
+set tag [::store::createSample $f] ; ::app::afterDbChange
+# data doc: edit, reject bad value, add row
+set id [::app::openData $tag.products products]
+set g [::app::docFrame $id].g
+check rows [::grid::count $g] 8
+check edit [catch {::ddoc::commit $id 0 name "Renamed"}] 0
+check edited [lindex [::store::rows $tag.products {name} 0 1] 0 0] Renamed
+check badint [catch {::ddoc::commit $id 0 stock "lots"} m] 1
+binary scan [encoding convertto utf-8 $m] H* hx ; check badmsg [string match "*Integer \u2014 *" $m] 1
+::ddoc::addRow $id
+check added [::store::size $tag.products] 9
+check gridnew [::grid::count $g] 9
+check pending [expr {[::store::dirty $tag] > 0}] 1
+# filter
+set ::ddoc::D($id,filter) "stock < 100" ; ::ddoc::reload $id
+check filter [::grid::count $g] 4
+set ::ddoc::D($id,filter) "stock <<< 1" ; ::ddoc::reload $id
+check filtererr [string match "*Expression expected*" [[::app::docFrame $id].msg.l cget -text]] 1
+# commit then rollback
+::app::commit $tag
+check clean [::store::dirty $tag] 0
+::store::deleteRows $tag.products {0 1 2}
+::store::rollback $tag
+check rolled [::store::size $tag.products] 9
+# designer ops via MKQL
+set d [::app::openDesign $tag.products products]
+check addcol2 [::design::run $d "ALTER VIEW $tag.products ADD \"tags\" (\"t\" string)"] 1
+check layout [lindex [::store::layout $tag.products] end 1] V
+# CSV
+check csv [::app::parseCsv "a,b\n1,\"x,\"\"y\"\"\"\n"] [list {a b} [list 1 "x,\"y\""]]
+# drill-down opens a query tab
+puts "$pass passed, $fail failed"
+exit [expr {$fail ? 1 : 0}]

@@ -1,0 +1,4 @@
+build/
+mkstudio
+mkstudio.exe
+*.mk
