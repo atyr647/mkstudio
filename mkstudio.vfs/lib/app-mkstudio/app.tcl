@@ -1,5 +1,11 @@
 # app.tcl -- MK Studio main window and application logic.
 
+# Load the modules the loader normally brings in first, if a host that assembles the files itself (mkit-sql's integration
+# test patches loader.tcl with its own list) did not know about them.
+foreach {m f} {version version update update crash crash} {
+    if {![namespace exists ::$m]} { source -encoding utf-8 [file join [file dirname [info script]] $f.tcl] }
+}
+
 namespace eval ::app {
     variable version $::version::current
     variable updating 0

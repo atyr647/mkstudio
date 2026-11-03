@@ -140,7 +140,7 @@ if {!$haveTool} { puts "  (no curl/wget/PowerShell here: download tests skipped)
         proc note {m} { lappend ::msgs $m }
         # success
         set r [::update::install [::update::check 1.0.0-rc.1] note $exe]
-        check install_returns_the_path $r $exe
+        check install_returns_the_path [file normalize $r] [file normalize $exe]      ;# (macOS: /var is /private/var)
         check install_new_content [readall $exe] $prog
         check install_keeps_the_old_one [readall $exe.old] "#!/bin/sh\necho old\n"
         ok install_new_is_executable [file executable $exe]
