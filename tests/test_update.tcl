@@ -261,7 +261,11 @@ if {!$haveTool} { puts "  (no curl/wget/PowerShell here: download tests skipped)
         if {$::tcl_platform(platform) ne "windows"} { ok real_the_running_old_process_is_unharmed [alive $holdPid] }
         # the program now at the path is the real starpack: it starts and says its version
         set out $app/selftest.txt ; file delete $out
-        check real_new_program_starts [catch {exec $old --selftest $out}] 0
+        # (2>@1: a program that prints a warning on stderr - the arm64 macOS runtime does - is still a program that started; only the
+        # exit code counts, and the message is kept for the failure report)
+        set rcStart [catch {exec $old --selftest $out 2>@1} msgStart]
+        ok real_new_program_starts [expr {!$rcStart}] "exit code failure: [string range $msgStart 0 300]"
+        if {$msgStart ne ""} { puts "  (the new program printed: [string range [string trim $msgStart] 0 200])" }
         ok real_new_program_reports_its_version [expr {[file exists $out] && [string match "ok $::version::current mk4tcl yes*" [readall $out]]}] [expr {[file exists $out] ? [readall $out] : "no output"}]
         # a second update over the .old left by the first
         set r2 [catch {::update::install $info "" $old} msg2]
