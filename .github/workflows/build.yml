@@ -41,6 +41,9 @@ jobs:
       - name: Crash-safe editing and write lock (real Metakit, kills a committing process)
         run: MKS_CRASH_TRIALS=15 tools/ext/tclkit-8.6.3-linux-x86_64 tests/run.tcl tests/test_crash_safety.tcl
 
+      - name: Write-lock protocol (foreign implementations, racing processes)
+        run: REAL_MK=1 tools/ext/tclkit-8.6.3-linux-x86_64 tests/run.tcl tests/test_lock_protocol.tcl
+
       - name: Persistence and safety (real Metakit)
         run: tools/ext/tclkit-8.6.3-linux-x86_64 tests/persist.tcl
       - name: Grid virtualisation (real Metakit, Tcl 8.6 and 8.5)
@@ -91,9 +94,9 @@ jobs:
         timeout-minutes: 10
         run: |
           fail=0
-          for t in test_mkql engine_contract persist test_engine_diff test_crash_safety test_grid gui_logic; do
+          for t in test_mkql engine_contract persist test_engine_diff test_crash_safety test_lock_protocol test_grid gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
-            MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_TEST_LOG="$(cygpath -w "$log")" timeout 300 "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
+            MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_TEST_LOG="$(cygpath -w "$log")" timeout 300 "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
           done
           exit $fail
@@ -202,9 +205,9 @@ jobs:
         timeout-minutes: 10
         run: |
           fail=0
-          for t in test_mkql engine_contract persist test_engine_diff test_crash_safety test_grid gui_logic; do
+          for t in test_mkql engine_contract persist test_engine_diff test_crash_safety test_lock_protocol test_grid gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
-            MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_TEST_LOG="$log" perl -e 'alarm 300; exec @ARGV' "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
+            MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_TEST_LOG="$log" perl -e 'alarm 300; exec @ARGV' "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
           done
           exit $fail

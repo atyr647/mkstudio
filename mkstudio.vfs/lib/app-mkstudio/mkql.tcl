@@ -956,6 +956,8 @@ proc ::mkql::usedLists {layout} {
 #   message: text affected
 #   use:     (optional) database name to switch to
 proc ::mkql::execStatement {ast defaultDb} {
+    # lazy results read the live data: keep them as they are before anything is changed
+    if {[lindex $ast 0] in {insert update delete create drop alter rollback}} { lzFreezeAll }
     switch -- [lindex $ast 0] {
         select { return [execSelect [lindex $ast 1] $defaultDb] }
         insert { return [execInsert $ast $defaultDb] }
@@ -1072,6 +1074,41 @@ proc ::mkql::execSelect {q defaultDb} {
     # fast path (mkplan.tcl): pushdown, compiled expressions, streaming aggregates
     set baseW [setupCols $layout $props $subs]
     lassign [planWhere $mk $layout $where] cand skip
+
+    # big plain results stay as a list of row ids and are projected on demand (lazy provider)
+    # (a LIMIT below the lazy threshold gives a small result: early stop / top-k are better for that)
+    variable lazyMin
+    if {!$isAgg && !$distinct && ($limit eq "" || $limit >= $lazyMin) && [lazyEligible $sel $order $layout]} {
+        set lazyStop [expr {[llength $order] || $limit eq "" ? 0 : $offset + $limit}]
+        set ids [lazyIds $mk $layout $sel $where $order $cand $skip $lazyStop]
+        if {$offset > 0} { set ids [lrange $ids $offset end] }
+        if {$limit ne ""} { set ids [lrange $ids 0 [expr {$limit - 1}]] }
+        if {[llength $ids] >= $lazyMin} {
+            set colNames {} ; set colTypes {} ; set drill {} ; set ci 0
+            foreach s $sel {
+                lappend colNames [lindex $s 1] ; lappend colTypes [lindex $s 2]
+                if {[lindex $s 3] ne ""} { dict set drill $ci [lindex $s 3] }
+                incr ci
+            }
+            # derived columns: right-align when the first and last thousand rows are all numbers
+            set src [lazyResult $mk $layout $props $subs $baseW $sel $ids $colNames $colTypes $drill]
+            set sample [concat [{*}$src rows 0 1000] [{*}$src rows [expr {max(0, [llength $ids] - 1000)}] 1000]]
+            set ci 0
+            foreach t $colTypes {
+                if {$t eq ""} {
+                    set allnum 1 ; set any 0
+                    foreach r $sample { set v [lindex $r $ci] ; if {$v eq ""} continue ; set any 1 ; if {![isnum $v]} { set allnum 0 ; break } }
+                    if {$any && $allnum} { lset colTypes $ci N }
+                }
+                incr ci
+            }
+            return [dict create kind rowset cols $colNames types $colTypes rows {} rowids {} source $mk drill $drill \
+                truncated 0 editable 1 provider $src]
+        }
+        # small result: the ids are final (ordered, sliced) - project them the ordinary way
+        set cand $ids ; set skip 1 ; set order {} ; set offset 0 ; set limit "" ; set stopAt 0 ; set needAll 1
+        set baseW [setupCols $layout $props $subs]
+    }
     genBegin
     set err [catch {
         set recs [runSelect [dict create mk $mk layout $layout props $props subs $subs baseW $baseW sel $sel \

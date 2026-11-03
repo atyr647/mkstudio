@@ -14,7 +14,8 @@ included) that you can copy anywhere and run.
   their subview contents), double-click a `> N rows` cell to open a subview
 - **Bytes columns** - size and hex preview in the grid; a hex viewer with export, replace-from-file and clear
 - **Add Column** - one click from the data editor, or in the **Designer** with rename, retype and drop (a renamed column keeps its position)
-- **Query windows** - syntax highlighting, completion, Find, multiple result tabs, cancel, error underlining
+- **Query windows** - syntax highlighting, completion, Find, multiple result tabs, cancel, error underlining; big results
+  **stream**: a `SELECT *` over 500,000 rows opens in ~0.15 s and costs memory only for the rows on screen
 - **Commit / Roll Back** - files are opened `-nocommit`: nothing reaches disk until you commit
 - **Safety** - refuses files that aren't Metakit databases; read-only databases disable every write control;
   a second MK Studio asking to edit a database that is already open for editing is offered a read-only view instead
@@ -75,11 +76,15 @@ Tests (all in `tests/`):
 - `lint.tcl` - no proc shadows a Tcl/Tk command, ASCII-only sources, no 8.6-only commands, no unguarded X11-only keysyms
 - `test_mkql.tcl`, `engine_contract.tcl` - the built-in dialect and the engine contract
 - `test_engine_diff.tcl` - **thousands of random queries** (predicates, expressions, aggregates, grouping, ordering,
-  limits, DELETE/UPDATE) through the optimised executor and through the original simple one
-  (`mkql_reference.tcl`); results must be identical, on the stand-in and on real Metakit under both Tcl versions
-- `persist.tcl`, `test_crash_safety.tcl` - persistence and crash safety (next section)
+  limits) through the optimised executor and through the original simple one (`mkql_reference.tcl`); results must be
+  identical (rows, values, types, row ids - and success or failure), also when the result is forced to stream lazily.
+  DELETE / UPDATE are checked byte for byte (every column type, bytes, floats, subview rows) against an independent
+  model through the in-place and the rebuild paths, and chains of bulk changes in one transaction must end in the same
+  table either way. On the stand-in and on real Metakit under both Tcl versions
+- `persist.tcl`, `test_crash_safety.tcl`, `test_lock_protocol.tcl` - persistence, crash safety and the write-lock protocol (next section)
 - `test_grid.tcl` - the virtualised grid driven with real mouse and key events (100,000 rows in memory, a Metakit view,
-  selection ranges, keyboard, sorting, editing in a scrolled grid, empty results)
+  selection ranges, keyboard, sorting, the sort cache, editing in a scrolled grid, streaming results incl. staleness and
+  freezing, empty results)
 - `gui_logic.tcl` - the UI logic incl. every popup menu and undo
 - `verify_payload.tcl`, `smoke_starpack.sh`, `bench.tcl`, and `shoot.tcl` for screenshots
 
@@ -102,15 +107,27 @@ and flushes what was written. Metakit commits by appending, then switching the h
 that, but I cannot demonstrate durability across power failure here.
 
 What it **did** find: Metakit does no locking. A second process that opens the file *while another commits* sometimes
-sees a mixed or unreadable state (between under 1% and 12% of the probe's reads, depending on timing), and two writers can overwrite each other.
-So MK Studio keeps an **advisory lock** `<file>.lock` (pid and host) next to every database it has open for editing:
+sees a mixed or unreadable state (between under 1% and 12% of the probe's reads, depending on timing), and two writers
+can overwrite each other. So there is one concurrency policy, written down in
+[`docs/CONCURRENCY.md`](docs/CONCURRENCY.md), for every component that touches a database (this app, the SQL engine,
+a server): an advisory `<file>.lock` (`pid host [role [endpoint]]`) that a writer takes with an atomic exclusive create
+and holds while it has the file open for writing.
 
 - a second MK Studio asked to edit it gets *"Database in use ... Open Read-Only / Cancel"* (read-only is always allowed,
   with a warning that the other process's commits may show up half-written);
 - a lock left behind by a crashed process is recognised (its pid is gone) and taken over, so a crash never locks you out;
-- a lock from another machine (a network share) is respected, since its liveness can't be checked.
+  a lock from another machine (a network share) is respected, since its liveness can't be checked;
+- a long-lived owner such as a server announces itself (`role`, `endpoint`) so clients are told who to talk to;
+- a process only ever removes *its own* lock.
 
-The lock only protects MK Studio from MK Studio - other programs that open the file ignore it. Read-only folders skip the lock.
+`tests/test_lock_protocol.tcl` checks this against hand-written independent implementations of the protocol and races six
+real processes for a free lock and for the same stale lock. It found a real defect in my first version: when several
+processes found the same stale lock, three or four of them could each "take it over" and all believe they owned the
+file. Takeover is now serialised by a guard file, and the race test fails if the guard is removed.
+
+The lock only protects cooperating programs - others that open the file ignore it - and relies on `O_EXCL`, which is
+reliable on local file systems and modern NFS. Read-only folders skip the lock. Derived data (sorted orders, column
+copies, lazy results) is guarded by a per-database *generation* that every change and every Roll Back advances.
 
 ## Performance and limits (500,000 rows, 29 MB, Linux)
 
@@ -118,36 +135,58 @@ The lock only protects MK Studio from MK Studio - other programs that open the f
 |---|---|---|
 | open file, list views / layout | ~40 ms | |
 | open a view in the editor / jump to any row | ~0.1 s / ~4 ms | 0.16 s for the first 5,000 rows only |
-| `SELECT ... LIMIT 100` | ~10 ms | ~10 ms |
+| `SELECT * FROM big` (all 500,000 rows, streamed) | ~0.2 s, ~80 MB | 100,000-row cap, seconds, ~hundreds of MB |
+| `SELECT ... ORDER BY <column>` over all rows (streamed) | ~1.2-2.8 s | |
+| `SELECT ... LIMIT 100` | ~6 ms (warm) | ~10 ms |
 | `WHERE` on `=`, `<`, `<=`, `>`, `>=`, `BETWEEN`, `IN`, text `=` (pushed into Metakit) | 0.15-0.35 s | ~6.5 s |
 | `WHERE` that can't be pushed (`LIKE`, expressions), full scan | ~2 s | ~6.5 s |
 | `SELECT COUNT(*)` | ~1 ms | ~6 s |
-| `SUM / MIN / MAX` over everything; `GROUP BY` | ~2.4 s; ~2.5 s | ~7 s; ~7.2 s |
-| `ORDER BY <number column> ... LIMIT n` | ~1.2 s | ~11.5 s (41 s originally) |
-| `ORDER BY <text column> ... LIMIT n` | ~2.9 s | |
-| click a column header in the editor (sorts all 500,000 rows) | ~1.5 s | sorted the loaded page only |
+| `SUM / MIN / MAX` over everything; `GROUP BY` | ~2.5 s; ~2.5 s | ~7 s; ~7.2 s |
+| `ORDER BY <number column> ... LIMIT n` | ~1.2 s first time, ~60 ms after | ~11.5 s (41 s originally) |
+| click a column header in the editor (sorts all 500,000 rows) | ~1.5 s first time, instant after (cached) | sorted the loaded page only |
 | select all + copy 500,000 rows (34 MB) | ~10 s | |
-| `UPDATE` 10,000 scattered rows of a string column | ~20 s | ~24 s |
-| `DELETE` 10,000 scattered rows | ~32 s | |
+| `UPDATE` 10,000 rows of a string column (contiguous or scattered) | **~9-10 s** | ~24 s |
+| `DELETE` 10,000 scattered rows | **~10 s** | ~32 s |
 
-The last two are **Metakit's own cost**: it keeps columns contiguous, so rewriting a variable-length string or deleting a
-row shifts the rest of the column, and each write costs more the earlier it is in the view (deleting a *contiguous* run
-is one call and fast). The app keeps the UI responsive, lets you cancel, skips writes that change nothing, and Roll Back
-undoes a cancelled run.
+Mutations are still the slowest thing here, and the limit is **Metakit's design**: columns are stored contiguously,
+so rewriting a variable-length value or deleting a row shifts everything after it (2-4 ms each on 500,000 rows,
+growing with the data behind the row), while appending costs ~3 us per row. Past about a thousand changes the
+store therefore rebuilds the affected tail of the view instead - append the changed copy after the last row, then
+remove the old tail with one ranged delete - for a 2.5-3x gain; the cost becomes proportional to the rows from the first
+change to the end of the view, not to the number of changes. Changes that touch only fixed-width columns (numbers) were
+never slow, and a run of consecutive deletes is one call. If the copy fails the view is cut back to its old size, so
+nothing is half-changed. The app keeps the UI responsive, skips writes that change nothing, and Roll Back
+undoes a whole run (and is fast). Going much beyond this needs a different storage layout, not a smarter loop.
 
 How the speed-ups work, and their limits:
 
 - **The grid is virtualised.** The treeview holds only the rows that fit in the window (about 30); scrolling re-labels
-  them. Rows come from a data source that reads from Metakit on demand (a small cache), selection is a list of row
-  *ranges* (so "select all" of 500,000 rows is free), and the scrollbar, wheel, keyboard and drag-selection are the grid's own.
-  Scrolling is by whole rows, like the native treeview.
-- **Filters are answered inside Metakit** (`mk::select`) when a top-level `AND` term has the right shape; the whole
-  `WHERE` still runs on the surviving rows unless every term was pushed exactly. One visible consequence: a row that
-  can only fail with an error (say `text * 2`) is never looked at if another term already ruled it out, so such a query
-  may succeed where a plain scan would have stopped with an error.
+  them. Rows come from a data source: query results from memory, a Metakit view read on demand (a small cache), or an
+  engine-supplied streaming source. Selection is a list of row *ranges* (so "select all" of 500,000 rows is free), and
+  the scrollbar, wheel, keyboard and drag-selection are the grid's own. Scrolling is by whole rows, like the native treeview.
+- **Big results stream.** A plain `SELECT` (no aggregates, no `DISTINCT`) with 20,000+ rows is kept as a *list of row
+  ids* (about 30 bytes a row) and projected as the grid asks for rows; `ORDER BY` plain stored columns is done on the
+  ids with cached column copies. Because a streamed result reads live data, it is guarded by the database's generation:
+  if the data changes some other way (an edit in a data tab) a banner says the result is out of date and to run the query
+  again, and when a statement in the same window changes data, the results are first frozen into memory so they keep
+  showing what the query returned. The unsorted-result cap (100,000 rows) does not apply to streamed results. Sorting a
+  streamed result by a column header evaluates that column for every row (about as slow as materialising it).
+- **Sorting and repeated queries.** Column copies and sort orders are cached per database generation (bounded to 4 million
+  values), so flipping a sort direction, sorting again, or running another `ORDER BY ... LIMIT` on the same column is
+  instant. Million-row sorts are still a full pass the first time (~3 s a million); Metakit has no indexes, so the cache is
+  the "index" - it lives for the session and is discarded the moment the data changes.
+- **Filters are answered inside Metakit** (`mk::select`) when a top-level `AND` term has the right shape. The whole
+  `WHERE` still runs on the surviving rows unless every term was pushed exactly.
+- **Strict equivalence.** Pushdown, top-k, `COUNT(*)` and streaming look at fewer rows than a plain scan would, which
+  could hide an error such as `text * 2` or a division by zero on a row the plain scan reaches. They are therefore only
+  used when `mkplan.tcl` can *prove* that nothing they skip can raise (type-aware: stored number columns, constant
+  non-zero divisors, integer-only `%`, argument checks for functions). Anything else takes the plain path. The
+  differential test enforces this: the optimised executor returns the same rows, values and types - and fails exactly
+  when the simple one fails (it may name a different offending row in the message).
 - **These optimisations belong to the built-in dialect.** If you replace it with your own SQL engine (see below) its speed
-  is yours to design; `store.tcl` offers `select`, `fetch`, `fetchAt` and `column` for exactly that. The grid and the data
-  editor don't depend on the query language at all.
+  is yours to design; `store.tcl` offers `select`, `fetch`, `fetchAt`, `column` and the cache for exactly that, and the
+  engine seam lets any engine return a streaming `provider` instead of rows. The grid and the data editor don't depend on
+  the query language at all.
 
 ## Notes on Metakit
 
@@ -165,7 +204,8 @@ mkstudio.vfs/lib/app-mkstudio/
     store.tcl     the ONLY file that calls mk::*  (incl. the advisory write lock)
     engine.tcl    the query-language seam (documented contract)
     mkql.tcl      built-in stand-in dialect: parser, binder, value semantics
-    mkplan.tcl    its fast execution path: pushdown, compiled expressions, streaming aggregates
+    mkplan.tcl    its fast execution path: pushdown, compiled expressions, streaming aggregates, lazy results
     theme icons menus widgets grid editor explorer docs app
 tests/  tools/  build.sh  .github/workflows/build.yml
+docs/CONCURRENCY.md    the shared write-lock / generation policy (for mkit-sql or a server)
 ```

@@ -729,6 +729,7 @@ proc ::app::rollback {{tag ""}} {
 proc ::app::dataChanged {{structure 1}} {
     variable A
     updatePending
+    ::grid::checkAll          ;# streaming query results notice that the data moved on
     if {$structure} {
         ::ddoc::clearUndo
         ::explorer::refresh

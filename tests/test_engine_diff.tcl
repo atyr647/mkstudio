@@ -18,7 +18,7 @@ source $here/mkql_reference.tcl
 set N [expr {[info exists ::env(MKS_FUZZ)] ? $::env(MKS_FUZZ) : 1500}]
 set seed [expr {[info exists ::env(MKS_SEED)] ? $::env(MKS_SEED) : 1}]
 expr {srand($seed)}
-set suppressed 0 ; set pass 0 ; set fail 0 ; set errBoth 0 ; set shown 0 ; set pushed 0
+set lazyUsed 0 ; set suppressed 0 ; set pass 0 ; set fail 0 ; set errBoth 0 ; set shown 0 ; set pushed 0
 proc check {name ok {detail ""}} {
     global pass fail shown
     if {$ok} { incr pass } else { incr fail ; if {[incr shown] <= 8} { puts "FAIL $name\n$detail" } }
@@ -187,7 +187,7 @@ proc normalise {r} {
     return $out
 }
 proc compareQuery {sql db} {
-    global errBoth suppressed
+    global errBoth suppressed lazyUsed
     lassign [runBoth $sql $db] a ra b rb
     # (which row raises first may differ once rows are skipped or fetched in another order, so only
     # "both fail" is required, not the same message)
@@ -195,6 +195,26 @@ proc compareQuery {sql db} {
     if {$a != $b} { check "error-mismatch: $sql" 0 "  fast ([expr {$a ? {error} : {ok}}]): [string range $ra 0 200]\n   ref ([expr {$b ? {error} : {ok}}]): [string range $rb 0 200]" ; return }
     set x [normalise $ra] ; set y [normalise $rb]
     check "result: $sql" [expr {$x eq $y}] "  fast: [string range $x 0 300]\n   ref: [string range $y 0 300]"
+    if {$x ne $y} return
+    # the same query as a lazy (streaming) result must also be identical, rows and row ids included
+    set ::mkql::lazyMin 1 ; set save $::engine::maxRows ; set ::engine::maxRows 1000000000
+    set stmt [lindex [mkql::parseScript $sql] 0 0]
+    set a2 [catch {mkql::execStatement $stmt $db} rl]
+    set b2 [catch {mkqlref::execSelect [lindex $stmt 1] $db} rr]
+    set ::mkql::lazyMin 20000 ; set ::engine::maxRows $save
+    if {$a2 != $b2} { check "lazy error mismatch: $sql" 0 "  lazy: [string range $rl 0 200]\n   ref: [string range $rr 0 200]" ; return }
+    if {$a2} return
+    if {[dict exists $rl provider]} {
+        incr ::lazyUsed
+        set p [dict get $rl provider]
+        set n [{*}$p count]
+        set rows [{*}$p rows 0 $n]
+        set ids {} ; for {set k 0} {$k < $n} {incr k} { lappend ids [{*}$p rowid $k] }
+        dict set rl rows $rows ; dict set rl rowids $ids
+        {*}$p destroy
+    }
+    set x [normalise $rl] ; set y [normalise $rr]
+    check "lazy result: $sql" [expr {$x eq $y}] "  lazy: [string range $x 0 300]\n   ref: [string range $y 0 300]"
 }
 
 foreach {size} {0 1 40 300 1200} {
@@ -265,6 +285,7 @@ foreach {size} {0 1 40 300 1200} {
     store::closeFile $tag
 }
 
+puts "  $lazyUsed of the queries also ran as lazy streaming results, identical"
 puts "  $errBoth of the queries raised an error in both executors"
 puts "$pass passed, $fail failed"
 exit [expr {$fail ? 1 : 0}]

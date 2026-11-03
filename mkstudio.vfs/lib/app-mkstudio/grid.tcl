@@ -62,6 +62,8 @@ proc ::grid::create {w args} {
     recolor $w.t
     ::theme::reg $w.t [list ::grid::recolor %w]
     ttk::label $w.t.empty -text "No rows" -style SurfaceDim.TLabel
+    ttk::label $w.stale -style SurfaceDim.TLabel -padding {10 4} \
+        -text "These results are out of date - the data changed after the query ran. Run the query again."
 
     set t $w.t
     bind $t <Motion>  [list ::grid::motion $w %x %y]
@@ -106,8 +108,16 @@ proc ::grid::create {w args} {
     bind $w <Destroy> [list ::grid::forget $w]
     return $w
 }
+# a provider supplied by the engine may hold resources (compiled code); tell it we are done
+proc ::grid::destroyProvider {w} {
+    variable G
+    if {[info exists G($w,src)] && [lindex $G($w,src) 0] ni {::grid::memsrc ::grid::mksrc} && [llength $G($w,src)]} {
+        catch {{*}$G($w,src) destroy}
+    }
+}
 proc ::grid::forget {w} {
     variable G ; variable MS ; variable KS
+    destroyProvider $w
     foreach k [array names G $w,*] { unset G($k) }
     foreach k [array names MS $w,*] { unset MS($k) }
     foreach k [array names KS $w,*] { unset KS($k) }
@@ -242,6 +252,10 @@ proc ::grid::mksrc {w method args} {
             lassign $args ci dir type
             set name [lindex [lindex $KS($w,layout) $ci] 0]
             set mk $KS($w,mk)
+            set tag [lindex [split $mk .!] 0]
+            set ckey [list order $mk $name $dir]
+            set hit [::store::cacheGet $tag $ckey]
+            if {[llength $hit]} { set KS($w,order) [lindex $hit 0] ; return }
             set n $KS($w,total)
             if {$type eq "V"} {
                 set kc {}
@@ -255,6 +269,7 @@ proc ::grid::mksrc {w method args} {
             set perm {}
             for {set i 0} {$i < $n} {incr i} { lappend perm $i }
             set KS($w,order) [sortPerm $perm $kc [expr {$dir eq "desc"}]]
+            ::store::cachePut $tag $ckey $n $KS($w,order)
         }
     }
 }
@@ -329,6 +344,14 @@ proc ::grid::display {v} {
 # Query results.  Returns the number of rows.
 proc ::grid::load {w result} {
     variable G
+    if {[dict exists $result provider]} {
+        # the engine streams the rows itself (see engine.tcl): nothing is held here
+        destroyProvider $w
+        set G($w,src) [dict get $result provider]
+        install $w [dict get $result cols] [dict get $result types] [dict get $result drill] [dict get $result source] 0
+        return $G($w,total)
+    }
+    destroyProvider $w
     set types [dict get $result types]
     set rows [summariseBytes [dict get $result rows] $types]
     memLoad $w $rows [dict get $result rowids]
@@ -351,6 +374,7 @@ proc ::grid::loadStore {w mk {keep 0}} {
         if {$t eq "B"} { dict set drill $i @$n }
         incr i
     }
+    destroyProvider $w
     ksLoad $w $mk $layout
     set G($w,src) [list ::grid::mksrc $w]
     install $w $cols $types $drill $mk $keep
@@ -416,7 +440,7 @@ proc ::grid::measure {w i} {
     foreach from [list 0 [expr {$total / 2}] [expr {max(0, $total - 70)}]] {
         set n [expr {min(70, $total - $from)}]
         if {$n <= 0} continue
-        foreach r [{*}$G($w,src) rows $from $n] {
+        foreach r [fetchRows $w $from $n] {
             set v [lindex $r $i]
             if {[string length $v] > 60} { set v [string range $v 0 60] }
             set m [font measure MkUI [display $v]]
@@ -490,7 +514,7 @@ proc ::grid::paint {w} {
     set top $G($w,top)
     set n [expr {max(0, min($G($w,nslots), $G($w,total) - $top))}]
     set rows {}
-    if {$n > 0} { set rows [{*}$G($w,src) rows $top $n] }
+    if {$n > 0} { set rows [fetchRows $w $top $n] }
     set G($w,hov) ""
     for {set k 0} {$k < $n} {incr k} {
         set p [expr {$top + $k}]
@@ -507,6 +531,16 @@ proc ::grid::paint {w} {
     set G($w,attached) $n
     scrollbarSync $w
     rehover $w
+    staleCheck $w
+}
+# a streaming result reads live data; if the data changed since the query ran, say so
+proc ::grid::staleCheck {w} {
+    variable G
+    set stale 0
+    if {[lindex $G($w,src) 0] ni {::grid::memsrc ::grid::mksrc} && [llength $G($w,src)]} {
+        if {![catch {{*}$G($w,src) stale} v]} { set stale $v }
+    }
+    if {$stale} { grid $w.stale -row 2 -column 0 -columnspan 2 -sticky ew } else { grid remove $w.stale }
 }
 proc ::grid::rowTags {w p} {
     return [list [expr {[selContains $w $p] ? "sel" : ($p % 2 ? "odd" : "even")}]]
@@ -663,6 +697,24 @@ proc ::grid::selectedRowids {w} {
         if {$id ne ""} { lappend out $id }
     }
     return $out
+}
+# after any data change: tell streaming results whether they are still current
+proc ::grid::checkAll {} {
+    variable G
+    foreach k [array names G *,src] {
+        set w [string range $k 0 end-4]
+        if {[winfo exists $w.t]} { staleCheck $w }
+    }
+}
+# rows from the data source; engine-supplied sources return raw bytes, which are summarised here
+proc ::grid::fetchRows {w first n} {
+    variable G
+    set rows [{*}$G($w,src) rows $first $n]
+    if {[lindex $G($w,src) 0] in {::grid::memsrc ::grid::mksrc}} { return $rows }
+    set bcols {} ; set i 0
+    foreach t $G($w,types) { if {$t eq "B"} { lappend bcols $i } ; incr i }
+    if {![llength $bcols]} { return $rows }
+    return [summariseBytes $rows $G($w,types)]
 }
 proc ::grid::count {w} { variable G ; return $G($w,total) }
 proc ::grid::hasData {w} { variable G ; expr {[info exists G($w,cols)] && [llength $G($w,cols)] > 0} }
@@ -835,7 +887,7 @@ proc ::grid::eachChunk {w ranges script} {
         lassign $r lo hi
         for {set p $lo} {$p <= $hi} {incr p 2000} {
             set n [expr {min(2000, $hi - $p + 1)}]
-            uplevel 1 [list {*}$script [{*}$G($w,src) rows $p $n]]
+            uplevel 1 [list {*}$script [fetchRows $w $p $n]]
         }
     }
 }
@@ -851,7 +903,7 @@ proc ::grid::tsv {w headers {onlySelected 1}} {
     foreach r $ranges {
         lassign $r lo hi
         for {set p $lo} {$p <= $hi} {incr p 2000} {
-            foreach row [{*}$G($w,src) rows $p [expr {min(2000, $hi - $p + 1)}]] {
+            foreach row [fetchRows $w $p [expr {min(2000, $hi - $p + 1)}]] {
                 set cells {}
                 foreach v $row { lappend cells [string map [list \t " " \n " " \r ""] $v] }
                 lappend lines [join $cells \t]
@@ -888,7 +940,7 @@ proc ::grid::exportCsv {w} {
     puts $out [join [lmap_csv $G($w,cols)] ,]
     set done 0
     for {set p 0} {$p < $G($w,total)} {incr p 2000} {
-        foreach row [{*}$G($w,src) rows $p [expr {min(2000, $G($w,total) - $p)}]] { puts $out [join [lmap_csv $row] ,] }
+        foreach row [fetchRows $w $p [expr {min(2000, $G($w,total) - $p)}]] { puts $out [join [lmap_csv $row] ,] }
         incr done 2000
         if {[info commands ::app::setStatus] ne ""} { ::app::setStatus "Exporting... [::app::commas [expr {min($done, $G($w,total))}]] of [::app::commas $G($w,total)] rows" warn ; update idletasks }
     }

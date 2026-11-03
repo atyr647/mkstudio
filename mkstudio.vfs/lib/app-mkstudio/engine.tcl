@@ -30,6 +30,21 @@
 #              - rowids: store row index per row ({} when rows are not 1:1
 #                with a view, e.g. aggregates); drill: columns that hold subviews
 #              - source: Metakit path ("tag.view") of a plain SELECT, else ""
+#              - OPTIONAL  provider <command prefix>:  instead of holding every row in `rows`
+#                (leave it {}), an engine may hand the UI a streaming data source, so a result of
+#                millions of rows costs no memory until it is looked at.  The UI calls
+#                    {*}$provider count            -> number of rows
+#                    {*}$provider rows first n     -> rows first .. first+n-1 (display-ready lists)
+#                    {*}$provider rowid p          -> store row index of row p ("" if none)
+#                    {*}$provider cell p ci        -> one value
+#                    {*}$provider sort ci dir type -> reorder by a column (dir asc|desc); may raise
+#                    {*}$provider stale            -> 1 when the underlying data changed since the
+#                                                     query ran (the UI shows a banner)
+#                    {*}$provider freeze           -> keep the rows as they are now (called by the
+#                                                     engine itself before it changes data)
+#                    {*}$provider destroy          -> the UI is finished with it
+#                `put` is accepted and may be ignored.  A provider reading live data MUST report
+#                `stale` once the data changed (use ::store::generation) - see docs/CONCURRENCY.md.
 #
 #         {kind message  text "..."  ?affected N?  ?use dbTag?}
 #              - `use` switches the query window's database

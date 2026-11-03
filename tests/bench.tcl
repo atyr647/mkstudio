@@ -31,6 +31,11 @@ puts "SUM/MIN/MAX no filter:   [ms {mkql::run {SELECT SUM(salary), MIN(salary), 
 puts "COUNT(*) GROUP BY:       [ms {mkql::run {SELECT dept, COUNT(*), AVG(salary) FROM big GROUP BY dept} $t}]"
 puts "ORDER BY salary LIMIT 50:[ms {mkql::run {SELECT id, salary FROM big ORDER BY salary DESC LIMIT 50} $t}]"
 puts "ORDER BY name LIMIT 50: [ms {mkql::run {SELECT id, name FROM big ORDER BY name LIMIT 50} $t}]"
-puts "DELETE WHERE dept=49 (rollback): [ms {mkql::run {DELETE FROM big WHERE dept = 49} $t ; store::rollback $t}]"
-puts "UPDATE 10k rows:         [ms {mkql::run {UPDATE big SET note = 'x' WHERE id < 10000} $t}]"
+puts "DELETE 10k scattered rows (rollback): [ms {mkql::run {DELETE FROM big WHERE dept = 49} $t ; store::rollback $t}]"
+puts "UPDATE 10k scattered rows (rollback): [ms {mkql::run {UPDATE big SET note = 'y' WHERE dept = 3} $t ; store::rollback $t}]"
+puts "SELECT * (500k rows, lazy):    [ms {set r [mkql::run {SELECT * FROM big} $t] ; puts "   -> lazy=[dict exists $r provider] rows=[expr {[dict exists $r provider] ? [{*}[dict get $r provider] count] : [llength [dict get $r rows]]}]"}]"
+puts "SELECT ... ORDER BY salary (all 500k, lazy): [ms {mkql::run {SELECT id, salary FROM big ORDER BY salary DESC} $t}]"
+puts "  ... again (sorted column cached):          [ms {mkql::run {SELECT id, salary FROM big ORDER BY salary ASC} $t}]"
+puts "ORDER BY salary LIMIT 50, cached column:     [ms {mkql::run {SELECT id, salary FROM big ORDER BY salary DESC LIMIT 50} $t}]"
+puts "UPDATE 10k rows (contiguous, rollback): [ms {mkql::run {UPDATE big SET note = 'x' WHERE id < 10000} $t ; store::rollback $t}]"
 exit

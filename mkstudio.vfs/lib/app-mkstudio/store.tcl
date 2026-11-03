@@ -17,6 +17,7 @@ namespace eval ::store {
     variable file    ;# tag -> absolute path
     variable ro      ;# tag -> read-only flag
     variable dirty   ;# tag -> number of uncommitted mutations
+    variable gen     ;# tag -> generation (see ::store::generation)
     variable lockOwned   ;# tag -> lock file we created (and must remove)
     variable lockedBy    ;# tag -> "pid host" of another process that holds a write lock (read-only opens)
     variable types {
@@ -24,7 +25,7 @@ namespace eval ::store {
         F {Float   float}   D {Double  double}  B {Bytes bytes}
         V {Subview subview}
     }
-    array set file {} ; array set ro {} ; array set dirty {} ; array set lockOwned {} ; array set lockedBy {}
+    array set file {} ; array set ro {} ; array set dirty {} ; array set gen {} ; array set lockOwned {} ; array set lockedBy {}
 }
 
 # -- availability ------------------------------------------------------------
@@ -68,11 +69,18 @@ proc ::store::makeTag {path} {
 }
 
 # ---- advisory write lock ---------------------------------------------------------------------
-# Metakit itself does no locking: another process reading a file while it is committed can
-# see a half-written state (measured: tests/test_crash_safety.tcl), and two writers can
-# overwrite each other.  MK Studio therefore keeps "<file>.lock" (pid, host) next to a
-# database it has open for writing.  A lock whose process is dead is stale and is taken over,
-# so a crash never leaves a database permanently locked.  Other programs ignore it.
+# The shared concurrency policy for every component that writes a database (this app, the SQL
+# engine, a server...) - the full protocol is in docs/CONCURRENCY.md.  In short: Metakit does no locking
+# (measured: tests/test_crash_safety.tcl - a reader can see a half-written commit, two writers can
+# overwrite each other), so a writer owns "<file>.lock" for as long as it has the file open for
+# writing.  The file holds  "<pid> <host> ?<role> ?<endpoint>??"  and is created atomically (O_EXCL).
+# A lock whose process is dead (same host) is stale and is taken over, so a crash never locks a
+# database for good; a lock from another host is always respected.  Programs that don't follow the
+# protocol are not stopped - it is advisory.
+namespace eval ::store {
+    variable lockRole ""       ;# a long-lived owner says what it is, e.g. "server" ...
+    variable lockEndpoint ""   ;# ... and where clients should talk to it, e.g. "tcp://host:5433"
+}
 proc ::store::lockPath {path} { return $path.lock }
 
 proc ::store::pidAlive {pid} {
@@ -86,38 +94,90 @@ proc ::store::pidAlive {pid} {
 }
 proc ::store::thisHost {} { if {[catch {info hostname} h]} { return unknown } ; return $h }
 
-# "pid host" of a live foreign holder, or "" when the file is unlocked (or the lock is stale/ours)
-proc ::store::lockHolder {path} {
-    set lf [lockPath $path]
-    if {![file exists $lf]} { return "" }
-    if {[catch {set h [open $lf r] ; set d [string trim [read $h]] ; close $h}]} { return "" }
-    lassign [split $d " "] pid host
-    if {$pid eq [pid] && $host eq [thisHost]} { return "" }
-    if {$host eq [thisHost]} { return [expr {[pidAlive $pid] ? "$pid $host" : ""}] }
-    # another machine (network share): cannot tell whether it is alive, so respect the lock
-    return "$pid $host"
+proc ::store::lockText {} {
+    variable lockRole ; variable lockEndpoint
+    set t "[pid] [thisHost]"
+    if {$lockRole ne "" || $lockEndpoint ne ""} { append t " [expr {$lockRole eq {} ? {-} : $lockRole}]" }
+    if {$lockEndpoint ne ""} { append t " $lockEndpoint" }
+    return $t
 }
+proc ::store::readLock {path} {
+    set lf [lockPath $path]
+    if {[catch {set h [open $lf r] ; set d [string trim [read $h]] ; close $h}]} { return "" }
+    lassign [split $d " "] pid host role endpoint
+    return [dict create pid $pid host $host role [expr {$role eq "-" ? "" : $role}] endpoint $endpoint text $d]
+}
+
+# What is the state of the lock on this database?  A dict:
+#   state    free | ours | stale | held       ("held": a live (or remote) other process owns it)
+#   pid host role endpoint                     (when there is a lock file)
+proc ::store::lockInfo {path} {
+    set l [readLock $path]
+    if {![file exists [lockPath $path]]} { return [dict create state free] }
+    if {$l eq ""} { return [dict create state free] }            ;# unreadable / vanished meanwhile
+    set state held
+    if {![string is integer -strict [dict get $l pid]]} {
+        # empty or garbled: its creator is probably between creating and writing it; if it stays that
+        # way for a few seconds the creator died and the lock is stale
+        if {![catch {file mtime [lockPath $path]} mt] && [clock seconds] - $mt > 5} { set state stale }
+    } elseif {[dict get $l pid] eq [pid] && [dict get $l host] eq [thisHost]} {
+        set state ours
+    } elseif {[dict get $l host] eq [thisHost] && ![pidAlive [dict get $l pid]]} {
+        set state stale
+    }
+    return [dict merge $l [dict create state $state]]
+}
+# "pid host role endpoint" of a live foreign holder, or "" when the file is unlocked (or the lock is stale/ours)
+proc ::store::lockHolder {path} {
+    set i [lockInfo $path]
+    if {[dict get $i state] ne "held"} { return "" }
+    return [list [dict get $i pid] [dict get $i host] [dict get $i role] [dict get $i endpoint]]
+}
+proc ::store::lockedError {path holder} {
+    lassign $holder hpid hhost hrole hend
+    set who "pid $hpid on $hhost"
+    if {$hrole ne ""} { append who ", $hrole" }
+    if {$hend ne ""} { append who " at $hend" }
+    return -code error -errorcode [list STORE LOCKED $hpid $hhost $hrole $hend] \
+        "This database is open for editing in another process ($who):\n$path"
+}
+
 # Create the lock file atomically (O_EXCL) so two processes starting at once cannot both win.
 # Returns the lock path, "" when no lock could be made (read-only folder: carry on unlocked), or
-# raises STORE LOCKED when somebody else got there first.  A stale file (lockHolder said its
-# holder is gone) is removed first.
+# raises STORE LOCKED when somebody else owns it.  Taking over a stale lock is serialised by a
+# guard file, so two processes that both see the same stale lock cannot each delete the other's
+# fresh one: exactly one of them wins.
 proc ::store::takeLock {path} {
     set lf [lockPath $path]
-    for {set attempt 0} {$attempt < 3} {incr attempt} {
+    for {set attempt 0} {$attempt < 4} {incr attempt} {
         if {![catch {set h [open $lf {WRONLY CREAT EXCL}]}]} {
-            puts -nonewline $h "[pid] [thisHost]" ; close $h
+            puts -nonewline $h [lockText] ; close $h
             return $lf
         }
-        if {![file exists $lf]} { return "" }
+        if {![file exists $lf]} { return "" }              ;# cannot create here (read-only folder)
         set holder [lockHolder $path]
-        if {$holder ne ""} {
-            lassign $holder hpid hhost
-            return -code error -errorcode [list STORE LOCKED $hpid $hhost] \
-                "This database is open for editing in another process (pid $hpid on $hhost):\n$path"
+        if {$holder ne ""} { lockedError $path $holder }
+        # stale (or ours from an earlier run): replace it, one process at a time
+        set guard $lf.guard
+        set got 0
+        for {set w 0} {$w < 50 && !$got} {incr w} {
+            if {![catch {set h [open $guard {WRONLY CREAT EXCL}] ; close $h}]} { set got 1 ; break }
+            # a guard abandoned by a crash must not block for ever
+            if {![catch {file mtime $guard} mt] && [clock seconds] - $mt > 10} { catch {file delete $guard} ; continue }
+            after 40
         }
-        catch {file delete $lf}                         ;# stale (or ours from an earlier run)
+        if {!$got} continue
+        set again [lockHolder $path]                        ;# look again now that nobody else is replacing it
+        if {$again eq "" && [dict get [lockInfo $path] state] in {stale ours}} { catch {file delete $lf} }
+        catch {file delete $guard}
+        if {$again ne ""} { lockedError $path $again }
     }
     return ""
+}
+# Remove OUR lock - and only ours: if it was replaced by another owner meanwhile, leave it alone.
+proc ::store::releaseLock {lf} {
+    set path [string range $lf 0 end-5]
+    if {[dict get [lockInfo $path] state] eq "ours"} { catch {file delete $lf} }
 }
 proc ::store::lockedByOther {tag} { variable lockedBy ; if {[info exists lockedBy($tag)]} { return $lockedBy($tag) } ; return "" }
 
@@ -126,7 +186,45 @@ proc ::store::exists {tag} { variable tags ; expr {[lsearch -exact $tags $tag] >
 proc ::store::path {tag}     { variable file ; return $file($tag) }
 proc ::store::readonly {tag} { variable ro   ; return $ro($tag) }
 proc ::store::dirty {tag}    { variable dirty; return $dirty($tag) }
-proc ::store::touch {tag}    { variable dirty; incr dirty($tag) }
+proc ::store::touch {tag}    { variable dirty ; incr dirty($tag) ; touchGen $tag }
+# changes whenever anything in the database may have changed (edits, structure, Roll Back);
+# derived data (sorted orders, column copies) is valid only for the generation it was built from
+proc ::store::generation {tag} { variable gen ; if {[info exists gen($tag)]} { return $gen($tag) } ; return 0 }
+
+# ---- derived-data cache ----------------------------------------------------------------------------
+# A column copy or a sort order costs a full pass over the view (about 1.4 s for 500,000 rows).  Keep a
+# few, guarded by the generation, so sorting again, flipping the direction or running another
+# ORDER BY ... LIMIT on the same column is instant.  Bounded by the number of values held.
+namespace eval ::store {
+    variable cache [dict create]   ;# key -> {tag generation cost value}, oldest first
+    variable cacheCost 0
+    variable cacheBudget 4000000
+}
+proc ::store::cacheGet {tag key} {
+    variable cache
+    if {![dict exists $cache $key]} { return {} }
+    lassign [dict get $cache $key] t g c v
+    if {$g != [generation $tag]} { cacheDrop $key ; return {} }
+    return [list $v]
+}
+proc ::store::cacheDrop {key} {
+    variable cache ; variable cacheCost
+    if {![dict exists $cache $key]} return
+    set cacheCost [expr {$cacheCost - [lindex [dict get $cache $key] 2]}]
+    dict unset cache $key
+}
+proc ::store::cachePut {tag key cost value} {
+    variable cache ; variable cacheCost ; variable cacheBudget
+    cacheDrop $key
+    if {$cost > $cacheBudget} return                          ;# too big to keep
+    while {$cacheCost + $cost > $cacheBudget && [dict size $cache]} { cacheDrop [lindex [dict keys $cache] 0] }
+    dict set cache $key [list $tag [generation $tag] $cost $value]
+    incr cacheCost $cost
+}
+proc ::store::cacheClear {{tag {}}} {
+    variable cache
+    foreach k [dict keys $cache] { if {$tag eq {} || [lindex [dict get $cache $k] 0] eq $tag} { cacheDrop $k } }
+}
 
 proc ::store::fileSize {tag} {
     if {[catch {file size [path $tag]} n]} { return 0 }
@@ -150,11 +248,7 @@ proc ::store::openFile {path args} {
     set holder [lockHolder $path]
     set lf ""
     if {!$readonly} {
-        if {$holder ne ""} {
-            lassign $holder hpid hhost
-            return -code error -errorcode [list STORE LOCKED $hpid $hhost] \
-                "This database is open for editing in another process (pid $hpid on $hhost):\n$path"
-        }
+        if {$holder ne ""} { lockedError $path $holder }
         set lf [takeLock $path]                          ;# before opening, so a refusal touches nothing
     }
     set tag [makeTag $path]
@@ -163,7 +257,7 @@ proc ::store::openFile {path args} {
     if {[catch {mk::file open $tag $path {*}$opts}]} {
         # very old Mk4tcl without -nocommit: fall back to the plain open
         if {[catch {mk::file open $tag $path {*}[expr {$readonly ? {-readonly} : {}}]} err]} {
-            if {$lf ne ""} { catch {file delete $lf} }
+            if {$lf ne ""} { releaseLock $lf }
             error $err
         }
     }
@@ -173,7 +267,7 @@ proc ::store::openFile {path args} {
     # a starkit/starpack has no such header but does contain views.
     if {!$create && [file size $path] > 0 && ![hasMetakitSignature $path] && ![llength [mk::file views $tag]]} {
         catch {mk::file close $tag}
-        if {$lf ne ""} { catch {file delete $lf} }
+        if {$lf ne ""} { releaseLock $lf }
         error "This file isn't a Metakit database, so it was not opened:\n$path"
     }
     lappend tags $tag
@@ -195,12 +289,14 @@ proc ::store::hasMetakitSignature {path} {
 
 proc ::store::closeFile {tag} {
     variable tags ; variable file ; variable ro ; variable dirty ; variable lockOwned ; variable lockedBy
-    if {[info exists lockOwned($tag)]} { catch {file delete $lockOwned($tag)} ; unset lockOwned($tag) }
+    if {[info exists lockOwned($tag)]} { releaseLock $lockOwned($tag) ; unset lockOwned($tag) }
     unset -nocomplain lockedBy($tag)
     catch {mk::file close $tag}
     set i [lsearch -exact $tags $tag]
     if {$i >= 0} { set tags [lreplace $tags $i $i] }
     unset -nocomplain file($tag) ro($tag) dirty($tag)
+    cacheClear $tag
+    unset -nocomplain ::store::gen($tag)
 }
 
 proc ::store::commit {tag} {
@@ -220,7 +316,9 @@ proc ::store::rollback {tag} {
         mk::file open $tag $file($tag) {*}$opts
     }
     set dirty($tag) 0
+    touchGen $tag
 }
+proc ::store::touchGen {tag} { variable gen ; if {[info exists gen($tag)]} { incr gen($tag) } else { set gen($tag) 1 } }
 
 # -- reading structure -------------------------------------------------------
 # Metakit keeps a deleted view in `mk::file views` (with an empty layout) until
@@ -350,8 +448,12 @@ proc ::store::fetchAt {path props indices} {
 proc ::store::column {path prop {indices all}} {
     set out {}
     if {$indices eq "all"} {
+        set tag [lindex [split $path .!] 0]
+        set hit [cacheGet $tag [list col $path $prop]]
+        if {[llength $hit]} { return [lindex $hit 0] }
         set n [mk::view size $path]
         for {set i 0} {$i < $n} {incr i} { lappend out [mk::get $path!$i $prop] }
+        cachePut $tag [list col $path $prop] $n $out
     } else {
         foreach i $indices { lappend out [mk::get $path!$i $prop] }
     }

@@ -884,3 +884,253 @@ proc ::mkql::raises {ast layout} {
     }
     return 1
 }
+
+# ============================================================================
+#  Lazy results: a big plain SELECT is kept as a list of row ids and projected on demand
+# ============================================================================
+# A result with hundreds of thousands of rows would otherwise be built in memory, row by row,
+# before the first one is shown.  Here the engine only decides WHICH rows (and in what order); the
+# grid asks for the cells it is about to draw.  Only used when it cannot change the outcome: the
+# select expressions provably cannot raise (so evaluating them later is not observable), and the sort
+# keys are plain stored columns.  The data is read live, so the result is guarded by the database's
+# generation: if the data changes the result is "out of date" (and the engine freezes lazy results into
+# memory before it changes anything itself).
+namespace eval ::mkql {
+    variable lazy 1            ;# tests switch this off / force it on
+    variable lazyMin 20000     ;# results with at least this many rows are lazy
+    variable LZ                ;# provider state
+    array set LZ {}
+    variable lzSeq 0
+}
+
+# canonical column names mentioned by an expression
+proc ::mkql::astCols {ast} {
+    switch -- [lindex $ast 0] {
+        col { return [list [lindex $ast 1]] }
+        num - str - alias - outcol - aggref - agg { return {} }
+        fn { set o {} ; foreach a [lindex $ast 2] { lappend o {*}[astCols $a] } ; return $o }
+        bin - cmp { return [concat [astCols [lindex $ast 2]] [astCols [lindex $ast 3]]] }
+        and - or { return [concat [astCols [lindex $ast 1]] [astCols [lindex $ast 2]]] }
+        not - neg - isnull { return [astCols [lindex $ast 1]] }
+        like { return [concat [astCols [lindex $ast 1]] [astCols [lindex $ast 2]]] }
+        in { set o [astCols [lindex $ast 1]] ; foreach a [lindex $ast 2] { lappend o {*}[astCols $a] } ; return $o }
+        between { return [concat [astCols [lindex $ast 1]] [astCols [lindex $ast 2]] [astCols [lindex $ast 3]]] }
+    }
+    return {}
+}
+
+# The order keys as stored column names, or "" when any key is not a plain stored column.
+proc ::mkql::lazyKeys {sel order layout} {
+    set keys {}
+    foreach o $order {
+        set e [lindex $o 0]
+        if {[lindex $e 0] eq "alias"} {
+            set hit ""
+            foreach s $sel { if {[string tolower [lindex $s 1]] eq [lindex $e 1]} { set hit [lindex $s 0] } }
+            if {$hit eq ""} { return "" }
+            set e $hit
+        } elseif {[lindex $e 0] eq "outcol"} {
+            set e [lindex [lindex $sel [lindex $e 1]] 0]
+        }
+        if {[lindex $e 0] ne "col"} { return "" }
+        set n [lindex $e 1]
+        if {$n ne "_rowid" && [colType $layout $n] ni {I L F D S}} { return "" }
+        lappend keys [list $n [expr {[lindex $o 1] eq "desc"}]]
+    }
+    return [list $keys]
+}
+
+proc ::mkql::lazyEligible {sel order layout} {
+    variable lazy
+    if {!$lazy} { return 0 }
+    foreach s $sel { if {[raises [lindex $s 0] $layout]} { return 0 } }
+    return [expr {[lazyKeys $sel $order $layout] ne "" || ![llength $order]}]
+}
+
+# Row ids of the result, in result order, before OFFSET / LIMIT.
+proc ::mkql::lazyIds {mk layout sel where order cand skip stopAt} {
+    set n [::store::size $mk]
+    if {$skip} {
+        if {$cand eq "all"} { set ids {} ; for {set i 0} {$i < $n} {incr i} { lappend ids $i } } else { set ids $cand }
+        if {$stopAt && [llength $ids] > $stopAt} { set ids [lrange $ids 0 [expr {$stopAt - 1}]] }
+    } else {
+        # the residual WHERE decides: read only the columns it mentions
+        set wp {} ; set ws {}
+        foreach c [lsort -unique [astCols $where]] {
+            if {$c eq "_rowid"} continue
+            if {[colType $layout $c] eq "V"} { lappend ws $c } else { lappend wp $c }
+        }
+        set props {} ; set subs {}
+        foreach c $layout { if {[lindex $c 0] in $wp} { lappend props [lindex $c 0] } ; if {[lindex $c 0] in $ws} { lappend subs [lindex $c 0] } }
+        setupCols $layout $props $subs
+        genBegin
+        variable S
+        set S(ids) {} ; set S(stop) $stopAt
+        set err [catch {
+            set S(pred) [compilePred $where pred]
+            scanChunks $mk $props $subs $cand ::mkql::consumeIds
+        } msg opts]
+        set ids $S(ids)
+        genEnd
+        if {$err} { return -options $opts $msg }
+    }
+    if {[llength $order]} {
+        set keys [lindex [lazyKeys $sel $order $layout] 0]
+        set perm {}
+        for {set i 0} {$i < [llength $ids]} {incr i} { lappend perm $i }
+        set partial [expr {[llength $ids] < $n / 8}]
+        for {set k [expr {[llength $keys] - 1}]} {$k >= 0} {incr k -1} {
+            lassign [lindex $keys $k] col desc
+            if {$col eq "_rowid"} {
+                set kc $ids
+            } elseif {$partial} {
+                set kc [::store::column $mk $col $ids]
+            } else {
+                set full [::store::column $mk $col]
+                set kc {}
+                foreach i $ids { lappend kc [lindex $full $i] }
+            }
+            set perm [sortPerm $perm $kc $desc]
+        }
+        set sorted {}
+        foreach i $perm { lappend sorted [lindex $ids $i] }
+        set ids $sorted
+    }
+    return $ids
+}
+proc ::mkql::consumeIds {rows} {
+    variable S
+    set pred $S(pred) ; set stop $S(stop)
+    foreach r $rows {
+        if {![$pred $r]} continue
+        lappend S(ids) [lindex $r end]
+        if {$stop && [llength $S(ids)] >= $stop} { return 1 }
+    }
+    return 0
+}
+
+# ---- the provider ------------------------------------------------------------------------------
+# Build the lazy result.  `props`/`subs`/`baseW` describe the row layout the projection reads.
+proc ::mkql::lazyResult {mk layout props subs baseW sel ids colNames colTypes drill} {
+    variable LZ ; variable lzSeq ; variable gen
+    set h lz[incr lzSeq]
+    setupCols $layout $props $subs
+    genBegin
+    set ns [dict get $gen ns]
+    set err [catch { compileList [lmap_first $sel] proj } msg opts]
+    set gen [dict create ns "" nk 0 ks {}]          ;# detach: the provider owns the namespace now
+    if {$err} { catch {namespace delete $ns} ; return -options $opts $msg }
+    set tag [lindex [split $mk .!] 0]
+    array set LZ [list $h,mk $mk $h,tag $tag $h,gen [::store::generation $tag] $h,ids $ids $h,props $props \
+        $h,subs $subs $h,proj $msg $h,ns $ns $h,order {} $h,frozen {} $h,drill $drill]
+    return [list ::mkql::lzsrc $h]
+}
+proc ::mkql::lmap_first {sel} { set o {} ; foreach s $sel { lappend o [lindex $s 0] } ; return $o }
+
+# rows for result positions first..first+n-1
+proc ::mkql::lzRows {h first n} {
+    variable LZ
+    set total [llength $LZ($h,ids)]
+    set last [expr {min($total, $first + $n) - 1}]
+    if {$last < $first} { return {} }
+    if {[llength $LZ($h,order)]} {
+        set pos [lrange $LZ($h,order) $first $last]
+        set ids {}
+        foreach p $pos { lappend ids [lindex $LZ($h,ids) $p] }
+    } else {
+        set ids [lrange $LZ($h,ids) $first $last]
+    }
+    set raw [::store::fetchAt $LZ($h,mk) $LZ($h,props) $ids]
+    set proj $LZ($h,proj) ; set subs $LZ($h,subs) ; set mk $LZ($h,mk)
+    set out {}
+    foreach r $raw i $ids {
+        foreach s $subs { lappend r [::store::subSize $mk $i $s] }
+        lappend r $i
+        set row [$proj $r]
+        dict for {ci sub} $LZ($h,drill) {
+            set c [lindex $row $ci]
+            lset row $ci "\u25B8 $c row[expr {$c == 1 ? {} : {s}}]"
+        }
+        lappend out $row
+    }
+    return $out
+}
+
+proc ::mkql::lzsrc {h method args} {
+    variable LZ
+    switch -- $method {
+        count { return [llength $LZ($h,ids)] }
+        stale {
+            if {$LZ($h,frozen) ne ""} { return 0 }
+            return [expr {[::store::generation $LZ($h,tag)] != $LZ($h,gen)}]
+        }
+        rows {
+            lassign $args first n
+            if {$LZ($h,frozen) ne ""} {
+                set rows [lindex $LZ($h,frozen) 0]
+                set last [expr {min([llength $rows], $first + $n) - 1}]
+                if {![llength $LZ($h,order)]} { return [lrange $rows $first $last] }
+                set out {}
+                foreach p [lrange $LZ($h,order) $first $last] { lappend out [lindex $rows $p] }
+                return $out
+            }
+            if {[lzsrc $h stale]} { return {} }
+            return [lzRows $h $first $n]
+        }
+        rowid {
+            set p [lindex $args 0]
+            if {[llength $LZ($h,order)]} { set p [lindex $LZ($h,order) $p] }
+            return [lindex $LZ($h,ids) $p]
+        }
+        cell {
+            lassign $args p ci
+            return [lindex [lindex [lzsrc $h rows $p 1] 0] $ci]
+        }
+        put { return }
+        sort {
+            lassign $args ci dir type
+            set n [llength $LZ($h,ids)]
+            set kc {}
+            if {$LZ($h,frozen) ne ""} {
+                foreach r [lindex $LZ($h,frozen) 0] { lappend kc [lindex $r $ci] }
+            } else {
+                if {[lzsrc $h stale]} { error "These results are out of date - run the query again." }
+                set save $LZ($h,order) ; set LZ($h,order) {}
+                for {set f 0} {$f < $n} {incr f 2000} {
+                    foreach r [lzRows $h $f 2000] { lappend kc [lindex $r $ci] }
+                }
+                set LZ($h,order) $save
+            }
+            set perm {}
+            for {set i 0} {$i < $n} {incr i} { lappend perm $i }
+            set LZ($h,order) [sortPerm $perm [expr {$type eq "V" ? [lzNums $kc] : $kc}] [expr {$dir eq "desc"}]]
+        }
+        freeze {
+            # keep the rows as they are NOW (before the data changes): read them all into memory
+            if {$LZ($h,frozen) ne "" || [lzsrc $h stale] || [llength $LZ($h,ids)] > 1000000} return   ;# (beyond that it simply goes out of date)
+            # (in base order: the display order, if the user sorted, is applied on top, as for live rows)
+            set rows {} ; set save $LZ($h,order) ; set LZ($h,order) {}
+            for {set f 0} {$f < [llength $LZ($h,ids)]} {incr f 2000} { lappend rows {*}[lzRows $h $f 2000] }
+            set LZ($h,order) $save
+            set LZ($h,frozen) [list $rows]
+            catch {namespace delete $LZ($h,ns)}
+        }
+        destroy {
+            catch {namespace delete $LZ($h,ns)}
+            foreach k [array names LZ $h,*] { unset LZ($k) }
+        }
+    }
+}
+proc ::mkql::lzNums {kc} {
+    set o {}
+    foreach v $kc { if {[regexp {(\d+) row} $v -> n]} { lappend o $n } else { lappend o $v } }
+    return $o
+}
+# Before the engine changes data, turn every live lazy result of that database into a snapshot.
+proc ::mkql::lzFreezeAll {} {
+    variable LZ
+    foreach k [array names LZ *,gen] {
+        set h [lindex [split $k ,] 0]
+        catch {lzsrc $h freeze}
+    }
+}

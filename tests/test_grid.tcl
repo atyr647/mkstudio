@@ -218,12 +218,75 @@ check store_edit_shown [.gt.k.t set s0 c1] "edited"
 set txt [::grid::tsv .gt.k 0 1]
 check store_copy_all_rows [llength [split $txt \n]] $M
 ::grid::select .gt.k {0}
+# derived-data cache: instant the second time, and never stale
+::grid::loadStore .gt.k $tb.big 0
+set first [ms { ::grid::sortBy .gt.k 2 }]
+::grid::sortBy .gt.k 2 ; set desc1 [list [.gt.k.t set s0 c2] [.gt.k.t set s1 c2]]
+set again [ms { ::grid::sortBy .gt.k 2 }]        ;# ascending again: served from the cache
+::grid::sortBy .gt.k 2                           ;# descending, cached
+check cache_same_order [list [.gt.k.t set s0 c2] [.gt.k.t set s1 c2]] $desc1
+ok cache_hit_is_faster [expr {$again < $first}] "first $first ms, again $again ms"
+set g0 [::store::generation $tb]
+::store::setCell $tb.big 0 score 99999.5
+ok generation_bumps_on_edit [expr {[::store::generation $tb] > $g0}]
+::grid::loadStore .gt.k $tb.big 0
+::grid::sortBy .gt.k 2 ; ::grid::sortBy .gt.k 2
+check cache_not_stale_after_edit [.gt.k.t set s0 c2] 99999.5
+set g1 [::store::generation $tb]
+::store::rollback $tb
+ok generation_bumps_on_rollback [expr {[::store::generation $tb] > $g1}]
+::grid::loadStore .gt.k $tb.big 0
+::grid::sortBy .gt.k 2 ; ::grid::sortBy .gt.k 2
+check cache_not_stale_after_rollback [.gt.k.t set s0 c2] 1008.5
+set ::store::cacheBudget 10 ; ::store::cachePut $tb [list x] 5 a ; ::store::cachePut $tb [list y] 5 b ; ::store::cachePut $tb [list z] 5 c
+check cache_evicts_oldest [list [llength [::store::cacheGet $tb [list x]]] [llength [::store::cacheGet $tb [list z]]]] {0 1}
+set ::store::cacheBudget 4000000 ; ::store::cacheClear
 # keep=1 keeps the scroll position after a reload
 ::grid::scrollTo .gt.k 777
 ::grid::loadStore .gt.k $tb.big 1
 check reload_keeps_position [::grid::top .gt.k] 777
 ::grid::loadStore .gt.k $tb.big 0
 check reload_resets_position [::grid::top .gt.k] 0
+
+# ---- streaming (lazy) query results ---------------------------------------------------------------------
+proc runq {sql tag} { ::engine::execute [lindex [::engine::parseScript $sql] 0 0] $tag }
+::store::rollback $tb
+set r [runq "SELECT id, name, score * 2 AS dbl FROM big ORDER BY score DESC, id" $tb]
+ok lazy_has_provider [dict exists $r provider]
+check lazy_no_rows_held [dict get $r rows] {}
+::grid::create .gt.l -drill {} ; pack .gt.l -fill both -expand 1 ; update
+set lms [ms { ::grid::load .gt.l $r }]
+puts [format "  open a streaming %d-row result: %.0f ms" $M $lms]
+update
+check lazy_count [::grid::count .gt.l] $M
+check lazy_first_row [list [.gt.l.t set s0 c0] [.gt.l.t set s0 c2]] [list 709 2017]
+check lazy_first_by_score [.gt.l.t set s0 c1] "item 709"
+::grid::scrollTo .gt.l 20000 ; update
+set want [lindex [lindex [{*}[dict get $r provider] rows 20000 1] 0] 0]
+check lazy_scrolled_row [.gt.l.t set s0 c0] $want
+ok lazy_no_banner_when_current [expr {![winfo ismapped .gt.l.stale]}]
+::grid::sortBy .gt.l 0 ; update
+check lazy_header_sort [.gt.l.t set s0 c0] 0
+::grid::sortBy .gt.l 0 ; update
+check lazy_header_sort_desc [.gt.l.t set s0 c0] [expr {$M - 1}]
+::grid::selectAll .gt.l
+check lazy_copy_all [llength [split [::grid::tsv .gt.l 0 1] \n]] $M
+# the engine itself changing data freezes the result first: it keeps showing what the query returned
+set before [lindex [lindex [{*}[dict get $r provider] rows 5 1] 0] 1]
+runq "UPDATE big SET name = 'changed' WHERE id < 100" $tb
+::grid::scrollTo .gt.l 0 ; ::grid::scrollTo .gt.l 1 ; update
+check lazy_frozen_by_engine_write [lindex [lindex [{*}[dict get $r provider] rows 5 1] 0] 1] $before
+ok lazy_frozen_not_stale [expr {![{*}[dict get $r provider] stale]}]
+# a change made some other way (the data editor) makes a live result out of date, visibly
+set r2 [runq "SELECT id, name FROM big" $tb]
+ok lazy_second_result [dict exists $r2 provider]
+::grid::load .gt.l $r2 ; update
+::store::setCell $tb.big 0 name "edited elsewhere"
+::grid::checkAll ; update
+ok lazy_banner_when_data_changed [winfo ismapped .gt.l.stale]
+check lazy_stale_reports [{*}[dict get $r2 provider] stale] 1
+::store::rollback $tb
+destroy .gt.l
 
 # ---- empty and tiny results ------------------------------------------------------------------------
 set empty [dict create cols {a b} types {S S} rows {} rowids {} drill {} source "" truncated 0 editable 0]
