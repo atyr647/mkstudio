@@ -14,6 +14,7 @@ jobs:
   # ---------------------------------------------------------------- Linux: test + build every starpack
   linux:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -54,6 +55,7 @@ jobs:
   windows:
     needs: linux
     runs-on: windows-latest
+    timeout-minutes: 20
     defaults:
       run:
         shell: bash
@@ -72,17 +74,23 @@ jobs:
 
       # The Windows tclkit has no console, so each test also writes its output to MKS_TEST_LOG.
       - name: Engine, contract, persistence and UI tests on Windows (real Metakit)
+        timeout-minutes: 10
         run: |
           fail=0
           for t in test_mkql engine_contract persist gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
-            MKS_TEST_LOG="$(cygpath -w "$log")" "$KIT" "tests/$t.tcl" || true
-            echo "== $t"; cat "$log" 2>/dev/null || echo "(no output)"
+            MKS_TEST_LOG="$(cygpath -w "$log")" timeout 300 "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
           done
           exit $fail
 
+      - name: Show test logs
+        if: always()
+        run: |
+          for f in "$RUNNER_TEMP"/*.log; do echo "=== $f"; cat "$f"; done
+
       - name: Launch the Windows starpack
+        timeout-minutes: 5
         run: |
           DB="$RUNNER_TEMP/smoke.mk"
           "$KIT" tests/make_sample.tcl "$(cygpath -w "$DB")"
@@ -104,7 +112,14 @@ jobs:
   # ---------------------------------------------------------------- macOS: run it for real
   macos:
     needs: linux
-    runs-on: macos-13        # Intel: the universal runtime has i386 + x86_64 slices
+    # macos-15-intel runs the universal runtime natively; macos-latest is Apple silicon
+    # and runs its x86_64 slice under Rosetta.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15-intel, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     env:
       REAL_MK: '1'
       KIT: tools/ext/tclkit-8.6.3-macosx-universal
@@ -115,22 +130,32 @@ jobs:
           name: starpacks
           path: dist
 
+      - name: Install Rosetta (Apple silicon only)
+        if: matrix.os == 'macos-latest'
+        run: /usr/sbin/softwareupdate --install-rosetta --agree-to-license || true
+
       - name: Fetch tclkit runtimes
         run: tools/fetch-runtimes.sh
 
       - name: Engine, contract, persistence and UI tests on macOS (real Metakit)
+        timeout-minutes: 10
         run: |
           chmod +x "$KIT"
           fail=0
           for t in test_mkql engine_contract persist gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
-            MKS_TEST_LOG="$log" "$KIT" "tests/$t.tcl" || true
-            echo "== $t"; cat "$log" 2>/dev/null || echo "(no output)"
+            MKS_TEST_LOG="$log" perl -e 'alarm 300; exec @ARGV' "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
           done
           exit $fail
 
+      - name: Show test logs
+        if: always()
+        run: |
+          for f in "$RUNNER_TEMP"/*.log; do echo "=== $f"; cat "$f"; done
+
       - name: Launch the macOS starpack
+        timeout-minutes: 5
         run: |
           chmod +x dist/mkstudio-macos-universal
           DB="$RUNNER_TEMP/smoke.mk"
@@ -146,7 +171,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: macos-screenshot
+          name: macos-screenshot-${{ matrix.os }}
           path: macos-starpack.png
           if-no-files-found: ignore
 
