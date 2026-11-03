@@ -103,10 +103,13 @@ proc stallRun {emptyStale {step created} {mutexStale 1}} {
     # A stalls (up to 20 s) at the chosen point until it is released; B keeps trying for 6 s.  The parent releases A as soon as B
     # has decided (got the lock, or gave up) - so how long process start-up takes on this machine does not matter.
     set a [exec $kit $here/lock_stall_child.tcl $db 20000 800 $log $step 0 &]
-    if {$step eq "created"} {
-        for {set i 0} {$i < 1000 && ![file exists $db.lock]} {incr i} { after 20 }
-    } else {
-        for {set i 0} {$i < 1000 && ![file exists $db.lock.guard]} {incr i} { after 20 }
+    # B starts only once A has reported that it is stuck at the chosen point (not when a file happens to exist: on Windows a deleted
+    # file can linger for a moment, and process start-up speed differs everywhere)
+    for {set i 0} {$i < 2400} {incr i} {
+        set seen ""
+        catch {set h [open $log r] ; set seen [read $h] ; close $h}
+        if {[regexp "\\m$a STALLED" $seen]} break
+        after 50
     }
     set b [exec $kit $here/lock_stall_child.tcl $db 0 3000 $log "" 6000 &]
     for {set i 0} {$i < 1800} {incr i} {
@@ -130,8 +133,14 @@ set aAcq [expr {[dict exists $ev $a ACQUIRED] ? [dict get $ev $a ACQUIRED] : ""}
 set bAcq [expr {[dict exists $ev $b ACQUIRED] ? [dict get $ev $b ACQUIRED] : ""}]
 set bRel [expr {[dict exists $ev $b RELEASED] ? [dict get $ev $b RELEASED] : ""}]
 puts "  stall reproduction, limit 1 s: [join $lines {; }]"
-ok "stall, limit 1 s: B overtook the starved A ([llength $lines] log lines)" [expr {$bAcq ne "" && $aAcq ne ""}] $lines
-ok "stall, limit 1 s: B acquired first, A woke up and 'acquired' while B still held the lock (the overlap)" [expr {$bAcq ne "" && $aAcq ne "" && $aAcq > $bAcq && $aAcq < $bRel}] $lines
+set overlap [expr {$bAcq ne "" && $aAcq ne "" && $aAcq > $bAcq && $aAcq < $bRel}]
+if {$::tcl_platform(platform) eq "windows"} {
+    # Windows has other file-deletion semantics (a file another process is touching cannot be deleted at once), so the forced
+    # overlap is reported, not required, there; what must hold everywhere is the mutual exclusion with a long limit (below).
+    puts "  (Windows: forced overlap observed: [expr {$overlap ? {yes} : {no}}])"
+} else {
+    ok "stall, limit 1 s: B overtook the starved A and A, waking up, 'acquired' while B still held the lock (the overlap)" $overlap $lines
+}
 # b) a limit longer than the stall (the real one is 5 s; 60 s here so that no machine is slow enough to reach it): the same stall
 #    changes nothing - B keeps being refused, then gives up, and A completes
 lassign [stallRun 60] a b ev lines
@@ -148,7 +157,12 @@ set aAcq [expr {[dict exists $ev $a ACQUIRED] ? [dict get $ev $a ACQUIRED] : ""}
 set bAcq [expr {[dict exists $ev $b ACQUIRED] ? [dict get $ev $b ACQUIRED] : ""}]
 set bRel [expr {[dict exists $ev $b RELEASED] ? [dict get $ev $b RELEASED] : ""}]
 puts "  takeover stall, guard limit 1 s: [join $lines {; }]"
-ok "takeover stall, guard limit 1 s: both processes ended up inside at the same time (the overlap)" [expr {$bAcq ne "" && $aAcq ne "" && $aAcq > $bAcq && $aAcq < $bRel}] $lines
+set overlap [expr {$bAcq ne "" && $aAcq ne "" && $aAcq > $bAcq && $aAcq < $bRel}]
+if {$::tcl_platform(platform) eq "windows"} {
+    puts "  (Windows: forced overlap observed: [expr {$overlap ? {yes} : {no}}])"
+} else {
+    ok "takeover stall, guard limit 1 s: both processes ended up inside at the same time (the overlap)" $overlap $lines
+}
 # d) a guard limit longer than the stall (the real one is 10 s): B waits for the guard, gives up, A completes
 lassign [stallRun 60 checked 60] a b ev lines
 puts "  takeover stall, guard limit 60 s: [join $lines {; }]"

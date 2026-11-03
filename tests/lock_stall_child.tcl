@@ -4,7 +4,7 @@
 #   step:  created (default) = the lock file exists but is still empty | checked = holding the takeover guard, the lock has been judged
 #          stale, nothing deleted yet.   stall-max-ms 0 = no stall.
 #   retry-ms: keep trying to get the lock for this long (a process that finds the lock held tries again); then give up (REFUSED)
-# Log lines:  <ms-since-epoch> <pid> ACQUIRED | REFUSED | RELEASED
+# Log lines:  <ms-since-epoch> <pid> STALLED | ACQUIRED | REFUSED | RELEASED
 # (Nothing here depends on how fast processes start: the parent releases the stalled process once the other one has decided.)
 package require Mk4tcl
 set here [file dirname [file normalize [info script]]]
@@ -14,7 +14,10 @@ if {$step eq ""} { set step created }
 if {$retry eq ""} { set retry 0 }
 proc logline {t} { global log ; set h [open $log a] ; puts $h "[clock milliseconds] [pid] $t" ; close $h }
 set ::store::lockHook [list apply {{step stall log name} {
-    if {$name eq $step && $stall > 0} { for {set i 0} {$i < $stall / 20 && ![file exists $log.release]} {incr i} { after 20 } }
+    if {$name eq $step && $stall > 0} {
+        uplevel #0 {logline STALLED}                  ;# tells the parent that this process is now stuck at the chosen point
+        for {set i 0} {$i < $stall / 20 && ![file exists $log.release]} {incr i} { after 20 }
+    }
 }} $step $stall $log]
 set t0 [clock milliseconds]
 while 1 {
