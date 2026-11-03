@@ -18,15 +18,15 @@ proc readf {f} { if {![file exists $f]} { return "(no file)" } ; set h [open $f 
 psrun "run check" "Set-Content -LiteralPath '$wn\\ran.txt' -Value 'ran'"
 puts "  ran.txt: [readf $work/ran.txt]"
 # 2. what does a character in the command text arrive as?
-psrun "command text" "(\[int\[\]\]\[char\[\]\]'café') -join ',' | Set-Content -LiteralPath '$wn\\cmdtext.txt'"
+psrun "command text" "(\[int\[\]\]\[char\[\]\]'caf\u00e9') -join ',' | Set-Content -LiteralPath '$wn\\cmdtext.txt'"
 puts "  cmdtext.txt: [readf $work/cmdtext.txt]   (99,97,102,233 = intact)"
 # 3. in an environment variable
-set ::env(MKS_DIAG) "café"
+set ::env(MKS_DIAG) "caf\u00e9"
 psrun "env variable" "(\$env:MKS_DIAG.ToCharArray() | ForEach-Object { \[int\]\$_ }) -join ',' | Set-Content -LiteralPath '$wn\\env.txt'"
 puts "  env.txt: [readf $work/env.txt]"
 unset ::env(MKS_DIAG)
 # 4. a folder with an accented name made by Tcl: does PowerShell see it, and can it put a file there?
-set d $work/upd\ real\ (1)\ café ; file mkdir $d
+set d $work/upd\ real\ (1)\ caf\u00e9 ; file mkdir $d
 set dn [file nativename $d]
 psrun "folder seen" "Test-Path -LiteralPath '$dn' | Set-Content -LiteralPath '$wn\\seen.txt'"
 puts "  seen.txt: [readf $work/seen.txt]"
