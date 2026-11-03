@@ -42,7 +42,7 @@ jobs:
           docker run --rm -v "$PWD":/src -w /src quay.io/pypa/manylinux_2_28_x86_64 bash -c '
             set -e
             yum install -y tcl autoconf automake libX11-devel libXft-devel fontconfig-devel freetype-devel libXext-devel libXrender-devel libXScrnSaver-devel
-            tools/build-kit.sh linux /src/kit-out'
+            bash tools/build-kit.sh linux /src/kit-out'
           ls -la kit-out
       - name: What the kit needs from the machine it runs on
         run: |
@@ -97,7 +97,7 @@ jobs:
           sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-win32
           sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-win32
           mkdir -p kit-out
-          tools/build-kit.sh windows "$PWD/kit-out"
+          bash tools/build-kit.sh windows "$PWD/kit-out"
           ls -la kit-out
       - name: What the kit needs from Windows
         run: |
