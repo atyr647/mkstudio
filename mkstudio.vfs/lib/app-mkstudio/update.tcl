@@ -88,7 +88,13 @@ proc ::update::download {url file {timeoutMs 180000}} {
     file delete -force $file.part
     switch -- $tr {
         curl {
-            set cmd [list [tool curl] -fsSL --max-time [expr {$timeoutMs / 1000}] -A [userAgent] -H "Accept: application/vnd.github+json" -o $file.part $url]
+            set cmd [list [tool curl] -fsSL --max-time [expr {$timeoutMs / 1000}] -A [userAgent] -H "Accept: application/vnd.github+json"]
+            # GitHub allows 60 anonymous API requests an hour per network address - a shared address (an office, a CI runner)
+            # can be out of them.  MKS_UPDATE_TOKEN (never set by the program itself) sends a token to the API host only.
+            if {[info exists ::env(MKS_UPDATE_TOKEN)] && $::env(MKS_UPDATE_TOKEN) ne "" && [string match "https://api.github.com/*" $url]} {
+                lappend cmd -H "Authorization: Bearer $::env(MKS_UPDATE_TOKEN)"
+            }
+            lappend cmd -o $file.part $url
         }
         wget {
             set cmd [list [tool wget] -q -T 60 -U [userAgent] -O $file.part $url]
@@ -291,7 +297,14 @@ proc ::update::check {{current ""} {includePre ""}} {
     if {$includePre eq ""} { set includePre [::version::isPrerelease $current] }
     set dir [scratch]
     set f [file join $dir releases.json]
-    download [apiUrl] $f 60000
+    if {[catch {download [apiUrl] $f 60000} err]} {
+        if {[string match "*403*" $err]} {
+            error "GitHub refused the request - most likely too many update checks from this network address in the last hour. Try again later, or look at the releases page."
+        } elseif {[string match "*404*" $err]} {
+            error "GitHub has no release list for this program (error 404)."
+        }
+        error $err
+    }
     set rel [jsonParse [readFile $f]]
     file delete -force $dir
     return [newest $rel $current $includePre]

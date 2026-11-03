@@ -265,6 +265,8 @@ jobs:
           cat "$RUNNER_TEMP/st.txt"; grep -q "^ok $v mk4tcl yes" "$RUNNER_TEMP/st.txt"
 
       - name: Live update check - the real GitHub release feed, real download, real checksum, real starpack
+        env:
+          MKS_UPDATE_TOKEN: ${{ github.token }}
         run: |
           for try in 1 2 3; do
             REAL_MK=1 tools/ext/tclkit-8.6.16-linux-x86_64 tests/run.tcl tests/test_update_live.tcl && break
@@ -329,6 +331,8 @@ jobs:
 
       - name: Live update check - the real GitHub release feed, real download, real checksum, real starpack
         timeout-minutes: 12
+        env:
+          MKS_UPDATE_TOKEN: ${{ github.token }}
         run: |
           log="$RUNNER_TEMP/live.log"
           for try in 1 2 3; do
@@ -475,6 +479,8 @@ jobs:
 
       - name: Live update check - the real GitHub release feed, real download, real checksum, real starpack
         timeout-minutes: 12
+        env:
+          MKS_UPDATE_TOKEN: ${{ github.token }}
         run: |
           for try in 1 2 3; do
             perl -e 'alarm 360; exec @ARGV' "$KIT" tests/run.tcl tests/test_update_live.tcl && break
