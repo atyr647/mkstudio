@@ -53,6 +53,8 @@ linux)
     ./kitcreator "$TCL_VERSION" --enable-64bit || fail=1
     ;;
 windows)
+    [ -n "${TCLKIT:-}" ] || { echo "TCLKIT must name a Tclkit that runs on this machine (it fills the Windows kit's virtual file system)" >&2; exit 1; }
+    export TCLKIT
     # the win32 thread model needs no libwinpthread DLL; libgcc/libstdc++ are linked in so the .exe stands alone
     export AR=x86_64-w64-mingw32-ar CC=x86_64-w64-mingw32-gcc CXX=x86_64-w64-mingw32-g++
     export RANLIB=x86_64-w64-mingw32-ranlib RC=x86_64-w64-mingw32-windres STRIP=x86_64-w64-mingw32-strip

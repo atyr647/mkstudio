@@ -91,6 +91,7 @@ jobs:
             set -e
             yum install -y tcl autoconf automake libX11-devel libXft-devel fontconfig-devel freetype-devel libXext-devel libXrender-devel libXScrnSaver-devel
             bash tools/build-kit.sh linux /src/kit-out'
+          sudo chown -R "$(id -u):$(id -g)" kit-out     # the container wrote as root
           ls -la kit-out
       - name: What the kit needs from the machine it runs on
         run: |
@@ -145,6 +146,10 @@ jobs:
           sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-win32
           sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-win32
           mkdir -p kit-out
+          # cross-compiling: a Tclkit that runs HERE writes the Metakit payload into the Windows kit
+          tools/fetch-runtimes.sh linux
+          export TCLKIT="$PWD/tools/ext/tclkit-8.6.3-linux-x86_64"
+          echo 'exit 0' | "$TCLKIT" && echo "native tclkit works: $TCLKIT"
           bash tools/build-kit.sh windows "$PWD/kit-out"
           ls -la kit-out
       - name: What the kit needs from Windows
