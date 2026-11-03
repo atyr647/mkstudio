@@ -12,7 +12,7 @@ included) that you can copy anywhere and run.
 - **Edit Rows** - spreadsheet-style editing with type validation, paging for huge views, **undo / redo**
   (edits, added rows, deleted rows including their subview contents), double-click a `> N rows` cell to open a subview
 - **Bytes columns** - size and hex preview in the grid; a hex viewer with export, replace-from-file and clear
-- **Designer** - add, rename, retype, drop columns and subviews (a renamed column keeps its position)
+- **Add Column** - one click from the data editor, or in the **Designer** with rename, retype and drop (a renamed column keeps its position)
 - **Query windows** - syntax highlighting, completion, Find, multiple result tabs, cancel, error underlining
 - **Commit / Roll Back** - files are opened `-nocommit`: nothing reaches disk until you commit
 - **Safety** - refuses files that aren't Metakit databases; read-only databases disable every write control
