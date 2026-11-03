@@ -28,3 +28,4 @@ get tclkit-8.6.3-linux-x86_64        tclkit-8.6.3-rhel5-x86_64          36b5cb68
 get tclkit-8.5.17-linux-x86_64       tclkit-8.5.17-rhel5-x86_64         76a197fe41359daaf4f90a2001f46675b3667e26
 get tclkit-8.6.3-win32-x86_64.exe    tclkit-8.6.3-win32-x86_64.exe      403c507437d0b10035c7839f22f5bb806ec1f491
 get tclkit-8.6.3-macosx-universal    tclkit-8.6.3-macosx10.5-ix86+x86_64 1b4a7ae47ebab6ea9e0e16af4d8714c8b4aa0ce2
+get tclkit-8.5.17-macosx-universal   tclkit-8.5.17-macosx10.5-ix86+x86_64 2a19c5c86561c1415ec4a4a70483de8608fb48d9

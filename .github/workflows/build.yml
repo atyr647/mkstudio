@@ -122,7 +122,9 @@ jobs:
     timeout-minutes: 20
     env:
       REAL_MK: '1'
-      KIT: tools/ext/tclkit-8.6.3-macosx-universal
+      # Tk 8.6.3 crashes on current macOS (setCanCycle: unrecognized selector), so the Mac
+      # runtime under test is the 8.5.17 kit, which this app also supports.
+      KIT: tools/ext/tclkit-8.5.17-macosx-universal
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -154,13 +156,20 @@ jobs:
         run: |
           for f in "$RUNNER_TEMP"/*.log; do echo "=== $f"; cat "$f"; done
 
+      - name: Wrap the macOS starpack on this machine with the tested runtime
+        run: |
+          cp "$KIT" "$RUNNER_TEMP/runtime" && chmod +x "$RUNNER_TEMP/runtime"
+          mkdir -p dist
+          "$KIT" tools/wrap.tcl "$RUNNER_TEMP/runtime" mkstudio.vfs dist/mkstudio-macos-tk85-universal
+          chmod +x dist/mkstudio-macos-tk85-universal
+          "$KIT" tests/verify_payload.tcl dist/mkstudio-macos-tk85-universal
+
       - name: Launch the macOS starpack
         timeout-minutes: 5
         run: |
-          chmod +x dist/mkstudio-macos-universal
           DB="$RUNNER_TEMP/smoke.mk"
           "$KIT" tests/make_sample.tcl "$DB"
-          ./dist/mkstudio-macos-universal "$DB" &
+          ./dist/mkstudio-macos-tk85-universal "$DB" &
           PID=$!
           sleep 12
           if ! kill -0 $PID 2>/dev/null; then echo "starpack exited early"; exit 1; fi
@@ -171,8 +180,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: macos-screenshot-${{ matrix.os }}
-          path: macos-starpack.png
+          name: macos-${{ matrix.os }}
+          path: |
+            macos-starpack.png
+            dist/mkstudio-macos-tk85-universal
           if-no-files-found: ignore
 
   release:
