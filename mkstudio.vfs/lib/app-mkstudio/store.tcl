@@ -459,8 +459,18 @@ proc ::store::openFile {path args} {
         if {$holder ne ""} { set lockedBy($tag) $holder }
     } elseif {$lf ne ""} {
         set lockOwned($tag) [list $lf $mine]
+    } else {
+        # opened for writing but no lock file could be made: the folder does not let this user create files, so there is also no
+        # commit record, no backup and no checksum - saving works, but without any of the protection
+        variable unprotected ; set unprotected($tag) 1
     }
     return $tag
+}
+namespace eval ::store { variable unprotected ; array set unprotected {} }
+proc ::store::unprotectedNote {tag} {
+    variable unprotected
+    if {![info exists unprotected($tag)]} { return "" }
+    return "The folder of this database does not allow new files, so MK Studio cannot lock it or keep a backup: saving works, but without protection against a crash, a power cut or a second program."
 }
 
 proc ::store::hasMetakitSignature {path} {
@@ -485,7 +495,7 @@ proc ::store::closeFile {tag} {
     if {$i >= 0} { set tags [lreplace $tags $i $i] }
     unset -nocomplain file($tag) ro($tag) dirty($tag)
     cacheClear $tag
-    unset -nocomplain ::store::gen($tag) ::store::repaired($tag) ::store::backedUp($tag) ::store::integrity($tag)
+    unset -nocomplain ::store::gen($tag) ::store::repaired($tag) ::store::backedUp($tag) ::store::integrity($tag) ::store::unprotected($tag)
 }
 
 # ---- interrupted commits and power loss -------------------------------------------------------------------------

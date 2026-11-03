@@ -654,7 +654,9 @@ proc ::app::openOne {path} {
     ::crash::crumb "database opened[expr {[::store::readonly $tag] ? { (read-only)} : {}}]"
     afterDbChange
     ::explorer::expandDb $tag
-    if {[::store::repairedNote $tag] ne ""} {
+    if {[::store::unprotectedNote $tag] ne ""} {
+        setStatus "Opened '$tag'. [::store::unprotectedNote $tag]" warn
+    } elseif {[::store::repairedNote $tag] ne ""} {
         # the program or the computer stopped in the middle of a commit last time; the database was put back as it was
         setStatus "Opened '$tag'. [::store::repairedNote $tag]" warn
     } else {

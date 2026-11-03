@@ -266,6 +266,22 @@ check break_lock_returns_what_it_removed [store::breakLock $f] "424242 some-othe
 check break_lock_frees_it [dict get [store::lockInfo $f] state] free
 set t [store::openFile $f] ; store::closeFile $t
 
+# a database whose folder will not take new files can be written but has no lock, record or backup: the user is told
+if {$::tcl_platform(platform) ne "windows" && $::tcl_platform(user) ne "root"} {
+    set dir [tmp dur_rofolder] ; file delete -force $dir ; file mkdir $dir
+    set t [mkdb $dir/x.mk 3] ; store::closeFile $t
+    file attributes $dir -permissions 0555
+    set t [store::openFile $dir/x.mk]
+    ok unprotected_open_is_flagged [expr {[store::unprotectedNote $t] ne ""}]
+    ok unprotected_note_says_why [string match "*does not allow new files*" [store::unprotectedNote $t]]
+    store::closeFile $t
+    file attributes $dir -permissions 0755
+    set t [store::openFile $dir/x.mk]
+    check protected_open_has_no_note [store::unprotectedNote $t] ""
+    store::closeFile $t
+    file delete -force $dir
+}
+
 # ---- found by the code review: a damaged file's good backup survives, and restoring never clobbers an earlier .damaged ------
 set f [tmp dur_bak2.mk] ; set t [mkdb $f 30] ; store::closeFile $t
 set t [store::openFile $f] ; store::setCell $t.items 1 label "session one" ; store::commit $t ; store::closeFile $t
