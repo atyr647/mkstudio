@@ -696,11 +696,7 @@ proc ::mkql::ev {ast ctx {grp NOGROUP}} {
         str { return [lindex $ast 1] }
         col { return [dict get $ctx [lindex $ast 1]] }
         alias { return [dict get $ctx " [lindex $ast 1]"] }
-        neg {
-            set v [ev [lindex $ast 1] $ctx $grp]
-            if {![isnum $v]} { fail "Cannot negate non-numeric value '$v'" }
-            return [fmtnum [expr {-[tonum $v]}]]
-        }
+        neg { return [negv [ev [lindex $ast 1] $ctx $grp]] }
         not { return [expr {![truthy [ev [lindex $ast 1] $ctx $grp]]}] }
         and {
             if {![truthy [ev [lindex $ast 1] $ctx $grp]]} { return 0 }
@@ -710,59 +706,17 @@ proc ::mkql::ev {ast ctx {grp NOGROUP}} {
             if {[truthy [ev [lindex $ast 1] $ctx $grp]]} { return 1 }
             return [truthy [ev [lindex $ast 2] $ctx $grp]]
         }
-        cmp {
-            set c [compare [ev [lindex $ast 2] $ctx $grp] [ev [lindex $ast 3] $ctx $grp]]
-            switch -- [lindex $ast 1] {
-                = { return [expr {$c == 0}] }
-                <> { return [expr {$c != 0}] }
-                < { return [expr {$c < 0}] }
-                <= { return [expr {$c <= 0}] }
-                > { return [expr {$c > 0}] }
-                >= { return [expr {$c >= 0}] }
-            }
-        }
-        bin {
-            set a [ev [lindex $ast 2] $ctx $grp] ; set b [ev [lindex $ast 3] $ctx $grp]
-            set op [lindex $ast 1]
-            if {$op eq "||"} { return $a$b }
-            if {![isnum $a] || ![isnum $b]} {
-                fail "Operator '$op' needs numbers, but got '[string range $a 0 30]' and '[string range $b 0 30]'"
-            }
-            set x [tonum $a] ; set y [tonum $b]
-            switch -- $op {
-                + { return [fmtnum [expr {$x + $y}]] }
-                - { return [fmtnum [expr {$x - $y}]] }
-                * { return [fmtnum [expr {$x * $y}]] }
-                / {
-                    if {$y == 0} { fail "Divide by zero" }
-                    if {[string is integer -strict $x] && [string is integer -strict $y] && $x % $y == 0} {
-                        return [expr {$x / $y}]
-                    }
-                    return [fmtnum [expr {double($x) / $y}]]
-                }
-                % {
-                    if {$y == 0} { fail "Divide by zero" }
-                    return [fmtnum [expr {$x % $y}]]
-                }
-            }
-        }
-        like {
-            set v [ev [lindex $ast 1] $ctx $grp] ; set p [ev [lindex $ast 2] $ctx $grp]
-            set m [regexp -nocase -- [likeToRegexp $p] $v]
-            return [expr {$m != [lindex $ast 3]}]
-        }
+        cmp { return [cmpv [lindex $ast 1] [ev [lindex $ast 2] $ctx $grp] [ev [lindex $ast 3] $ctx $grp]] }
+        bin { return [binv [lindex $ast 1] [ev [lindex $ast 2] $ctx $grp] [ev [lindex $ast 3] $ctx $grp]] }
+        like { return [likev [ev [lindex $ast 1] $ctx $grp] [ev [lindex $ast 2] $ctx $grp] [lindex $ast 3]] }
         in {
             set v [ev [lindex $ast 1] $ctx $grp]
-            set found 0
-            foreach it [lindex $ast 2] {
-                if {[compare $v [ev $it $ctx $grp]] == 0} { set found 1 ; break }
-            }
-            return [expr {$found != [lindex $ast 3]}]
+            set items {}
+            foreach it [lindex $ast 2] { lappend items [ev $it $ctx $grp] }
+            return [inv $v $items [lindex $ast 3]]
         }
         between {
-            set v [ev [lindex $ast 1] $ctx $grp]
-            set ok [expr {[compare $v [ev [lindex $ast 2] $ctx $grp]] >= 0 && [compare $v [ev [lindex $ast 3] $ctx $grp]] <= 0}]
-            return [expr {$ok != [lindex $ast 4]}]
+            return [betweenv [ev [lindex $ast 1] $ctx $grp] [ev [lindex $ast 2] $ctx $grp] [ev [lindex $ast 3] $ctx $grp] [lindex $ast 4]]
         }
         isnull {
             set v [ev [lindex $ast 1] $ctx $grp]
@@ -777,6 +731,59 @@ proc ::mkql::ev {ast ctx {grp NOGROUP}} {
     error "ev: unknown node [lindex $ast 0]"
 }
 
+# ---- value-level operators, shared by the interpreter (ev) and the compiled path (mkplan.tcl) ----
+proc ::mkql::negv {v} {
+    if {![isnum $v]} { fail "Cannot negate non-numeric value '$v'" }
+    return [fmtnum [expr {-[tonum $v]}]]
+}
+proc ::mkql::cmpv {op a b} {
+    set c [compare $a $b]
+    switch -- $op {
+        = { return [expr {$c == 0}] }
+        <> { return [expr {$c != 0}] }
+        < { return [expr {$c < 0}] }
+        <= { return [expr {$c <= 0}] }
+        > { return [expr {$c > 0}] }
+        >= { return [expr {$c >= 0}] }
+    }
+}
+proc ::mkql::binv {op a b} {
+    if {$op eq "||"} { return $a$b }
+    if {![isnum $a] || ![isnum $b]} {
+        fail "Operator '$op' needs numbers, but got '[string range $a 0 30]' and '[string range $b 0 30]'"
+    }
+    set x [tonum $a] ; set y [tonum $b]
+    switch -- $op {
+        + { return [fmtnum [expr {$x + $y}]] }
+        - { return [fmtnum [expr {$x - $y}]] }
+        * { return [fmtnum [expr {$x * $y}]] }
+        / {
+            if {$y == 0} { fail "Divide by zero" }
+            if {[string is integer -strict $x] && [string is integer -strict $y] && $x % $y == 0} {
+                return [expr {$x / $y}]
+            }
+            return [fmtnum [expr {double($x) / $y}]]
+        }
+        % {
+            if {$y == 0} { fail "Divide by zero" }
+            return [fmtnum [expr {$x % $y}]]
+        }
+    }
+}
+proc ::mkql::likev {v p neg} {
+    set m [regexp -nocase -- [likeToRegexp $p] $v]
+    return [expr {$m != $neg}]
+}
+proc ::mkql::inv {v items neg} {
+    set found 0
+    foreach it $items { if {[compare $v $it] == 0} { set found 1 ; break } }
+    return [expr {$found != $neg}]
+}
+proc ::mkql::betweenv {v lo hi neg} {
+    set ok [expr {[compare $v $lo] >= 0 && [compare $v $hi] <= 0}]
+    return [expr {$ok != $neg}]
+}
+
 proc ::mkql::_need {name n lo hi} {
     if {$n < $lo || $n > $hi} {
         fail "$name() takes [expr {$lo == $hi ? $lo : "$lo to $hi"}] argument(s), got $n"
@@ -785,6 +792,9 @@ proc ::mkql::_need {name n lo hi} {
 proc ::mkql::evFn {name args ctx grp} {
     set vals {}
     foreach a $args { lappend vals [ev $a $ctx $grp] }
+    return [fnv $name $vals]
+}
+proc ::mkql::fnv {name vals} {
     set n [llength $vals]
     switch -- $name {
         UPPER  { _need $name $n 1 1 ; return [string toupper [lindex $vals 0]] }
@@ -837,6 +847,10 @@ proc ::mkql::evAgg {ast grp} {
         set v [ev $arg $c]
         if {$v ne ""} { lappend vals $v }
     }
+    return [aggVals $fn $distinct $vals]
+}
+# the aggregate of a list of non-empty values
+proc ::mkql::aggVals {fn distinct vals} {
     if {$distinct} {
         set seen {} ; set u {}
         foreach v $vals { if {![dict exists $seen $v]} { dict set seen $v 1 ; lappend u $v } }
@@ -920,39 +934,6 @@ proc ::mkql::resolvePath {path defaultDb} {
 
 proc ::mkql::checkWritable {tag} {
     if {[::store::readonly $tag]} { fail "Database '$tag' is open read-only." }
-}
-
-# ============================================================================
-#  Row scanning
-# ============================================================================
-# Scan all rows of a view, evaluating `where` for each; returns a list of ctx
-# dicts (including _rowid).  `props` = scalar columns to load, `subs` = subview
-# columns to expose as row counts.  stopAt: stop once that many rows matched
-# (0 = never).
-proc ::mkql::scanRows {mk props subs where stopAt} {
-    variable progressHook ; variable cancel
-    set cancel 0
-    set n [::store::size $mk]
-    set out {} ; set found 0
-    set chunk 500
-    for {set first 0} {$first < $n} {incr first $chunk} {
-        set rows [::store::rows $mk $props $first $chunk]
-        set i $first
-        foreach r $rows {
-            set ctx [dict create _rowid $i]
-            foreach p $props v $r { dict set ctx $p $v }
-            foreach s $subs { dict set ctx $s [::store::subSize $mk $i $s] }
-            if {$where eq "" || [truthy [ev $where $ctx]]} {
-                lappend out $ctx
-                incr found
-                if {$stopAt && $found >= $stopAt} { return $out }
-            }
-            incr i
-        }
-        if {$progressHook ne ""} { uplevel #0 $progressHook }
-        if {$cancel} { fail "Query cancelled" }
-    }
-    return $out
 }
 
 proc ::mkql::usedLists {layout} {
@@ -1087,76 +1068,18 @@ proc ::mkql::execSelect {q defaultDb} {
     if {!$needAll} {
         set stopAt [expr {$limit ne "" ? $offset + $limit : $maxRows + 1}]
     }
-    set ctxs [scanRows $mk $props $subs $where $stopAt]
 
-    # build output records: {outRow ctx}
-    set recs {}
-    if {$isAgg} {
-        set groups [dict create]
-        if {[llength $groupBy]} {
-            foreach c $ctxs {
-                set key {}
-                foreach g $groupBy { lappend key [ev $g $c] }
-                dict lappend groups $key $c
-            }
-        } else {
-            dict set groups {} $ctxs
-        }
-        dict for {key grp} $groups {
-            set first [expr {[llength $grp] ? [lindex $grp 0] : [dict create _rowid -1]}]
-            if {[llength $grp] == 0} {
-                # aggregates over an empty set: plain columns have no value
-                foreach p $props { dict set first $p "" }
-                foreach p $subs { dict set first $p 0 }
-            }
-            if {$having ne "" && ![truthy [ev $having $first $grp]]} continue
-            set out {}
-            foreach s $sel {
-                lappend out [ev [lindex $s 0] $first $grp]
-            }
-            set c2 $first
-            set i 0
-            foreach s $sel { dict set c2 " [string tolower [lindex $s 1]]" [lindex $out $i] ; incr i }
-            lappend recs [list $out $c2 $grp]
-        }
-    } else {
-        foreach c $ctxs {
-            set out {}
-            foreach s $sel { lappend out [ev [lindex $s 0] $c] }
-            if {[llength $order]} {
-                set i 0
-                foreach s $sel { dict set c " [string tolower [lindex $s 1]]" [lindex $out $i] ; incr i }
-            }
-            lappend recs [list $out $c {}]
-        }
-    }
-
-    if {[llength $order]} {
-        # Stable multi-key sort: sort by the LAST key first, then each earlier one.
-        # Keys are typed up front so Tcl's native lsort does the work (a Tcl
-        # comparator per pair is ~100x slower on large results).
-        set n [llength $recs]
-        set perm {}
-        for {set i 0} {$i < $n} {incr i} { lappend perm $i }
-        for {set k [expr {[llength $order] - 1}]} {$k >= 0} {incr k -1} {
-            set o [lindex $order $k]
-            set e [lindex $o 0]
-            set kc {}
-            foreach r $recs {
-                lassign $r out c grp
-                if {[lindex $e 0] eq "outcol"} {
-                    lappend kc [lindex $out [lindex $e 1]]
-                } else {
-                    lappend kc [ev $e $c [expr {$isAgg ? $grp : "NOGROUP"}]]
-                }
-            }
-            set perm [sortPerm $perm $kc [expr {[lindex $o 1] eq "desc"}]]
-            if {$::mkql::progressHook ne ""} { uplevel #0 $::mkql::progressHook }
-        }
-        set recs2 {}
-        foreach i $perm { lappend recs2 [lindex $recs $i] }
-        set recs $recs2
-    }
+    # fast path (mkplan.tcl): pushdown, compiled expressions, streaming aggregates
+    set baseW [setupCols $layout $props $subs]
+    lassign [planWhere $mk $layout $where] cand skip
+    genBegin
+    set err [catch {
+        set recs [runSelect [dict create mk $mk layout $layout props $props subs $subs baseW $baseW sel $sel \
+            where $where groupBy $groupBy having $having order $order isAgg $isAgg distinct $distinct \
+            limit $limit offset $offset stopAt $stopAt cand $cand skip $skip]]
+    } msg opts]
+    genEnd
+    if {$err} { return -options $opts $msg }
 
     if {$distinct} {
         set seen [dict create] ; set recs2 {}
@@ -1195,7 +1118,7 @@ proc ::mkql::execSelect {q defaultDb} {
             }
         }
         lappend rows $out
-        if {$plain} { lappend rowids [dict get [lindex $r 1] _rowid] }
+        if {$plain} { lappend rowids [lindex $r 2] }
     }
     # tag derived numeric columns so the grid can right-align them
     set ci 0
@@ -1346,23 +1269,34 @@ proc ::mkql::execUpdate {st defaultDb} {
     set bwhere ""
     if {$where ne ""} { set bwhere [bindAst $where] }
     lassign [usedLists $layout] props subs
-    set ctxs [scanRows $mk $props $subs $bwhere 0]
+    setupCols $layout $props $subs
+    set rows [matchRows $mk $layout $props $subs $bwhere 0]
     set n 0 ; set cancel 0
-    foreach c $ctxs {
-        tick $n "updated rows"
-        set i [dict get $c _rowid]
-        # evaluate everything first, then write, so SET a=b, b=a behaves
-        set newvals {}
-        foreach s $bsets {
-            lassign $s col type e
-            lappend newvals [coerce $col $type [ev $e $c]]
+    set sp ""
+    genBegin
+    set err [catch {
+        if {[llength $bsets]} {
+            set asts {} ; foreach s $bsets { lappend asts [lindex $s 2] }
+            set sp [compileList $asts setvals]
         }
-        # skip writes that change nothing: in Metakit a string write shifts the rest of the column
-        foreach s $bsets v $newvals {
-            if {[::store::cell $mk $i [lindex $s 0]] ne $v} { ::store::setCell $mk $i [lindex $s 0] $v }
+        foreach r $rows {
+            tick $n "updated rows"
+            set i [lindex $r end]
+            # evaluate everything first, then write, so SET a=b, b=a behaves
+            set newvals {}
+            foreach s $bsets v [$sp $r] {
+                lassign $s col type e
+                lappend newvals [coerce $col $type $v]
+            }
+            # skip writes that change nothing: in Metakit a string write shifts the rest of the column
+            foreach s $bsets v $newvals {
+                if {[::store::cell $mk $i [lindex $s 0]] ne $v} { ::store::setCell $mk $i [lindex $s 0] $v }
+            }
+            incr n
         }
-        incr n
-    }
+    } msg opts]
+    genEnd
+    if {$err} { return -options $opts $msg }
     return [msg "($n row[expr {$n == 1 ? {} : {s}}] updated in $label)" $n]
 }
 
@@ -1373,10 +1307,7 @@ proc ::mkql::execDelete {st defaultDb} {
     bindSetup $layout $label
     set bwhere ""
     if {$where ne ""} { set bwhere [bindAst $where] }
-    lassign [usedLists $layout] props subs
-    set ctxs [scanRows $mk $props $subs $bwhere 0]
-    set idx {}
-    foreach c $ctxs { lappend idx [dict get $c _rowid] }
+    set idx [matchIds $mk $layout $bwhere]
     if {[llength $idx]} { ::store::deleteRows $mk $idx }
     set n [llength $idx]
     return [msg "($n row[expr {$n == 1 ? {} : {s}}] deleted from $label)" $n]
@@ -1528,3 +1459,6 @@ proc ::mkql::run {text {defaultDb ""}} {
     foreach p $parsed { set last [execStatement [lindex $p 0] $defaultDb] }
     return $last
 }
+
+# the fast execution path (pushdown, compiled expressions, streaming aggregates)
+source [file join [file dirname [info script]] mkplan.tcl]

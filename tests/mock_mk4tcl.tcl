@@ -196,7 +196,7 @@ proc ::mkmock::cmd_row {cmd path args} {
                 set t [_type $layout $k]
                 if {$t eq ""} { error "unknown property: $k" }
                 if {$t eq "V"} { error "cannot set subview property directly" }
-                if {($t eq "I" || $t eq "L") && ![string is integer -strict $v]} { error "expected integer but got \"$v\"" }
+                if {(($t eq "I" && ![string is integer -strict $v]) || ($t eq "L" && ![string is wideinteger -strict $v]))} { error "expected integer but got \"$v\"" }
                 if {($t eq "F" || $t eq "D") && ![string is double -strict $v]} { error "expected floating-point number but got \"$v\"" }
                 dict set r $k $v
             }
@@ -217,7 +217,8 @@ proc ::mkmock::cmd_row {cmd path args} {
         }
         delete {
             lassign [_resolve $path] id idx
-            dict set vo($id) rows [lreplace [dict get $vo($id) rows] $idx $idx]
+            set count [expr {[llength $args] ? [lindex $args 0] : 1}]
+            dict set vo($id) rows [lreplace [dict get $vo($id) rows] $idx [expr {$idx + $count - 1}]]
             return
         }
     }
@@ -253,7 +254,7 @@ proc ::mkmock::cmd_set {cursor args} {
     foreach {k v} $args {
         set t [_type $layout $k]
         if {$t eq ""} { error "no such property: $k" }
-        if {($t eq "I" || $t eq "L") && ![string is integer -strict $v]} { error "expected integer but got \"$v\"" }
+        if {(($t eq "I" && ![string is integer -strict $v]) || ($t eq "L" && ![string is wideinteger -strict $v]))} { error "expected integer but got \"$v\"" }
         if {($t eq "F" || $t eq "D") && ![string is double -strict $v]} { error "expected floating-point number but got \"$v\"" }
         dict set r $k $v
     }
@@ -261,10 +262,68 @@ proc ::mkmock::cmd_set {cursor args} {
     dict set vo($id) rows $rows
     return
 }
+# mk::select <view> ?-exact p v? ?-min p v? ?-max p v? ?-sort p? ?-rsort p? ...
+# Like real Mk4tcl: the criteria are ANDed, -min/-max are inclusive and typed by the property,
+# bad numbers are errors, and -sort/-rsort are NOT stable (ties come out in a deliberately
+# scrambled order here, so code that relies on stability gets caught).
+proc ::mkmock::cmd_select {path args} {
+    variable vo
+    lassign [_resolve $path] id idx
+    set layout [dict get $vo($id) layout]
+    set rows [dict get $vo($id) rows]
+    set crit {} ; set sorts {}
+    for {set i 0} {$i < [llength $args]} {incr i} {
+        set a [lindex $args $i]
+        switch -- $a {
+            -exact - -min - -max {
+                set p [lindex $args [incr i]] ; set v [lindex $args [incr i]]
+                set t [_type $layout $p]
+                if {$t eq ""} { error "no such property: $p" }
+                if {(($t eq "I" && ![string is integer -strict $v]) || ($t eq "L" && ![string is wideinteger -strict $v]))} { error "expected integer but got \"$v\"" }
+                if {($t eq "F" || $t eq "D") && ![string is double -strict $v]} { error "expected floating-point number but got \"$v\"" }
+                lappend crit [list $a $p $v $t]
+            }
+            -sort - -rsort { lappend sorts [list $a [lindex $args [incr i]]] }
+            default { error "unsupported mk::select option $a" }
+        }
+    }
+    set out {}
+    set n 0
+    foreach r $rows {
+        set ok 1
+        foreach c $crit {
+            lassign $c op p v t
+            set x [dict get $r $p]
+            switch -- $op {
+                -exact { set ok [expr {$t in {I L F D} ? $x == $v : $x eq $v}] }
+                -min   { set ok [expr {$t in {I L F D} ? $x >= $v : [string compare $x $v] >= 0}] }
+                -max   { set ok [expr {$t in {I L F D} ? $x <= $v : [string compare $x $v] <= 0}] }
+            }
+            if {!$ok} break
+        }
+        if {$ok} { lappend out $n }
+        incr n
+    }
+    if {[llength $sorts]} {
+        set out [lreverse $out]          ;# scramble ties
+        foreach s [lreverse $sorts] {
+            lassign $s dir p
+            set t [_type $layout $p]
+            set keys {}
+            foreach i $out { lappend keys [dict get [lindex $rows $i] $p] }
+            set mode [expr {$t in {I L} ? "-integer" : $t in {F D} ? "-real" : "-ascii"}]
+            set order [expr {$dir eq "-rsort" ? "-decreasing" : "-increasing"}]
+            set o2 {}
+            foreach j [lsort $mode $order -indices $keys] { lappend o2 [lindex $out $j] }
+            set out $o2
+        }
+    }
+    return $out
+}
 # public mk:: commands are thin wrappers so the implementation can freely use
 # Tcl's own set/file/etc. inside its namespace
 namespace eval ::mk {}
-foreach c {file view row get set} {
+foreach c {file view row get set select} {
     proc ::mk::$c {args} "::mkmock::cmd_$c {*}\$args"
 }
 package provide Mk4tcl 2.4.9.7

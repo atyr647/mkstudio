@@ -311,6 +311,67 @@ proc ::store::rows {path props first count} {
     return $out
 }
 
+# Rows `first`..`first+count-1`, each as a list of the `props` values (same order).
+# This is the hot loop of every scan, so it is written for speed, not elegance.
+proc ::store::fetch {path props first count} {
+    set n [mk::view size $path]
+    set last [expr {min($n, $first + $count) - 1}]
+    set out {}
+    switch -- [llength $props] {
+        0 { for {set i $first} {$i <= $last} {incr i} { lappend out {} } }
+        1 {
+            set p [lindex $props 0]
+            for {set i $first} {$i <= $last} {incr i} { lappend out [list [mk::get $path!$i $p]] }
+        }
+        default {
+            for {set i $first} {$i <= $last} {incr i} { lappend out [mk::get $path!$i {*}$props] }
+        }
+    }
+    return $out
+}
+
+# The same for an explicit list of row indices.
+proc ::store::fetchAt {path props indices} {
+    set out {}
+    switch -- [llength $props] {
+        0 { foreach i $indices { lappend out {} } }
+        1 {
+            set p [lindex $props 0]
+            foreach i $indices { lappend out [list [mk::get $path!$i $p]] }
+        }
+        default {
+            foreach i $indices { lappend out [mk::get $path!$i {*}$props] }
+        }
+    }
+    return $out
+}
+
+# One column as a flat list, for all rows or just the given indices.
+proc ::store::column {path prop {indices all}} {
+    set out {}
+    if {$indices eq "all"} {
+        set n [mk::view size $path]
+        for {set i 0} {$i < $n} {incr i} { lappend out [mk::get $path!$i $prop] }
+    } else {
+        foreach i $indices { lappend out [mk::get $path!$i $prop] }
+    }
+    return $out
+}
+
+# Row indices (ascending) that satisfy ALL of `conds`, evaluated inside Metakit.  Each cond is
+# {exact|min|max property value}; min/max are inclusive.  An empty cond list is every row.
+# Callers must only pass values valid for the property's type (see mkplan.tcl).
+proc ::store::select {path conds} {
+    if {![llength $conds]} {
+        set n [mk::view size $path] ; set out {}
+        for {set i 0} {$i < $n} {incr i} { lappend out $i }
+        return $out
+    }
+    set args {}
+    foreach c $conds { lassign $c op p v ; lappend args -$op $p $v }
+    return [mk::select $path {*}$args]
+}
+
 proc ::store::cell {path idx prop} { mk::get $path!$idx $prop }
 
 # Number of rows in the subview `prop` of row `idx`.
@@ -333,8 +394,20 @@ proc ::store::setCell {path idx prop value} {
 
 # Delete rows by index. Deleting from the highest index down keeps the rest valid.
 proc ::store::deleteRows {path indices} {
-    foreach i [lsort -integer -decreasing -unique $indices] {
-        mk::row delete $path!$i
+    # Every delete shifts the rest of the view, so consecutive rows go in ONE call (a run of 10,000
+    # rows is a single delete); runs are removed from the end so the indices stay valid.
+    set idx [lsort -integer -unique $indices]
+    set runs {}
+    set start "" ; set prev ""
+    foreach i $idx {
+        if {$start ne "" && $i == $prev + 1} { set prev $i ; continue }
+        if {$start ne ""} { lappend runs [list $start [expr {$prev - $start + 1}]] }
+        set start $i ; set prev $i
+    }
+    if {$start ne ""} { lappend runs [list $start [expr {$prev - $start + 1}]] }
+    foreach r [lreverse $runs] {
+        lassign $r first count
+        if {$count == 1} { mk::row delete $path!$first } else { mk::row delete $path!$first $count }
     }
     touchPath $path
 }
