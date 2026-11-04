@@ -63,6 +63,7 @@ jobs:
           tools/build-native.sh linux "$PWD/native-out"
       - name: The test must FAIL without the flushes
         run: |
+          set -o pipefail
           sudo modprobe dm-log-writes || true
           if sudo -E env "MKS_MKSYNC_DIR=$PWD/native-out" MKS_DURABLE=0 tests/blockdev_crash.sh "$PWD/tools/ext/tclkit-8.6.3-linux-x86_64" 6 ext4 | tee control.log; then
             echo "::error::the crash test PASSED with the flushes switched off: it cannot tell a safe commit from an unsafe one"; exit 1
