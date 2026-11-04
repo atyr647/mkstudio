@@ -7,7 +7,10 @@ A MK Studio "starpack" is a Tcl runtime (a "tclkit") with MK Studio's own files 
   Tcl and Tk            Tcl/Tk license (BSD-style).     https://www.tcl-lang.org/software/tcltk/license.html
                         Included: Tcl and Tk 8.6.18 (Linux, Windows, macOS); Tcl 8.5.17 and the 2014 Tcl 8.6.3 are used only in tests.
   Metakit and Mk4tcl    MIT-style license.              https://github.com/jcw/metakit  (Jean-Claude Wippler)
-                        The database engine and its Tcl binding.
+                        The database engine and its Tcl binding. The runtimes contain the author's fork with 64-bit file positions,
+                        https://github.com/atyr647/metakit (a copy of the source at the commit named in tools/vendor/METAKIT-FORK is
+                        kept in tools/vendor/; the license text, license.terms, is part of it and unchanged: Copyright (c) 1996-2007
+                        Jean-Claude Wippler).
   tclvfs, itcl, tcllib-style helpers
                         the same Tcl/BSD-style licenses as Tcl itself (as built into the tclkit).
   zlib                  zlib license.                   https://zlib.net/zlib_license.html

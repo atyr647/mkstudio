@@ -29,11 +29,13 @@ checks (real power loss, first run on each system) that automation cannot do.
   is the real thing, short of pulling a plug. It does not cover a disk that lies or a write torn inside one sector.)
 - **Tcl/Tk 8.6.18** (the last 8.6 release) on all three systems, built from checked sources with KitCreator kept in the repository -
   the macOS build used to take KitCreator's moving "trunk" unchecked.
-- **Files over 2 GiB are refused, not shown as empty.** The Metakit fork with 64-bit file positions
-  ([atyr647/metakit](https://github.com/atyr647/metakit)) writes "wide" files past 2 GiB; stock Metakit, which these programs contain, sees such a file
-  as an empty database - and a save would hide the data. The program now recognises a wide file, says so and touches nothing; it is also ready for the
-  fork (reads, edits, repairs an interrupted commit on a wide file, refuses the one edit the fork cannot survive - a single column past 2 GiB). The fork
-  is tested against MK Studio in CI every week, up to a real 2.9 GiB database; building the released programs with it is not decided (a Linux kit with the fork inside builds and passes everything; Windows and macOS kits are untried).
+- **Databases over 2 GiB.** The programs now contain the Metakit fork with 64-bit file positions
+  ([atyr647/metakit](https://github.com/atyr647/metakit), an exact copy is kept in `tools/vendor/` and compiled into the Linux, Windows and macOS
+  runtimes): a file is no longer limited to 2 GiB. Below 2 GiB the files are byte for byte the ones stock Metakit writes. CI creates a real
+  2.9 GiB database on each system through MK Studio (commits crossing 2 GiB, every value read back, processes killed mid-commit). One limit remains,
+  a single column of 2^31-1 bytes; an edit that would pass it is refused with a message instead of ending the program. A "wide" file (past 2 GiB) opened by
+  a program with a stock Metakit - an older MK Studio, another tool - would look empty and a save would hide the data; this version recognises
+  such a file when its own Metakit cannot read it, says so and touches nothing. `mkstudio --info FILE` tells which Metakit a program has.
 - mkit-sql 0.4.1 (the lock fix, an unreadable lock counts as held, its Windows flush now runs, a licence file).
 
 ### Also new in rc.2 (since rc.1)

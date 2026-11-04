@@ -130,7 +130,7 @@ process.
     ./build.sh all                      # + Windows (.exe)
     ./dist/mkstudio-linux-x86_64 [file.mk ...]
 
-**The released programs are built on a current Tcl/Tk 8.6.18 + Metakit runtime** that CI compiles with
+**The released programs are built on a current Tcl/Tk 8.6.18 + Metakit runtime** (the Metakit is the author's fork, see "Files over 2 GiB" below) that CI compiles with
 [KitCreator](https://kitcreator.rkeene.org/) (a pinned revision, zlib 1.3.1; `tools/build-kit.sh`; each runtime is cached
 until that script changes): **Linux** in a glibc 2.28 container (so it runs on RHEL 8+, Debian 10+, Ubuntu 18.10+ and
 newer; it links the system's X11/Xft/fontconfig, as every Tk program does), **Windows** cross-built with mingw-w64 (the
@@ -307,21 +307,24 @@ on Linux and macOS (the `sync` programs) and one to two seconds on Windows (Powe
 - Not covered: files larger than 512 MB (no checksum or backup - the limit is `store::sumLimit`), damage that happens
   *before* the first baseline, damage that keeps size and time and is also in `.sum` itself.
 
-**Files over 2 GiB - and the Metakit that can hold them.** Stock Metakit keeps a file's size in one signed 32-bit word, so a database
-file cannot pass 2 GiB (a commit that would is undone and reported). The author's fork,
-[atyr647/metakit](https://github.com/atyr647/metakit) (branch `ccr-7001915e-qdjw33`), uses 64-bit file positions: below 2 GiB its files
-are byte for byte the stock ones; past 2 GiB it writes "wide" tails and flags the header, and a stock Metakit shown such a file sees an
-**empty** database (and a commit would hide the data). The programs released here still use the stock Metakit, so MK Studio **refuses** a
-wide file with an explanation (nothing is touched; the read-only and the editing open alike), and it is ready for the fork:
-`store.tcl` probes the loaded library with a small wide file it builds itself, understands the wide frame in the repair of an
-interrupted commit, and guards the one limit the fork keeps - a single column (or memo) of 2^31-1 bytes, which Metakit would otherwise answer
-by *ending the program* - by refusing the edit that would pass it (`STORE COLUMNFULL`). Verified (workflow `metakit-fork.yml`, also every
-Monday): the fork's own tests (23,497 checks, including crashes after every single write); all of MK Studio's suites on a Mk4tcl built from
-the fork (`tools/build-metakit-fork.sh`) and on a Linux tclkit built with it through KitCreator (`METAKIT_SRC=... tools/build-kit.sh`); a real database of
+**Files over 2 GiB - the Metakit inside the programs can hold them.** Stock Metakit keeps a file's size in one signed 32-bit word, so a
+database file cannot pass 2 GiB. The programs released here are built with the author's fork,
+[atyr647/metakit](https://github.com/atyr647/metakit) (branch `ccr-7001915e-qdjw33`), which uses 64-bit file positions: below 2 GiB its
+files are byte for byte the stock ones; past 2 GiB it writes "wide" tails and flags the header. **The fork is bundled, not downloaded:** an
+exact copy of the checked-out source is kept in `tools/vendor/` (`METAKIT-FORK` names the repository, branch and commit and holds the SHA-256 of the
+archive; `tools/sync-metakit-fork.sh` moves it to another commit), and `tools/build-kit.sh` compiles it into the runtime of every platform
+instead of the Metakit that KitCreator brings (`METAKIT=stock tools/build-kit.sh` builds the old way). `mkstudio --info FILE` says which one a
+program has (`metakit 2.4.9.7 (files over 2 GiB: yes)`). A stock Metakit shown a wide file sees an **empty** database (and a commit would hide the
+data), so MK Studio still **refuses** a wide file when its own Metakit cannot read one (nothing is touched; the read-only and the editing open alike):
+that is what an older program, or one run on another Metakit, does. `store.tcl` probes the loaded library with a small wide file it builds
+itself, understands the wide frame in the repair of an interrupted commit, and guards the one limit the fork keeps - a single column (or memo) of
+2^31-1 bytes, which Metakit would otherwise answer by *ending the program* - by refusing the edit that would pass it (`STORE COLUMNFULL`).
+Verified in CI on every push, on **Linux, Windows and both Macs, with the starpack's own runtime**: every suite, and a real database of
 2.9 GiB through `store.tcl` - 30 commits of 100 MiB of blobs crossing 2 GiB, every value read back, a new process opening it, the column
 refused near 2 GiB, processes killed in 6 commits and in 5 commits that cross 2 GiB (each file holds one commit or the other, and later commits
-work: `tests/test_widebig.tcl`); the block-level crash test on a real file system. Not decided: whether the released programs should be built
-with the fork (the open item in `docs/OPEN-ITEMS.md`).
+work: `tests/test_widebig.tcl`) - plus, every Monday (`metakit-fork.yml`), the fork's own tests (23,497 checks, including crashes after every
+single write) at the fork's newest commit, and the block-level crash test on a real file system. One workaround lives in this repository: the
+fork's `tcl/mk4tcl.cpp` gives `Mk4tcl_Init` C++ linkage under KitCreator, and `build-kit.sh` makes it `extern "C"` (it belongs in the fork).
 
 **Limits - please read.** The result is "the last confirmed commit, or the one before it, never a mixture", *given* the
 model: pages reach the disk in any order, an 8-byte write is atomic (it lies in one sector), and `sync` really forces data
