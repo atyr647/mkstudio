@@ -80,16 +80,20 @@ Readers must ignore fields they don't know.
    same stale lock rarely get in each other's way:
    1. create the guard exclusively; if it exists, wait (~40 ms) and try again for about two seconds; a guard older
       than **10 seconds** was abandoned by a crash and is deleted;
-   2. with the guard held, **classify the lock again**; only if it is still stale/ours (or gone) **move it aside** with one
-      rename to `<database>.lock.take.<seconds>.<pid>.<n>` and **classify the moved file**: still stale - delete it; *alive* - a
-      process got in under a guard that was wrongly removed (see below): **put it back** (a hard link, which does not replace
-      what may have been created meanwhile; where hard links do not exist, a rename after looking that the name is free) and
-      give up. Never delete a lock by its name alone: the file under the name may not be the file that was judged;
+   2. with the guard held, **classify the lock again**; only if it is still stale/ours (or gone) take it away - never by deleting its name:
+      first **look** at it without moving it (give the file under the name a second name, `<database>.lock.take.<seconds>.<pid>.<n>`,
+      with a hard link: atomic, and the lock stays where it is), **judge that**, and if it is *alive* just remove the extra name and
+      give up; only if it is stale, check that the name still names *the same file* (device, inode, size, time), **move it aside**
+      with one rename and check that what was moved is still the file that was judged - if not (it was replaced in the last
+      instant) **put it back** (a hard link, which does not replace what may have been created meanwhile; where hard links do not
+      exist, a rename after looking that the name is free) and give up - and delete it. Where hard links do not exist at all
+      (FAT, some network shares) the lock is moved first and judged after;
    3. create the new lock exclusively (as in 1.), then delete the guard. Exactly one process wins; the others find a live
       owner. A process that cannot get the lock after waiting reports "starting at the same moment, please repeat".
 
-   A moved-aside file that a killed process never deleted is litter: its name carries the second it was moved, and any
-   copy older than the guard limit (10 s) is deleted by the next process that takes a lock, and by *Remove Lock...*.
+   A file a killed process left (`.lock.take.*`) is litter once it is older than **a minute** and its process is gone (a takeover that
+   is merely slow - a loaded machine - must never lose its files to another process's tidying); the next process that takes a lock
+   deletes it, and so does *Remove Lock...*.
 4. **After writing** its pid into a new lock, check that the file under the name still holds what was written. A process that was
    held up between creating the lock file and writing it (starved, suspended) may have been taken for dead and overtaken; what it
    wrote went into a file that is no longer under the name. If the text is not its own (or the file is gone) it has *not* got the
@@ -151,19 +155,25 @@ delete by name cannot tell the stale lock it judged from a fresh one under the s
 hook between the guard's age verdict and its deletion; both processes did end up inside, and one of them failed the commit-time check.
 
 **The fix (MK Studio since 1.0.0-rc.3; mkit-sql since 0.4.1):** the takeover no longer deletes
-the lock by name. It moves it aside with one atomic rename and looks at the file it actually got (step 3.2 above); a live lock is put back.
+the lock by name. It looks at the lock without moving it, and moves only a lock it has judged stale - after checking that the name still names
+the file it judged, and checking again what it moved (step 3.2 above); a live lock is never moved, or put back at once.
 So the guard is a way to avoid contention, no longer the thing that keeps the takeover correct, and a guard that is wrongly
 removed cannot hurt. The same test now requires that the two are *never* inside together (the second waits until the first is done),
 and the starved-process tests (a process held up between creating the lock and writing it; held up inside the takeover past a
 shortened guard limit), which used to end in an overlap, now end with the woken process refused. With the chaos soak (8 processes, kills every
 120 ms, random freezes of 1.3 s, the *shortened* 1 s limits that make wrong judgements likely): 8,425 acquisitions on Linux, 0 violations.
 
-**What is left, honestly.** A pure file protocol has no atomic "delete this file only if it is still that file", so two instants
-remain in which an overlap needs *three* processes and a few microseconds each: the moment a wrongly judged takeover has the live
-lock moved aside (the name is free; a third process arriving exactly then makes its own lock, and the put-back finds the name taken),
-and the moment between a process's last look at its lock and Metakit's write. Both end the same way as before: the owner whose lock
-text is gone fails the commit-time check below, and nothing is saved by two programs. Closing them completely needs a lock the
-operating system releases when the process dies (`flock`/`LockFileEx`), which Tcl cannot do from a plain file channel.
+**What is left, honestly.** A pure file protocol has no atomic "delete this file only if it is still that file", so one instant
+remains: between the last check that the name still names the file that was judged stale and the rename that moves it, the lock can be
+replaced; the rename then moves a live lock, which is noticed at once (the file moved is compared with the file judged) and put back - but for
+that moment (microseconds; a loaded machine stretches it) the name is free, and a third process arriving exactly then makes its own lock. An
+overlap therefore needs a lock replaced inside a window of microseconds *and* a newcomer inside the same window, on top of a wrongly
+removed guard; and the moment between a process's last look at its lock and Metakit's write. Both end the same way as before: the owner whose
+lock text is gone fails the commit-time check below, and nothing is saved by two programs. (The macOS-Intel runner - the slowest machine in
+the set - saw one overlap in a 4-second chaos run with the first version of this fix, which judged a lock *after* moving it, leaving the
+name free for the whole judgement; looking first shrank that window from the length of a liveness probe to the length of two `stat`s.)
+Closing it completely needs a lock the operating system releases when the process dies (`flock`/`LockFileEx`), which Tcl cannot do
+from a plain file channel.
 
 **What MK Studio does about it:** just before a commit writes, it checks that the lock file still holds its own text
 (`store::verifyLock`). If somebody else's text is there the commit is refused with the error code `{STORE LOCKLOST text}` - the

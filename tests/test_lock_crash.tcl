@@ -19,7 +19,7 @@ set kit [info nameofexecutable]
 set host [info hostname]
 # the abandonment timers (10 s / 30 s in the protocol) are shortened for the test, here and in every child
 set ::env(MKS_LOCK_EMPTY_STALE) 1 ; set ::env(MKS_LOCK_MUTEX_STALE) 1
-set ::store::emptyStale 1 ; set ::store::mutexStale 1
+set ::store::emptyStale 1 ; set ::store::mutexStale 1 ; set ::store::takeStale 1      ;# (takeStale: this process only - the children keep the real minute, so a slow takeover never loses its files)
 set db [tmp lockcrash.mk]
 proc fresh {} { global db ; foreach f [glob -nocomplain $db*] { file delete $f } ; set t [store::openFile $db -create] ; store::commit $t ; store::closeFile $t }
 proc rawlock {text} { global db ; set h [open $db.lock w] ; puts -nonewline $h $text ; close $h }
@@ -51,6 +51,7 @@ foreach {name step preseed expectFiles} {
     killed_after_creating_the_lock         created 0 {lock}
     killed_after_writing_the_lock          written 0 {lock}
     killed_holding_the_takeover_mutex      mutex   1 {lock mutex}
+    killed_after_looking_at_the_lock       looked  1 {lock mutex aside}
     killed_after_moving_the_lock_aside     claimed 1 {mutex aside}
     killed_between_delete_and_create       deleted 1 {mutex}
     killed_after_a_normal_release          released 0 {}
@@ -99,7 +100,7 @@ proc overlapped {ev} {
 proc stallRun {emptyStale {step created} {mutexStale 1}} {
     global db kit here host
     fresh
-    if {$step in {checked claimed}} { rawlock "999999 $host" }       ;# a stale lock (its pid does not exist): the takeover path
+    if {$step in {checked looked claimed}} { rawlock "999999 $host" }       ;# a stale lock (its pid does not exist): the takeover path
     set log [tmp lockstall.log] ; file delete $log $log.release
     foreach v {MKS_LOCK_EMPTY_STALE MKS_LOCK_MUTEX_STALE} { set save($v) [expr {[info exists ::env($v)] ? $::env($v) : ""}] }
     set ::env(MKS_LOCK_EMPTY_STALE) $emptyStale ; set ::env(MKS_LOCK_MUTEX_STALE) $mutexStale
@@ -188,19 +189,47 @@ if {$::tcl_platform(platform) eq "windows"} {
 check "aside stall: no litter after both are done" [lsort [glob -nocomplain $db.lock.take.*]] {}
 fresh
 
+# f) starved while looking at the stale lock (it has not been moved): the newcomer cannot get the guard A holds, is refused or waits; when A has
+#    finished it holds the lock.  Never two inside.
+lassign [stallRun 60 looked 60] a b ev lines
+puts "  stall while looking at the lock: [join $lines {; }]"
+ok "look stall: nobody held the lock at the same time as somebody else" [expr {![overlapped $ev]}] $lines
+ok "look stall: the woken process took the lock (nothing had changed)" [dict exists $ev $a ACQUIRED] $lines
+check "look stall: no litter after both are done" [lsort [glob -nocomplain $db.lock.take.*]] {}
+fresh
+
 # ---- A2b. the takeover step by step, in one process ---------------------------------------------------------------------------
 # claimStale moves the lock aside and judges what it MOVED.
 set lf [store::lockPath $db]
 rawlock "999999 $host"
-check "claimStale: a dead owner's lock is moved aside, judged stale and deleted" [store::claimStale $lf] claimed
+check "claimStale: a dead owner's lock is looked at, judged stale, moved aside and deleted" [store::claimStale $lf] claimed
 ok "claimStale: ... and the name is free, nothing left" [expr {![file exists $lf] && ![llength [store::takeovers $lf]]}]
 check "claimStale: nothing under the name" [store::claimStale $lf] gone
-# a lock of another host is always held: it must be put back unchanged, and the name must hold exactly that file again
-rawlock "4242 some-other-machine"
-set before [list [file mtime $lf] [file size $lf]]
-check "claimStale: a live (foreign) lock found under the name is put back" [store::claimStale $lf] alive
+rawlock "4242 some-other-machine"                           ;# another host: always held - what a wrongly judged takeover would find
+set before [list [file mtime $lf] [file size $lf]] ; file stat $lf st0
+check "claimStale: a live (foreign) lock found under the name is left alone" [store::claimStale $lf] alive
 check "claimStale: ... with its text" [string trim [read [set h [open $lf r]]]] "4242 some-other-machine" ; close $h
 check "claimStale: ... and its time and size" [list [file mtime $lf] [file size $lf]] $before
+file stat $lf st1
+ok "claimStale: ... and it is the very same file (it was never moved)" [expr {$st1(ino) == $st0(ino) && $st1(dev) == $st0(dev)}]
+ok "claimStale: ... and no copy left" [expr {![llength [store::takeovers $lf]]}]
+file delete $lf
+set h [open $lf w] ; close $h                                    ;# an EMPTY lock that is brand new is not stale: the creator may be about to write
+check "claimStale: a brand-new empty lock is left alone" [store::claimStale $lf] alive
+file delete $lf
+file mkdir $lf                                                   ;# not a plain file: never taken, never ignored (no hard link of a folder: the move-first path)
+check "claimStale: a folder under the name is put back" [store::claimStale $lf] alive
+ok "claimStale: ... still a folder" [file isdirectory $lf]
+file delete $lf
+# the lock is REPLACED while it is being judged: judged stale, then a live one under the name - it must not be taken
+rawlock "999999 $host"
+set ::replaced 0
+set ::store::lockHook [list apply {{name} { if {$name eq "looked" && !$::replaced} { incr ::replaced ; set lf2 $::store::lockHookLf ; file delete $lf2 ; set h [open $lf2 w] ; puts -nonewline $h "4242 some-other-machine" ; close $h } }}]
+set ::store::lockHookLf $lf
+set r [store::claimStale $lf]
+set ::store::lockHook ""
+check "claimStale: a lock replaced while it was judged is not taken" $r busy
+check "claimStale: ... the live lock is still there" [string trim [read [set h [open $lf r]]]] "4242 some-other-machine" ; close $h
 ok "claimStale: ... and no copy left" [expr {![llength [store::takeovers $lf]]}]
 file delete $lf
 # the same with a file name full of glob characters
@@ -213,10 +242,10 @@ ok "odd name: ... and the file is there" [file exists $olf]
 file delete $olf
 # litter of a killed takeover: only a copy older than the guard limit is deleted; breakLock takes all
 set old [expr {[clock seconds] - 100}] ; set new [clock seconds]
-foreach {n} [list $olf.take.$old.1.1 $olf.take.$new.1.2] { set h [open $n w] ; close $h }
+foreach n [list $olf.take.$old.999999.1 $olf.take.$old.1.2 $olf.take.$new.999999.3] { set h [open $n w] ; close $h }
 store::tidyTakeovers $olf
 set rest {} ; foreach f [store::takeovers $olf] { lappend rest [file tail $f] }
-check "tidy: the old copy goes, the recent one stays" [lsort $rest] [list [file tail $olf].take.$new.1.2]
+check "tidy: only a file that is old AND whose process is gone goes (not an old one of a live process, not a recent one)" [lsort $rest] [lsort [list [file tail $olf].take.$old.1.2 [file tail $olf].take.$new.999999.3]]
 store::breakLock $odd
 check "breakLock: takes the litter too" [llength [store::takeovers $olf]] 0
 fresh

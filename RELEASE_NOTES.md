@@ -9,9 +9,9 @@ checks (real power loss, first run on each system) that automation cannot do.
 
 - **The lock can no longer be taken away from a live program by a takeover race.** After a crash the next program takes over the
   dead one's lock file; two programs doing that at the same moment could (under a rare timing, reproduced on demand) end up with the
-  second one deleting the first one's brand-new lock, and both believing they owned the database. A takeover now moves the old lock
-  aside with one atomic step and looks at what it actually got - a live lock is put back - and a program re-reads its lock after
-  writing it. The program that is overtaken because it was frozen at the wrong moment notices when it wakes up. The check made just
+  second one deleting the first one's brand-new lock, and both believing they owned the database. A takeover now looks at the old lock
+  without moving it, moves only one it has judged stale (after checking the name still names the file it judged), and puts back a live
+  one at once - and a program re-reads its lock after writing it. The program that is overtaken because it was frozen at the wrong moment notices when it wakes up. The check made just
   before every save stays. In a stress test with eight programs, random kills and freezes: 8,425 lock acquisitions, no overlap.
   The same fix is in mkit-sql 0.4.1.
 - **Saves reach the disk through a small native library instead of starting programs.** On Windows each save used to start PowerShell

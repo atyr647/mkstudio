@@ -82,6 +82,7 @@ namespace eval ::store {
     # (protocol constants - 5 s and 10 s; only tests shorten them)
     variable emptyStale [expr {[info exists ::env(MKS_LOCK_EMPTY_STALE)] ? $::env(MKS_LOCK_EMPTY_STALE) : 5}]
     variable mutexStale [expr {[info exists ::env(MKS_LOCK_MUTEX_STALE)] ? $::env(MKS_LOCK_MUTEX_STALE) : 10}]
+    variable takeStale 60                                 ;# a file a takeover left behind (.lock.take.*) is litter after this many seconds, and only if its process is gone
     variable lockRole ""       ;# a long-lived owner says what it is, e.g. "server" ...
     variable lockEndpoint ""   ;# ... and where clients should talk to it, e.g. "tcp://host:5433"
 }
@@ -325,29 +326,61 @@ proc ::store::stillMine {lf mine} {
     return [expr {$d eq $mine}]
 }
 # Take a lock file that was judged stale out of the way.  Returns
-#   claimed   it was moved aside, judged again - still stale (or ours, or empty and old) - and deleted: the name is free
+#   claimed   the lock was judged stale (looked at WITHOUT moving it), the name still named that very file, it was moved aside, and deleted
 #   gone      there was nothing under the name any more: the name is free
-#   alive     what was moved turned out to be a live owner's lock (somebody got in under a guard that was wrongly removed): it has
-#             been put back, and is not ours to take
-#   busy      the file could not be moved now (Windows: another program has it open): nothing was changed
-# The rename is the one atomic step: whatever file is under the name at that instant is the file that is moved, and it is judged
-# AFTER it has been moved, so a lock that was replaced between the verdict and the move is recognised instead of destroyed.
+#   alive     what was found turned out to be a live owner's lock (somebody got in under a guard that was wrongly removed, or the lock was
+#             replaced while it was being judged): it was never moved, or - if it had to be - it has been put back; not ours to take
+#   busy      the file could not be moved now (Windows: another program has it open), or it was replaced meanwhile: nothing was changed
+# Never delete a lock by its name alone (a delete cannot tell the stale lock that was judged from a fresh one made under the same name since):
+#   1. look: a hard link gives a second name to whatever file is under the name AT THAT INSTANT and leaves the lock where it is - so a live
+#      lock is judged (the slow part: is the process alive? how old?) while it keeps its place, and a live one is simply left alone;
+#   2. only a stale one is moved, and only if the name still names the file that was judged (device, inode, size and time are compared);
+#   3. what was moved is compared again: if it is not the file that was judged (it was replaced in the last instant) it is put back.
+# Where hard links do not exist (FAT, some network shares) the lock is moved first and judged after (the name is then free for the
+# duration of the judgement: a newcomer may take it, and the put-back finds it taken - the commit-time check catches the owner that loses).
 namespace eval ::store { variable claimSeq 0 }
+# {device inode size mtime} of a file, "" when it cannot be told from another (no inode numbers: Windows with older Tcl)
+proc ::store::fileId {f} {
+    if {[catch {file lstat $f st}] || $st(ino) == 0} { return "" }
+    return [list $st(dev) $st(ino) $st(size) $st(mtime)]
+}
+proc ::store::putBack {aside lf} {
+    # a hard link fails instead of replacing when the name is taken again meanwhile (a rename would replace it, on Unix)
+    if {[catch {file link -hard $lf $aside}] && ![file exists $lf]} { catch {file rename $aside $lf} }
+    catch {file delete $aside}
+}
 proc ::store::claimStale {lf} {
     variable claimSeq
-    set aside $lf.take.[clock seconds].[pid].[incr claimSeq]
+    set now [clock seconds]
+    set look $lf.take.$now.[pid].[incr claimSeq]
+    set aside $lf.take.$now.[pid].[incr claimSeq]
+    if {![catch {file link -hard $look $lf}]} {
+        lockStep looked                                          ;# (test hook: the lock is looked at, it has not been moved)
+        if {[catch {lockInfoFile $look} info]} { set state held } else { set state [dict get $info state] }
+        if {$state eq "held"} { catch {file delete $look} ; return alive }
+        set id [fileId $look]
+        if {$id ne "" && [fileId $lf] ne $id} { catch {file delete $look} ; return busy }       ;# replaced while it was judged: judge again
+        if {[catch {file rename $lf $aside}]} { catch {file delete $look} ; return [expr {[file exists $lf] ? "busy" : "gone"}] }
+        lockStep claimed
+        if {$id ne "" && [fileId $aside] ne $id} {
+            putBack $aside $lf ; catch {file delete $look}       ;# replaced in the last instant: what was moved is somebody else's
+            return alive
+        }
+        catch {file delete $aside} ; catch {file delete $look}
+        return claimed
+    }
+    if {![file exists $lf]} { return gone }
+    # no hard links (or the lock is not a plain file): move it first, judge what was moved
     if {[catch {file rename $lf $aside}]} { return [expr {[file exists $lf] ? "busy" : "gone"}] }
     lockStep claimed                                             ;# (test hook: the lock is out of the way, not yet judged)
     set state [dict get [lockInfoFile $aside] state]
     if {$state ne "held"} { catch {file delete $aside} ; return claimed }
-    # Put it back - with a hard link, which fails instead of replacing when the name is taken again meanwhile (a rename would
-    # replace it, on Unix).  Where hard links do not exist (FAT, some network shares) the name is checked and the file renamed back.
-    if {[catch {file link -hard $lf $aside}] && ![file exists $lf]} { catch {file rename $aside $lf} }
-    catch {file delete $aside}
+    putBack $aside $lf
     return alive
 }
-# Files a takeover moved aside and a killed process never deleted.  The name carries the second it was moved; a live takeover
-# deletes its own within moments, so anything older than the guard limit is litter.
+# Files a takeover made (a second name for the lock it looked at, the lock moved aside) and a killed process never deleted.  The name carries
+# the second, the process and a counter.  A takeover that is still going on - slowly, on a loaded machine - must never lose its files to
+# another process's tidying: only files older than a minute whose process is gone are litter.
 proc ::store::takeovers {lf} {
     # (a file name may contain glob characters: they are matched literally)
     set tail [string map [list \\ \\\\ * \\* ? \\? \[ \\\[ \] \\\] \{ \\\{ \} \\\}] [file tail $lf]]
@@ -355,7 +388,7 @@ proc ::store::takeovers {lf} {
 }
 proc ::store::tidyTakeovers {lf} {
     foreach f [takeovers $lf] {
-        if {[regexp {\.take\.(\d+)\.\d+\.\d+$} $f -> at] && [clock seconds] - $at > $::store::mutexStale} { catch {file delete $f} }
+        if {[regexp {\.take\.(\d+)\.(\d+)\.\d+$} $f -> at owner] && [clock seconds] - $at > $::store::takeStale && ($owner == [pid] || ![pidAlive $owner])} { catch {file delete $f} }
     }
 }
 # Remove OUR lock - only if the file still holds exactly what we wrote.  `lf` is the lock file, `mine` its content.
