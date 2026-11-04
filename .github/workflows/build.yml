@@ -418,6 +418,10 @@ jobs:
           # (2) a repository checkout (not a release tarball) needs kitsh's generated files
           bash build/pre.sh
 
+          # (2b) Tcl and Tk 8.6.16 are newer than KitCreator's checksum table: it would fetch them over plain HTTP, unchecked.
+          #      Fetch them over HTTPS and check the SHA-256 (tools/seed-tcl-sources.sh) before it looks for them.
+          "$GITHUB_WORKSPACE/tools/seed-tcl-sources.sh" "$PWD" "${TCL_VERSION}"
+
           # Metakit is old C++ and kitsh uses K&R-style C parameter lists.  autoconf 2.72
           # adds -std=gnu23 (where those are errors), and the later -std wins, so pin C99.
           export CXXFLAGS="-std=c++11 -Wno-register -Wno-deprecated -w"

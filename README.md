@@ -197,7 +197,7 @@ Tests (all in `tests/`):
   freezing, empty results)
 - `gui_logic.tcl` - the UI logic incl. every popup menu and undo
 - `verify_payload.tcl`, `smoke_starpack.sh`, and `shoot.tcl` for screenshots
-- what no test can do is in [`docs/QA-CHECKLIST.md`](docs/QA-CHECKLIST.md): the hour of manual checks before a release
+- what no test can do is in [`docs/QA-CHECKLIST.md`](docs/QA-CHECKLIST.md): the hour of manual checks before a release; what is still open, and whether it is worth doing: [`docs/OPEN-ITEMS.md`](docs/OPEN-ITEMS.md)
 
 A pure-Tcl `mk::` stand-in (`mock_mk4tcl.tcl`) lets most of the suite also run without Metakit; it is test-only.
 
@@ -256,7 +256,7 @@ at all.** What MK Studio now does (`store.tcl`):
   header's offset. The user is told ("An unfinished commit was undone ...");
 - read-only opens never repair anything (they may see the unfinished state).
 
-Cost: a commit takes about 0.25 s longer on a 30 MB database on Linux and macOS (the `sync`s), about a second on Windows (see below).
+Cost: a commit takes about 0.25 s longer on a 30 MB database on Linux and macOS (the `sync`s), one to two seconds on Windows (see below).
 
 **Further hardening** (`tests/test_durability.tcl`):
 
@@ -265,8 +265,8 @@ Cost: a commit takes about 0.25 s longer on a 30 MB database on Linux and macOS 
   status 0, no output, no effect - measured on real runners; a Windows GUI program has no console and Tcl starts console programs
   without one for it). Release 1.0.0-rc.1 started it the straight way, so **its Windows flush never ran** and every check that
   only looked at the exit status still passed; `tests/test_durability.tcl` now makes PowerShell write a file and fails if the file
-  does not appear. The price is real: about 0.4 s per PowerShell start, three starts per save, so **a save takes roughly a second
-  longer on Windows**. If PowerShell cannot be started the flush stays best-effort and `syncDisk` says so. macOS `sync` flushes the
+  does not appear. The price is real: 0.4-0.7 s per PowerShell start (measured on the CI runners: 358 ms, 703 ms), three starts per save, so **a save
+  takes one to two seconds longer on Windows**. If PowerShell cannot be started the flush stays best-effort and `syncDisk` says so. macOS `sync` flushes the
   operating system's cache but cannot reach the drive's own cache (`F_FULLFSYNC` is not available from Tcl).
 - **The first commit of a new database is protected**: the record then says "empty", and a record found at the next open
   makes the file empty again instead of leaving a half-written first save (real kills at every write of a first commit:
@@ -440,5 +440,6 @@ RELEASE_NOTES.md       the text of the current release
 docs/CONCURRENCY.md    the shared write-lock / generation policy (for mkit-sql or a server), with its measurements
 docs/mkit-sql-integration.md   how mkit-sql is wired in, what was found, what differs; docs/mkit-sql-protocol-sync.patch for its repository
 docs/QA-CHECKLIST.md   the manual checks automation cannot do
+docs/OPEN-ITEMS.md     what is still open, the evidence, and whether it is worth doing
 docs/screenshots/      what the program looks like
 ```

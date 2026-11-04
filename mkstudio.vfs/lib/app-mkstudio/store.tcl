@@ -264,7 +264,7 @@ proc ::store::takeLock {path} {
             puts -nonewline $h $mine ; close $h
             lockStep written
             # tidy up a takeover mutex abandoned by a crashed process
-            if {![catch {file mtime $lf.guard} mt] && [clock seconds] - $mt > $::store::mutexStale} { catch {file delete $lf.guard} }
+            if {![catch {file mtime $lf.guard} mt] && [clock seconds] - $mt > $::store::mutexStale} { lockStep guard-aged ; catch {file delete $lf.guard} }
             return $mine
         }
         lockStep create-failed
@@ -290,6 +290,7 @@ proc ::store::takeLock {path} {
                 if {!$rc} { puts -nonewline $h $mine ; close $h ; return $mine }
             } else { catch {file delete $mx} }
         } elseif {![catch {file mtime $mx} mt] && [clock seconds] - $mt > $::store::mutexStale} {
+            lockStep guard-aged                              ;# (test hook: the guard has been judged abandoned, nothing is deleted yet)
             catch {file delete $mx}                         ;# a takeover that crashed
         } else {
             after 40                                         ;# someone else is replacing the lock: give it a moment (~2.4 s in all)

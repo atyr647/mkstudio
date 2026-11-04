@@ -133,12 +133,16 @@ So on Linux and Apple silicon no overlap was seen in ~58,000 acquisitions; on th
 set: acquisitions there took up to 6 s) three overlaps in ~12,000. In every logged case another process had *taken over the lock
 of a process that was alive and inside* (two or three takeovers within ~300 ms; the victim then found its marker file empty or
 gone). What is established: it needs real contention (eight processes, kills every 120 ms) and a loaded machine, and it is not the
-pid-liveness probe (`killProbe` and `pidAlive` were hardened before and the overlaps still occur). **A reading that fits the logs,
-not proven:** when a process is killed while it holds the takeover guard, the abandoned guard is removed once it is 10 s old by
+pid-liveness probe (`killProbe` and `pidAlive` were hardened before and the overlaps still occur). **The cause, since reproduced on demand
+(`tests/test_lock_crash.tcl`, "two reapers of one abandoned guard"):** when a process is killed while it holds the takeover guard, the abandoned guard is removed once it is 10 s old by
 every waiter that notices at about the same time - and a waiter that checked the age of the *old* guard can delete, by name, the
 *fresh* guard that another waiter has just created, so two of them are inside the takeover section together, and the second one
 deletes the first one's brand-new lock. (Both implementations delete by name; the protocol cannot be made identity-safe without
-changing the guard's content or name, which must be done in both implementations together.)
+changing the guard's content or name, which must be done in both implementations together - and the situation needs a process killed
+inside a window of a few milliseconds plus two others arriving within a few milliseconds of each other ten seconds later, so it was
+decided not to change the protocol: see "What MK Studio does about it". The test forces the interleaving with a hook between the
+guard's age verdict and its deletion; both processes do end up inside, and exactly one of them - the one whose lock was overwritten
+- fails the commit-time check.)
 
 **What MK Studio does about it:** just before a commit writes, it checks that the lock file still holds its own text
 (`store::verifyLock`). If somebody else's text is there the commit is refused with the error code `{STORE LOCKLOST text}` - the

@@ -34,7 +34,7 @@ Use a spare machine or a VM whose virtual disk you can power off without a clean
 - [ ] Installed copies (`.deb`, `.app`) open the release page instead of replacing themselves.
 
 ## 3b. Windows saves and the flush
-- [ ] On Windows, *Save* takes about a second longer than on Linux or macOS (the data is forced to disk with PowerShell, three
+- [ ] On Windows, *Save* takes one to two seconds longer than on Linux or macOS (the data is forced to disk with PowerShell, three
       starts per save). A black console window may flash briefly during a save: note whether it does and whether it is bearable.
 - [ ] A database in a folder with an accented letter and a space in its name (`C:\Users\José\My Data\x.mk`) can be opened,
       edited and saved, and the program can be updated while it sits in such a folder.

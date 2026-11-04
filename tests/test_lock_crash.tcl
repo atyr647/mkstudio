@@ -170,6 +170,48 @@ ok "takeover stall, guard limit 60 s: nobody held the lock at the same time as s
 ok "takeover stall, guard limit 60 s: somebody got the lock" [expr {[dict exists $ev $a ACQUIRED] || [dict exists $ev $b ACQUIRED]}] $lines
 fresh
 
+# ---- A3. two processes reap the same abandoned takeover guard -----------------------------------------------------------------
+# A process killed while it holds the takeover guard leaves it behind; every waiter deletes it once it is older than the limit - BY NAME.
+# A judges the guard abandoned and is descheduled before the delete; B deletes it, makes a guard of its own and, inside its takeover
+# section, is descheduled too; A wakes and deletes B's FRESH guard, takes over; B wakes, deletes A's new lock and takes over: for a
+# while both are inside (found by the macOS-Intel lock soak: 3 overlaps in ~12,000 contended acquisitions; reproduced here on demand).
+# The protocol cannot be made identity-safe without changing the guard (a change for every implementation together), so the safety
+# net is the check a commit makes just before it writes: is the lock file still mine?  Of the two, exactly one may pass it.
+proc reaperRace {} {
+    global db kit here host
+    fresh
+    set log [tmp lockreaper.log] ; file delete $log $log.relA $log.relB
+    foreach v {MKS_LOCK_EMPTY_STALE MKS_LOCK_MUTEX_STALE} { set save($v) [expr {[info exists ::env($v)] ? $::env($v) : ""}] }
+    set ::env(MKS_LOCK_EMPTY_STALE) 1 ; set ::env(MKS_LOCK_MUTEX_STALE) 1
+    rawlock "999999 $host"                                              ;# the dead owner's lock
+    close [open $db.lock.guard w] ; file mtime $db.lock.guard [expr {[clock seconds] - 100}]    ;# the guard a killed process left
+    proc seenIn {log pat} { set s "" ; catch {set h [open $log r] ; set s [read $h] ; close $h} ; return [regexp $pat $s] }
+    set a [exec $kit $here/lock_stall_child.tcl $db 30000 1500 $log guard-aged 9000 relA &]
+    for {set i 0} {$i < 1200 && ![seenIn $log "\\m$a STALLED"]} {incr i} { after 50 }
+    set b [exec $kit $here/lock_stall_child.tcl $db 30000 3500 $log checked 9000 relB &]
+    for {set i 0} {$i < 1200 && ![seenIn $log "\\m$b STALLED"]} {incr i} { after 50 }
+    close [open $log.relA w]                                            ;# A deletes B's fresh guard, takes over, holds the lock
+    for {set i 0} {$i < 600 && ![seenIn $log "\\m$a ACQUIRED"]} {incr i} { after 50 }
+    close [open $log.relB w]                                            ;# B deletes the lock A just made and takes over
+    for {set i 0} {$i < 1200 && !([seenIn $log "\\m$a RELEASED"] && [seenIn $log "\\m$b RELEASED"])} {incr i} { after 50 }
+    foreach v {MKS_LOCK_EMPTY_STALE MKS_LOCK_MUTEX_STALE} { if {$save($v) eq ""} { unset ::env($v) } else { set ::env($v) $save($v) } }
+    set h [open $log r] ; set lines [split [string trim [read $h]] \n] ; close $h
+    set ev {}
+    foreach l $lines { set ms [lindex $l 0] ; set pid [lindex $l 1] ; set what [lindex $l 2] ; dict set ev $pid $what [lrange $l 3 end] ; dict set ev $pid $what.ms $ms }
+    return [list $a $b $ev $lines]
+}
+lassign [reaperRace] a b ev lines
+puts "  two reapers of one abandoned guard: [join $lines {; }]"
+# (A holds 1.5 s and B 3.5 s: A makes its commit-time check while B is still inside, B at the end when A has left)
+set bothIn [expr {[dict exists $ev $a ACQUIRED.ms] && [dict exists $ev $b ACQUIRED.ms] && [dict get $ev $b ACQUIRED.ms] < [dict get $ev $a RELEASED.ms]}]
+puts "  (both inside at once: [expr {$bothIn ? {yes - the race is real} : {no}}])"
+set va [expr {[dict exists $ev $a VERIFY] ? [dict get $ev $a VERIFY] : "?"}]
+set vb [expr {[dict exists $ev $b VERIFY] ? [dict get $ev $b VERIFY] : "?"}]
+ok "reapers: both processes finished" [expr {$va ne "?" && $vb ne "?"}] $lines
+ok "reapers: never both may pass the commit-time lock check (A: $va, B: $vb)" [expr {!($va eq "ok" && $vb eq "ok")}] $lines
+ok "reapers: the process that took the lock last may save (its check passes), the one it overtook may not" [expr {$va eq "lost" && $vb eq "ok"}] $lines
+fresh
+
 # ---- B. chaos -------------------------------------------------------------------------------------------------------------
 set secs [expr {[info exists ::env(MKS_CHAOS_SECONDS)] ? $::env(MKS_CHAOS_SECONDS) : 6}]
 if {$::tcl_platform(platform) eq "windows" || $secs <= 0} {

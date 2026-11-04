@@ -5,9 +5,11 @@
 #   tools/build-kit.sh linux   WORKDIR     native build (CI runs it in a glibc 2.28 container so it runs on old distros)
 #   tools/build-kit.sh windows WORKDIR     mingw-w64 cross-build from Linux
 #
-# Prints the path of the finished kit on its last line.  Everything downloaded is pinned and checked:
-# KitCreator by revision + SHA-256 of the tarball, zlib by SHA-256 (KitCreator pins its own sources the same way).
+# Prints the path of the finished kit on its last line.  Everything downloaded is pinned and checked: KitCreator by revision +
+# SHA-256 of the tarball; zlib, Tcl and Tk by SHA-256 (tools/seed-tcl-sources.sh); Metakit, tclvfs and itcl by the checksums in
+# KitCreator's own build scripts.
 set -euo pipefail
+here=$(cd "$(dirname "$0")" && pwd)       # (before any cd: this script is called with a relative path)
 
 platform=${1:?usage: build-kit.sh linux|windows WORKDIR}
 work=${2:?usage: build-kit.sh linux|windows WORKDIR}
@@ -41,6 +43,9 @@ grep -q "sha256='${ZLIB_SHA256}'" zlib/build.sh || { echo "could not pin zlib in
 
 # a repository checkout (not a release tarball) needs kitsh's generated files
 bash build/pre.sh
+
+# Tcl and Tk: KitCreator knows no checksum for versions newer than 8.6.14 and would download them over plain HTTP unchecked
+"$here/seed-tcl-sources.sh" "$PWD" "$TCL_VERSION"
 
 # Metakit is old C++ and kitsh uses K&R-style C parameter lists: keep the compilers in the dialects they were written for
 export CXXFLAGS="-std=c++11 -Wno-register -Wno-deprecated -w"
