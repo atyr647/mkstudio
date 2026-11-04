@@ -18,6 +18,11 @@ A MK Studio "starpack" is a Tcl runtime (a "tclkit") with MK Studio's own files 
                         each Mac. The old prebuilt kits from https://tclkits.rkeene.org/ (tools/fetch-runtimes.sh checks
                         their SHA-1) are only used by tests.
 
+mkit-sql              the standard-SQL engine in mkstudio.vfs/lib/mkitsql (a vendored copy; SOURCE names the commit),
+                        https://github.com/atyr647/mkit-sql - written for this project by the same author. It is
+                        distributed here as part of MK Studio under this repository's MIT license (LICENSE). The mkit-sql
+                        repository itself has no LICENSE file yet; adding the same MIT text there would make the two agree.
+
 The Windows installer is built with NSIS (zlib/libpng-style license, https://nsis.sourceforge.io/), which only runs at
 build time; its stub is part of the installer.
 
