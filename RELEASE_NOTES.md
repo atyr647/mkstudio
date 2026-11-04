@@ -7,7 +7,7 @@ checks (real power loss, first run on each system) that automation cannot do.
 
 ### What changed since 1.0.0-rc.1
 
-- **Standard SQL.** The query window now runs [mkit-sql](https://github.com/atyr647/mkit-sql) 0.4.0: joins, CTEs including
+- **Standard SQL.** The query window now runs [mkit-sql](https://github.com/atyr647/mkit-sql) 0.4.1: joins, CTEs including
   `WITH RECURSIVE`, window functions, `MERGE`, `LATERAL`, `ROLLUP`/`CUBE`, dates and intervals, `EXPLAIN`, and bounded memory for big
   results. It runs on MK Studio's own storage layer, so a statement's change is saved, rolled back, locked and checksummed like any
   edit; the old built-in dialect stays available for the tests (`MKS_ENGINE=mkql`). The engine is part of the program (not

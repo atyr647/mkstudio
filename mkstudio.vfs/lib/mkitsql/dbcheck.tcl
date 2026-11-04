@@ -5,6 +5,7 @@
 # file has a fixed frame, which is cheap to verify without reading the data:
 #
 #   header  (8 bytes)  "JL" (or "LJ" for the other byte order), 0x1A, 0x00, then the file's size as one 32-bit word
+#                       (a file over 2 GiB, written by a Metakit built for big files, has bit 0x40 set in the fourth byte and 24-byte tails)
 #   footer (16 bytes)  word 0x80000000, the offset of the footer itself (= size - 16), word 0x80<len>, the offset of the table
 #
 # What this cannot see: bytes flipped inside the data (Metakit stores no checksums).  Files that do not start with the
@@ -26,6 +27,12 @@ proc ::mkitsql::dbProblem {path} {
     } msg]} { return "it cannot be read ($msg)" }
     set sig [string range $head 0 1]
     if {$sig ne "JL" && $sig ne "LJ"} { return "" }              ;# not a standalone database file: judged after opening
+    if {[::mkitsql::db::wideHeader $head]} {
+        # a file over 2 GiB (the wide format of a Metakit built for big files): three tails of 24 bytes, no usable size in the header
+        if {[string index $head 2] ne "\x1a"} { return "its header is damaged" }
+        if {![::mkitsql::db::footerOkAt $path $size 1]} { return "its footer is damaged, or a commit to it was interrupted (opening it for writing undoes that)" }
+        return ""
+    }
     if {[string range $head 2 3] ne "\x1a\x00"} { return "its header is damaged" }
     if {$size < 24} { return "it is too short to be a Metakit database ($size bytes)" }
     set fmt [expr {$sig eq "JL" ? "I" : "i"}]                    ;# JL: words are big-endian, LJ: little-endian
@@ -90,7 +97,13 @@ proc ::mkitsql::verifyProblem1 {path timeout} {
         set copy [file join [spillDir] verify_child.tcl]
         file copy -force $script $copy ; set script $copy
     }
-    if {[catch {open [list | $exe $script $path 2>@1] r} ch]} { return "the verifier could not be started ($ch)" }
+    # the helper must load the same Mk4tcl as this process when that is a shared library
+    set lib ""
+    foreach l [info loaded] { if {[lindex $l 1] eq "Mk4tcl" && [lindex $l 0] ne ""} { set lib [lindex $l 0] } }
+    set ::env(MKIT_VERIFY_LIB) $lib
+    set rc [catch {open [list | $exe $script $path 2>@1] r} ch]
+    unset -nocomplain ::env(MKIT_VERIFY_LIB)
+    if {$rc} { return "the verifier could not be started ($ch)" }
     fconfigure $ch -blocking 0 -buffering line
     set pid [pid $ch] ; set out "" ; set t0 [clock milliseconds] ; set eof 0
     while {!$eof} {

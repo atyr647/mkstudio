@@ -1,6 +1,6 @@
 # mkit-sql in MK Studio: how it is wired, what was found, what is still different
 
-State described here: MK Studio with **mkit-sql 0.4.0** (`atyr647/mkit-sql` at `37847c1`) vendored in
+State described here: MK Studio with **mkit-sql 0.4.1** (`atyr647/mkit-sql` at `fbd729c`) vendored in
 `mkstudio.vfs/lib/mkitsql`. Everything below was run, not read off a description.
 
 ## 1. How it is wired
@@ -55,6 +55,7 @@ wiring and UI suites):
 | `first_commit` (31), `commitfail` / `commitfail_records`, `damage` (70) | pass |
 | `attest` (13: `-verify` as a proof from MK Studio's `.sum`), `locking` (75), `lock_crash` (34) | pass |
 | `power_loss` (515 synthesised after-power-cut states) | pass |
+| `lock_takeover` (29: the takeover step by step, starved processes, two reapers of one guard), `lock_crash` (40) | pass |
 
 and MK Studio's `tests/test_engine_wiring.tcl` (29: engine identity and version, parse offsets and syntax-error codes for the
 editor, a statement's change in the store's open database, commit, checksum, lock, rollback, foreign-lock refusal),
@@ -62,41 +63,42 @@ editor, a statement's change in the store's open database, commit, checksum, loc
 CI repeats the studio-side suites on every push - on the pinned commit (must pass) and on mkit-sql's newest commit (may fail:
 early warning of drift).
 
-## 4. Still different, and what to do in mkit-sql
+## 4. What was different, what was done in mkit-sql, what still is
 
-I could not push to `atyr647/mkit-sql` from this session (access was declined), so these are a patch, verified on a scratch copy
-of `37847c1` (`patch -p1 < docs/mkit-sql-protocol-sync.patch`; `syncdisk`, `locking`, `review_regress`, `first_commit`,
-`commitfail` pass afterwards):
+Everything that used to be a patch is now in mkit-sql itself (0.4.1, pushed to `atyr647/mkit-sql`, branch `ccr-f017368d-kguqg8`; it
+descends from the default branch, so it merges without a conflict) and vendored here:
 
-1. **A lock file that exists but cannot be read counts as free in mkit-sql** (`lockInfo`: the `open` failure is read as "vanished
-   meanwhile"). Another user's lock under a strict umask is then taken over. MK Studio: held. (The patch distinguishes by looking
-   whether the file is still there.)
-2. **mkit-sql's Windows flush is a no-op when the host is a GUI program** (`syncWindows` starts PowerShell directly). A Windows GUI
+1. **A lock file that exists but cannot be read counted as free** (`lockInfo`: the `open` failure was read as "vanished meanwhile").
+   Another user's lock under a strict umask was then taken over. Now held, as in MK Studio.
+2. **mkit-sql's Windows flush was a no-op when the host is a GUI program** (`syncWindows` started PowerShell directly; a Windows GUI
    program has no console, Tcl then starts console programs without one, and PowerShell does nothing at all - exit status 0, no
-   output, no effect (measured on real `windows-latest` runners with the 2014 and the current tclkit). MK Studio had exactly this
-   bug in 1.0.0-rc.1; mkit-sql copied it, and `tests/syncdisk.tcl` only checks the return value, so it passes. Inside MK Studio
-   the integrated engine uses MK Studio's (fixed) flush; mkit-sql *standalone* in a console `tclsh` works, in a wish-based host it
-   does not. The patch starts PowerShell through `cmd /c` with `-EncodedCommand` (which also carries accented file names
-   intact; an environment variable did not) and makes the test require that a script really wrote a file.
-3. **`integration/install-into-mkstudio.sh`** fails (the patch is already applied) against an MK Studio that carries the
-   integration, and so does the CI step "The installer and patch apply to a fresh mkstudio checkout". The patch makes the
-   script say so and exit 0 when `mkstudio.vfs/lib/mkitsql/SOURCE` exists; that CI step can then stay or go.
-4. **mkit-sql's CI job `mkstudio`** checks out MK Studio's *default* branch - which is, at the time of writing, the branch this work
-   is on (`ccr-f017368d-kguqg8`; nothing was merged or opened as a pull request from here). It therefore tests the integrated
-   MK Studio, and its step "The installer and patch apply to a fresh mkstudio checkout" fails until item 3 is applied there.
-5. **mkit-sql's `damage` suite can kill the process it runs in.** It feeds randomly damaged files to Metakit inside the test
+   output, no effect: measured on real `windows-latest` runners with the 2014 and the current tclkit). MK Studio had exactly this bug in
+   1.0.0-rc.1; mkit-sql copied it, and `tests/syncdisk.tcl` only checked the return value. Now PowerShell is started through `cmd /c`
+   with `-EncodedCommand` (which also carries accented file names intact), and the test requires that a script really wrote a file.
+3. **The takeover deleted the stale lock by name** - which lets a second process destroy a live owner's brand-new lock when the
+   takeover guard is wrongly removed (see `docs/CONCURRENCY.md`; reproduced on demand). Both implementations now move the lock aside
+   with one atomic rename, judge the *moved* file and put a live lock back; and a process that wrote its pid into a lock file that had
+   been overtaken meanwhile notices. `tests/lock_takeover.tcl` (mkit-sql) and `tests/test_lock_crash.tcl` (here) test the same scenarios.
+4. `integration/install-into-mkstudio.sh` failed against an MK Studio that carries the integration (the patch was already applied);
+   it now says so and exits 0. mkit-sql has a `LICENSE` file (MIT).
+5. mkit-sql's CI job `mkstudio` checks out MK Studio's *default* branch - at the time of writing the branch this work is on
+   (`ccr-f017368d-kguqg8`; nothing was merged or opened as a pull request from here), so it tests the integrated MK Studio.
+6. **mkit-sql's `damage` suite can kill the process it runs in.** It feeds randomly damaged files to Metakit inside the test
    process; on the current 8.6.16 runtime the process died with a segmentation fault in one CI run out of four (the same suite
    passed on the others and locally). It tests mkit-sql's own storage layer, which MK Studio does not use, so CI retries it and
    warns instead of failing on a death by signal; any ordinary failure still fails. mkit-sql's `-verify` (a throw-away child
    process) is the intended defence against exactly this, and the suite would be safer if it ran each file in one too.
-6. Not needed for correctness, noted: mkit-sql's pid-reuse check is Linux-only (MK Studio: also macOS and Windows) - the
-   stricter-only direction, so a dead process's lock can stay until removed by hand (MK Studio's dialog has *Remove Lock...*).
+7. Still different, not needed for correctness: mkit-sql's pid-reuse check is Linux-only (MK Studio: also macOS and Windows) - the
+   stricter-only direction, so a dead process's lock can stay until removed by hand (MK Studio's dialog has *Remove Lock...*);
+   the commit-time check (`verifyLock`) exists only here.
+8. mkit-sql's results are capped at 100,000 rows and some statements are slower than MK Studio's built-in dialect (README of
+   mkit-sql has the table); `MKS_ENGINE=mkql` is the workaround.
 
 ## 5. The earlier bulk-mutation comparison
 
 An earlier version of this file compared `DELETE` / `UPDATE` of 200,000-row tables between MK Studio's own engine and
 mkit-sql at `fa3f77d` (MK Studio's rebuild was as fast or faster; mkit-sql's `bulkMin = 20000` left a wide range on the
-quadratic path). mkit-sql 0.4.0 has changed since (a rebuild strategy for big deletes/updates, the `-glob` pushdown, a faster
+quadratic path). mkit-sql has changed since (a rebuild strategy for big deletes/updates, the `-glob` pushdown, a faster
 tokenizer); the numbers were not repeated and are dropped. `tests/bench_mutation.tcl` still runs both on identical files in CI
 and compares the resulting tables row by row.
 

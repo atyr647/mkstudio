@@ -51,6 +51,7 @@ foreach {name step preseed expectFiles} {
     killed_after_creating_the_lock         created 0 {lock}
     killed_after_writing_the_lock          written 0 {lock}
     killed_holding_the_takeover_mutex      mutex   1 {lock mutex}
+    killed_after_moving_the_lock_aside     claimed 1 {mutex aside}
     killed_between_delete_and_create       deleted 1 {mutex}
     killed_after_a_normal_release          released 0 {}
 } {
@@ -59,6 +60,7 @@ foreach {name step preseed expectFiles} {
     set have {}
     if {[file exists $db.lock]} { lappend have lock }
     if {[file exists $db.lock.guard]} { lappend have mutex }
+    if {[llength [store::takeovers $db.lock]]} { lappend have aside }
     check "$name: what it left behind" $have $expectFiles
     lassign [acquireWithin 8] tag ms
     ok "$name: another process can still take the database (took $ms ms)" [expr {$tag ne "" && $ms < 6000}] "no lock within 8 s; files: [glob -nocomplain $db.*]"
@@ -67,8 +69,9 @@ foreach {name step preseed expectFiles} {
         catch {close $h}
         store::closeFile $tag
         set left [lsort [glob -nocomplain $db.lock*]]
-        if {[llength $left] && $left eq "$db.lock.guard"} {
-            # an abandoned takeover guard is harmless: it is removed once it has aged past the abandonment limit
+        set litter 1 ; foreach f $left { if {$f ne "$db.lock.guard" && [lsearch -exact [store::takeovers $db.lock] $f] < 0} { set litter 0 } }
+        if {[llength $left] && $litter} {
+            # an abandoned takeover guard (or a lock moved aside by a killed takeover) is harmless: it is removed once it has aged past the abandonment limit
             after 2200
             lassign [acquireWithin 8] tag2 ms2
             ok "$name: a leftover mutex does not block the next owner" [expr {$tag2 ne ""}]
@@ -96,7 +99,7 @@ proc overlapped {ev} {
 proc stallRun {emptyStale {step created} {mutexStale 1}} {
     global db kit here host
     fresh
-    if {$step eq "checked"} { rawlock "999999 $host" }       ;# a stale lock (its pid does not exist): the takeover path
+    if {$step in {checked claimed}} { rawlock "999999 $host" }       ;# a stale lock (its pid does not exist): the takeover path
     set log [tmp lockstall.log] ; file delete $log $log.release
     foreach v {MKS_LOCK_EMPTY_STALE MKS_LOCK_MUTEX_STALE} { set save($v) [expr {[info exists ::env($v)] ? $::env($v) : ""}] }
     set ::env(MKS_LOCK_EMPTY_STALE) $emptyStale ; set ::env(MKS_LOCK_MUTEX_STALE) $mutexStale
@@ -126,20 +129,19 @@ proc stallRun {emptyStale {step created} {mutexStale 1}} {
     foreach l $lines { lassign $l ms pid what ; dict set ev $pid $what $ms ; dict set ev $pid pid $pid }
     return [list $a $b $ev $lines]
 }
-# a) limit shortened to 1 s: B overtakes the starved A; A then wakes up, writes its pid into the lock file B deleted and
-#    "acquires" while B still holds the lock: two owners
+# a) limit shortened to 1 s: B overtakes the starved A (its lock file is still empty after the limit).  A then wakes up and writes
+#    its pid into the file B moved aside: A must NOTICE that the file under the name is not its own any more and not "acquire"
+#    while B holds the lock (before the lock was checked after writing, this was an overlap: A believed it owned the database)
 lassign [stallRun 1] a b ev lines
 set aAcq [expr {[dict exists $ev $a ACQUIRED] ? [dict get $ev $a ACQUIRED] : ""}]
 set bAcq [expr {[dict exists $ev $b ACQUIRED] ? [dict get $ev $b ACQUIRED] : ""}]
-set bRel [expr {[dict exists $ev $b RELEASED] ? [dict get $ev $b RELEASED] : ""}]
-puts "  stall reproduction, limit 1 s: [join $lines {; }]"
-set overlap [expr {$bAcq ne "" && $aAcq ne "" && $aAcq > $bAcq && $aAcq < $bRel}]
+puts "  stall, limit 1 s: [join $lines {; }]"
+ok "stall, limit 1 s: nobody held the lock at the same time as somebody else" [expr {![overlapped $ev]}] $lines
 if {$::tcl_platform(platform) eq "windows"} {
-    # Windows has other file-deletion semantics (a file another process is touching cannot be deleted at once), so the forced
-    # overlap is reported, not required, there; what must hold everywhere is the mutual exclusion with a long limit (below).
-    puts "  (Windows: forced overlap observed: [expr {$overlap ? {yes} : {no}}])"
+    # Windows cannot move a file another process still has open: B cannot overtake A at all there (it keeps waiting)
+    puts "  (Windows: B overtook the starved A: [expr {$bAcq ne {} && $aAcq eq {} ? {yes} : {no}}])"
 } else {
-    ok "stall, limit 1 s: B overtook the starved A and A, waking up, 'acquired' while B still held the lock (the overlap)" $overlap $lines
+    ok "stall, limit 1 s: B overtook the starved A, and A, waking up, noticed it and did not 'acquire'" [expr {$bAcq ne "" && $aAcq eq ""}] $lines
 }
 # b) a limit longer than the stall (the real one is 5 s; 60 s here so that no machine is slow enough to reach it): the same stall
 #    changes nothing - B keeps being refused, then gives up, and A completes
@@ -148,20 +150,21 @@ puts "  stall, limit 60 s: [join $lines {; }]"
 # (what matters is mutual exclusion, not who wins: on a slow machine the two start-up times decide that)
 ok "stall, limit 60 s: nobody held the lock at the same time as somebody else" [expr {![overlapped $ev]}] $lines
 ok "stall, limit 60 s: somebody got the lock, somebody was refused or both took turns" [expr {[dict exists $ev $a ACQUIRED] || [dict exists $ev $b ACQUIRED]}] $lines
-# c) the same, in the takeover: A judges a stale lock stale, holds the takeover guard and is starved before it deletes the
-#    lock.  With the guard limit shortened to 1 s, B declares the guard abandoned, takes over properly and holds the lock - and
-#    A, waking up, deletes B's lock and creates its own.  (This - a slow process held up past a shortened guard limit - is the
-#    likelier reading of the macos-15-intel overlap: its guard section includes `exec ps`, which can be slow on a busy runner.)
+# c) the same, in the takeover: A judges a stale lock stale, holds the takeover guard and is starved before it changes anything.
+#    With the guard limit shortened to 1 s, B declares the guard abandoned, takes over properly and holds the lock.  A wakes up and
+#    carries on with its verdict ("stale") - which is out of date.  The takeover moves the lock aside and looks at what it got: B's
+#    live lock.  It puts it back and gives up.  (A delete by name here destroyed B's lock and both were inside; this - a slow process
+#    held up past a shortened guard limit - was the likelier reading of the macos-15-intel overlap: its guard section includes `exec ps`.)
 lassign [stallRun 1 checked 1] a b ev lines
 set aAcq [expr {[dict exists $ev $a ACQUIRED] ? [dict get $ev $a ACQUIRED] : ""}]
 set bAcq [expr {[dict exists $ev $b ACQUIRED] ? [dict get $ev $b ACQUIRED] : ""}]
-set bRel [expr {[dict exists $ev $b RELEASED] ? [dict get $ev $b RELEASED] : ""}]
 puts "  takeover stall, guard limit 1 s: [join $lines {; }]"
-set overlap [expr {$bAcq ne "" && $aAcq ne "" && $aAcq > $bAcq && $aAcq < $bRel}]
+ok "takeover stall, guard limit 1 s: nobody held the lock at the same time as somebody else" [expr {![overlapped $ev]}] $lines
 if {$::tcl_platform(platform) eq "windows"} {
-    puts "  (Windows: forced overlap observed: [expr {$overlap ? {yes} : {no}}])"
+    puts "  (Windows: B took over, A was refused: [expr {$bAcq ne {} && $aAcq eq {} ? {yes} : {no}}])"
 } else {
-    ok "takeover stall, guard limit 1 s: both processes ended up inside at the same time (the overlap)" $overlap $lines
+    ok "takeover stall, guard limit 1 s: B took over, the woken A found B's live lock, put it back and was refused" [expr {$bAcq ne "" && $aAcq eq "" && [dict exists $ev $a REFUSED]}] $lines
+    ok "takeover stall, guard limit 1 s: B's lock text survived A's attempt (B's commit-time check passes)" [regexp "\\m$b VERIFY ok" [join $lines \n]] $lines
 }
 # d) a guard limit longer than the stall (the real one is 10 s): B waits for the guard, gives up, A completes
 lassign [stallRun 60 checked 60] a b ev lines
@@ -170,13 +173,57 @@ ok "takeover stall, guard limit 60 s: nobody held the lock at the same time as s
 ok "takeover stall, guard limit 60 s: somebody got the lock" [expr {[dict exists $ev $a ACQUIRED] || [dict exists $ev $b ACQUIRED]}] $lines
 fresh
 
+# e) starved between moving the stale lock aside and making its own: the name is free, so a newcomer takes it directly (an exclusive
+#    create); the woken process finds the name taken and is refused.  (The one moment the lock is absent; harmless because the create is exclusive.)
+lassign [stallRun 60 claimed 60] a b ev lines
+puts "  stall after moving the lock aside: [join $lines {; }]"
+ok "aside stall: nobody held the lock at the same time as somebody else" [expr {![overlapped $ev]}] $lines
+ok "aside stall: the newcomer got the lock, the woken process was refused" [expr {[dict exists $ev $b ACQUIRED] && [dict exists $ev $a REFUSED]}] $lines
+check "aside stall: no litter after both are done" [lsort [glob -nocomplain $db.lock.take.*]] {}
+fresh
+
+# ---- A2b. the takeover step by step, in one process ---------------------------------------------------------------------------
+# claimStale moves the lock aside and judges what it MOVED.
+set lf [store::lockPath $db]
+rawlock "999999 $host"
+check "claimStale: a dead owner's lock is moved aside, judged stale and deleted" [store::claimStale $lf] claimed
+ok "claimStale: ... and the name is free, nothing left" [expr {![file exists $lf] && ![llength [store::takeovers $lf]]}]
+check "claimStale: nothing under the name" [store::claimStale $lf] gone
+# a lock of another host is always held: it must be put back unchanged, and the name must hold exactly that file again
+rawlock "4242 some-other-machine"
+set before [list [file mtime $lf] [file size $lf]]
+check "claimStale: a live (foreign) lock found under the name is put back" [store::claimStale $lf] alive
+check "claimStale: ... with its text" [string trim [read [set h [open $lf r]]]] "4242 some-other-machine" ; close $h
+check "claimStale: ... and its time and size" [list [file mtime $lf] [file size $lf]] $before
+ok "claimStale: ... and no copy left" [expr {![llength [store::takeovers $lf]]}]
+file delete $lf
+# the same with a file name full of glob characters
+set odd [tmp {lock [abc] *?{x}.mk}]
+foreach f [glob -nocomplain -directory [file dirname $odd] -- [string map [list \[ \\\[ \] \\\] * \\* ? \\? \{ \\\{ \} \\\}] [file tail $odd]]*] { file delete $f }
+set olf [store::lockPath $odd]
+set h [open $olf w] ; puts -nonewline $h "4242 some-other-machine" ; close $h
+check "odd name: a live lock is put back" [store::claimStale $olf] alive
+ok "odd name: ... and the file is there" [file exists $olf]
+file delete $olf
+# litter of a killed takeover: only a copy older than the guard limit is deleted; breakLock takes all
+set old [expr {[clock seconds] - 100}] ; set new [clock seconds]
+foreach {n} [list $olf.take.$old.1.1 $olf.take.$new.1.2] { set h [open $n w] ; close $h }
+store::tidyTakeovers $olf
+set rest {} ; foreach f [store::takeovers $olf] { lappend rest [file tail $f] }
+check "tidy: the old copy goes, the recent one stays" [lsort $rest] [list [file tail $olf].take.$new.1.2]
+store::breakLock $odd
+check "breakLock: takes the litter too" [llength [store::takeovers $olf]] 0
+fresh
+
 # ---- A3. two processes reap the same abandoned takeover guard -----------------------------------------------------------------
 # A process killed while it holds the takeover guard leaves it behind; every waiter deletes it once it is older than the limit - BY NAME.
 # A judges the guard abandoned and is descheduled before the delete; B deletes it, makes a guard of its own and, inside its takeover
-# section, is descheduled too; A wakes and deletes B's FRESH guard, takes over; B wakes, deletes A's new lock and takes over: for a
-# while both are inside (found by the macOS-Intel lock soak: 3 overlaps in ~12,000 contended acquisitions; reproduced here on demand).
-# The protocol cannot be made identity-safe without changing the guard (a change for every implementation together), so the safety
-# net is the check a commit makes just before it writes: is the lock file still mine?  Of the two, exactly one may pass it.
+# section, is descheduled too; A wakes and deletes B's FRESH guard and is inside the takeover section as well.  (Found by the
+# macOS-Intel lock soak: 3 overlaps in ~12,000 contended acquisitions; reproduced here on demand.)
+# Until rc.2 the takeover then deleted the lock by name: A took over, B woke and deleted A's brand-new lock and took over too - both
+# owned the database for a while, and only the commit-time check (`verifyLock`) stopped the second from saving.  Now the takeover
+# moves the lock aside (one atomic rename) and judges what it moved: B finds A's live lock, puts it back and is refused until A
+# is done.  Required here: the two are never inside together, and both commit-time checks pass.
 proc reaperRace {} {
     global db kit here host
     fresh
@@ -202,14 +249,15 @@ proc reaperRace {} {
 }
 lassign [reaperRace] a b ev lines
 puts "  two reapers of one abandoned guard: [join $lines {; }]"
-# (A holds 1.5 s and B 3.5 s: A makes its commit-time check while B is still inside, B at the end when A has left)
+# (A holds 1.5 s and B 3.5 s: A makes its commit-time check while B is waiting, B at the end when A has left)
 set bothIn [expr {[dict exists $ev $a ACQUIRED.ms] && [dict exists $ev $b ACQUIRED.ms] && [dict get $ev $b ACQUIRED.ms] < [dict get $ev $a RELEASED.ms]}]
-puts "  (both inside at once: [expr {$bothIn ? {yes - the race is real} : {no}}])"
 set va [expr {[dict exists $ev $a VERIFY] ? [dict get $ev $a VERIFY] : "?"}]
 set vb [expr {[dict exists $ev $b VERIFY] ? [dict get $ev $b VERIFY] : "?"}]
 ok "reapers: both processes finished" [expr {$va ne "?" && $vb ne "?"}] $lines
-ok "reapers: never both may pass the commit-time lock check (A: $va, B: $vb)" [expr {!($va eq "ok" && $vb eq "ok")}] $lines
-ok "reapers: the process that took the lock last may save (its check passes), the one it overtook may not" [expr {$va eq "lost" && $vb eq "ok"}] $lines
+ok "reapers: never inside together" [expr {!$bothIn}] $lines
+ok "reapers: A kept its lock (its commit-time check passes: A $va)" [expr {$va eq "ok"}] $lines
+ok "reapers: B got the database after A was done, and its check passes (B $vb)" [expr {$vb eq "ok" && [dict exists $ev $b ACQUIRED.ms] && [dict get $ev $b ACQUIRED.ms] >= [dict get $ev $a RELEASED.ms]}] $lines
+check "reapers: nothing left behind" [lsort [glob -nocomplain $db.lock*]] {}
 fresh
 
 # ---- B. chaos -------------------------------------------------------------------------------------------------------------

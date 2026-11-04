@@ -77,13 +77,23 @@ Readers must ignore fields they don't know.
        empty or garbled and older than **5 seconds** (its creator died between creating and writing it).
      - **ours** - same pid and host (left by an earlier run of this very process).
 3. **Take over** a stale/ours lock under the guard file `<database>.lock.guard`, so that processes that all see the
-   same stale lock cannot each delete the winner's fresh one:
+   same stale lock rarely get in each other's way:
    1. create the guard exclusively; if it exists, wait (~40 ms) and try again for about two seconds; a guard older
       than **10 seconds** was abandoned by a crash and is deleted;
-   2. with the guard held, **classify the lock again**; only if it is still stale/ours (or gone) delete it (an
-      implementation may create the new lock before or after releasing the guard);
-   3. delete the guard. Exactly one process wins; the others find a live owner. A process that cannot get the lock
-      after waiting reports "starting at the same moment, please repeat".
+   2. with the guard held, **classify the lock again**; only if it is still stale/ours (or gone) **move it aside** with one
+      rename to `<database>.lock.take.<seconds>.<pid>.<n>` and **classify the moved file**: still stale - delete it; *alive* - a
+      process got in under a guard that was wrongly removed (see below): **put it back** (a hard link, which does not replace
+      what may have been created meanwhile; where hard links do not exist, a rename after looking that the name is free) and
+      give up. Never delete a lock by its name alone: the file under the name may not be the file that was judged;
+   3. create the new lock exclusively (as in 1.), then delete the guard. Exactly one process wins; the others find a live
+      owner. A process that cannot get the lock after waiting reports "starting at the same moment, please repeat".
+
+   A moved-aside file that a killed process never deleted is litter: its name carries the second it was moved, and any
+   copy older than the guard limit (10 s) is deleted by the next process that takes a lock, and by *Remove Lock...*.
+4. **After writing** its pid into a new lock, check that the file under the name still holds what was written. A process that was
+   held up between creating the lock file and writing it (starved, suspended) may have been taken for dead and overtaken; what it
+   wrote went into a file that is no longer under the name. If the text is not its own (or the file is gone) it has *not* got the
+   lock: back to the start. (A file that exists but cannot be read at that moment proves nothing and does not stop it.)
 
 **Release** (on close): delete `<database>.lock` *only if it still holds exactly what you wrote*. If it was replaced,
 leave it alone.
@@ -96,7 +106,7 @@ for the same file and cannot be told from another file by name: inside one MK St
 ("already open"), but a different process opening a hard link of a database that is open elsewhere takes a different lock file.
 Do not hard-link databases.
 
-**Conformance - what both implementations do, and the differences left** (MK Studio's `store.tcl` and mkit-sql 0.4.0's `db.tcl`): the line format, the guard name and the 5 s / 10 s limits are identical and tested against each other (`tests/test_lock_protocol.tcl`); both resolve symbolic links before naming the lock, both refuse to follow or read a lock that is not a plain file (it counts as held), both re-check the lock inside the guard, both treat a pid that started after the lock file was written as not its owner (MK Studio on Linux, macOS and Windows; mkit-sql on Linux only - stricter systems never take a lock away, so this only makes mkit-sql keep a dead process's lock until it is removed by hand). One difference is a defect of mkit-sql 0.4.0: a lock file that exists but cannot be *read* counts there as free (MK Studio: held); `docs/mkit-sql-protocol-sync.patch` fixes it.
+**Conformance - what both implementations do, and the differences left** (MK Studio's `store.tcl` and mkit-sql 0.4.1's `db.tcl`): the line format, the guard name, the 5 s / 10 s limits and the takeover (move aside, judge the moved file, put a live lock back; the re-read after writing) are identical and tested against each other (`tests/test_lock_protocol.tcl`, and mkit-sql's `tests/lock_takeover.tcl` for the scenarios of this document); both resolve symbolic links before naming the lock, both refuse to follow or read a lock that is not a plain file (it counts as held), both treat a lock that exists but cannot be read as held, both re-check the lock inside the guard, both treat a pid that started after the lock file was written as not its owner (MK Studio on Linux, macOS and Windows; mkit-sql on Linux only - stricter systems never take a lock away, so this only makes mkit-sql keep a dead process's lock until it is removed by hand). What only MK Studio has: the commit-time check (`verifyLock`), *Remove Lock...*, and the start-time probes on macOS and Windows. **Older programs** (MK Studio 1.0.0-rc.2 and before, mkit-sql 0.4.0 and before) still delete the lock by name in a takeover; among themselves, and against the newer ones, they have the old window (the newer one is then the one that notices, through its re-read and its commit-time check).
 
 **An unreadable lock is a held lock.** If `<database>.lock` exists but cannot be read (another user's file under a strict umask, a
 permissions problem) the database is treated as held by an owner that cannot be named - never as free.
@@ -133,16 +143,27 @@ So on Linux and Apple silicon no overlap was seen in ~58,000 acquisitions; on th
 set: acquisitions there took up to 6 s) three overlaps in ~12,000. In every logged case another process had *taken over the lock
 of a process that was alive and inside* (two or three takeovers within ~300 ms; the victim then found its marker file empty or
 gone). What is established: it needs real contention (eight processes, kills every 120 ms) and a loaded machine, and it is not the
-pid-liveness probe (`killProbe` and `pidAlive` were hardened before and the overlaps still occur). **The cause, since reproduced on demand
-(`tests/test_lock_crash.tcl`, "two reapers of one abandoned guard"):** when a process is killed while it holds the takeover guard, the abandoned guard is removed once it is 10 s old by
+pid-liveness probe (`killProbe` and `pidAlive` were hardened before and the overlaps still occur). **The cause, reproduced on demand (`tests/test_lock_crash.tcl`, "two reapers of one abandoned guard"):** when a process is killed while it holds the takeover guard, the abandoned guard is removed once it is 10 s old by
 every waiter that notices at about the same time - and a waiter that checked the age of the *old* guard can delete, by name, the
-*fresh* guard that another waiter has just created, so two of them are inside the takeover section together, and the second one
-deletes the first one's brand-new lock. (Both implementations delete by name; the protocol cannot be made identity-safe without
-changing the guard's content or name, which must be done in both implementations together - and the situation needs a process killed
-inside a window of a few milliseconds plus two others arriving within a few milliseconds of each other ten seconds later, so it was
-decided not to change the protocol: see "What MK Studio does about it". The test forces the interleaving with a hook between the
-guard's age verdict and its deletion; both processes do end up inside, and exactly one of them - the one whose lock was overwritten
-- fails the commit-time check.)
+*fresh* guard that another waiter has just created, so two of them are inside the takeover section together. Until 1.0.0-rc.2 the
+takeover then deleted the lock by name, so the second one destroyed the first one's brand-new lock and both owned the database (a
+delete by name cannot tell the stale lock it judged from a fresh one under the same name). The test forced the interleaving with a
+hook between the guard's age verdict and its deletion; both processes did end up inside, and one of them failed the commit-time check.
+
+**The fix (MK Studio since 1.0.0-rc.3; mkit-sql since 0.4.1):** the takeover no longer deletes
+the lock by name. It moves it aside with one atomic rename and looks at the file it actually got (step 3.2 above); a live lock is put back.
+So the guard is a way to avoid contention, no longer the thing that keeps the takeover correct, and a guard that is wrongly
+removed cannot hurt. The same test now requires that the two are *never* inside together (the second waits until the first is done),
+and the starved-process tests (a process held up between creating the lock and writing it; held up inside the takeover past a
+shortened guard limit), which used to end in an overlap, now end with the woken process refused. With the chaos soak (8 processes, kills every
+120 ms, random freezes of 1.3 s, the *shortened* 1 s limits that make wrong judgements likely): 8,425 acquisitions on Linux, 0 violations.
+
+**What is left, honestly.** A pure file protocol has no atomic "delete this file only if it is still that file", so two instants
+remain in which an overlap needs *three* processes and a few microseconds each: the moment a wrongly judged takeover has the live
+lock moved aside (the name is free; a third process arriving exactly then makes its own lock, and the put-back finds the name taken),
+and the moment between a process's last look at its lock and Metakit's write. Both end the same way as before: the owner whose lock
+text is gone fails the commit-time check below, and nothing is saved by two programs. Closing them completely needs a lock the
+operating system releases when the process dies (`flock`/`LockFileEx`), which Tcl cannot do from a plain file channel.
 
 **What MK Studio does about it:** just before a commit writes, it checks that the lock file still holds its own text
 (`store::verifyLock`). If somebody else's text is there the commit is refused with the error code `{STORE LOCKLOST text}` - the
@@ -151,8 +172,7 @@ through a replaced lock, the one whose lock was overwritten therefore cannot sav
 between that check and Metakit's write; it does not make the lock a guarantee. **Treat the lock as protection against accidents
 (two windows, two programs), not as a guarantee against a hostile or badly overloaded machine.**
 
-Raising the real limits makes the window rarer, never zero; closing it needs a lock the operating system itself
-releases when the process dies (`flock`/`LockFileEx`), which Tcl cannot do from a plain file channel.
+Raising the real limits makes the remaining windows rarer, never zero.
 
 A crashed owner leaves its lock behind until the next opener finds it stale (same host) - there is no timeout for
 remote owners, by design. The only time-based rules are the two abandonment limits above (5 s, 10 s), compared with the

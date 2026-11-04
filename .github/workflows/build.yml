@@ -593,7 +593,7 @@ jobs:
           export MKIT_STORE="$GITHUB_WORKSPACE/mkstudio.vfs/lib/app-mkstudio/store.tcl"
           for kit in "$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.16-linux-x86_64" "$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.3-linux-x86_64"; do
             echo "=== $kit"
-            for t in studio_contract studio_listbug studio_repair attest locking lock_crash first_commit commitfail commitfail_records damage review_regress dropview insertrows run; do
+            for t in studio_contract studio_listbug studio_repair attest locking lock_crash lock_takeover first_commit commitfail commitfail_records damage review_regress dropview insertrows run; do
               echo "--- $t"
               if [ "$t" = damage ]; then
                 # mkit-sql's own storage layer reading randomly damaged files IN this process: Metakit may segfault on garbage (it did once

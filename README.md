@@ -28,7 +28,7 @@ More screenshots: [`docs/screenshots/`](docs/screenshots/) (all captured from th
 
 ## The query language: standard SQL (mkit-sql), behind a pluggable seam
 
-Queries are **standard SQL** run by [mkit-sql](https://github.com/atyr647/mkit-sql) 0.4.0 (joins, CTEs incl. `WITH RECURSIVE`,
+Queries are **standard SQL** run by [mkit-sql](https://github.com/atyr647/mkit-sql) 0.4.1 (joins, CTEs incl. `WITH RECURSIVE`,
 window functions, `MERGE`, `LATERAL`, `ROLLUP/CUBE`, dates and intervals, bounded-memory spilling, `EXPLAIN`; the language is
 documented in its `docs/SQL.md`). It is **vendored** in [`mkstudio.vfs/lib/mkitsql`](mkstudio.vfs/lib/mkitsql) at a known commit
 (named in its `SOURCE` file; `tools/sync-mkitsql.sh` updates the copy and CI checks it byte for byte against that commit), so a
@@ -321,7 +321,7 @@ real processes for a free lock and for the same stale lock - half of them mkit-s
 then runs a chaos loop (eight processes, random SIGKILLs, mutual exclusion checked from inside: 0 violations in ~400
 acquisitions per run). Between them they found three real defects, all fixed: several processes could each "take over"
 the same stale lock; a process whose stale lock was deleted by a competitor at the wrong instant carried on *without any
-lock* (this one was in mkit-sql too and is fixed there in 0.4.0 - see [`docs/mkit-sql-integration.md`](docs/mkit-sql-integration.md)); and a zombie (killed, not yet collected) counted as a live owner. mkit-sql implements the same published protocol;
+lock* (this one was in mkit-sql too and is fixed there since 0.4.0 - see [`docs/mkit-sql-integration.md`](docs/mkit-sql-integration.md)); and a zombie (killed, not yet collected) counted as a live owner. mkit-sql implements the same published protocol;
 an attempt of mine to change it unilaterally (`670fc86`) was caught by the interop job and reverted.
 
 The lock only protects cooperating programs - others that open the file ignore it - and relies on `O_EXCL`, which is
@@ -438,7 +438,7 @@ tests/         the suites above; tools/  runtime build (build-kit.sh, fetch-runt
 build.sh  .github/workflows/build.yml   (build, test and release; a manual "lock soak" job; the release job publishes a tag only when everything is green)
 RELEASE_NOTES.md       the text of the current release
 docs/CONCURRENCY.md    the shared write-lock / generation policy (for mkit-sql or a server), with its measurements
-docs/mkit-sql-integration.md   how mkit-sql is wired in, what was found, what differs; docs/mkit-sql-protocol-sync.patch for its repository
+docs/mkit-sql-integration.md   how mkit-sql is wired in, what was found, what differs
 docs/QA-CHECKLIST.md   the manual checks automation cannot do
 docs/OPEN-ITEMS.md     what is still open, the evidence, and whether it is worth doing
 docs/screenshots/      what the program looks like

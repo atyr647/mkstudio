@@ -2,7 +2,9 @@
 # Opens a Metakit file read-only and reads every cell of every table, subtables included.  Metakit trusts the file
 # completely (no checksums): a damaged one can crash or hang the reader, which is why this is not done in the caller.
 # Prints  OK <rows> <views>   or   ERR <message>.
-if {[catch {package require Mk4tcl} msg]} { puts "ERR Mk4tcl is not available: $msg" ; exit 0 }
+# the Mk4tcl the parent uses, when it is a shared library loaded by path (MKIT_VERIFY_LIB), else the one a tclkit has or the package
+if {[info exists ::env(MKIT_VERIFY_LIB)] && $::env(MKIT_VERIFY_LIB) ne "" && [catch {load $::env(MKIT_VERIFY_LIB) Mk4tcl}] == 0} {
+} elseif {[catch {package require Mk4tcl} msg]} { puts "ERR Mk4tcl is not available: $msg" ; exit 0 }
 fconfigure stdout -buffering line
 set f [lindex $argv 0]
 if {[catch {mk::file open vf $f -readonly -nocommit} msg]} { puts "ERR $msg" ; exit 0 }

@@ -21,6 +21,9 @@ proc ::mkitsql::db::openFile {path args} {
     set fargs {}
     foreach a $args { if {$a ni {-unchecked -verify}} { lappend fargs $a } }
     set real [file normalize $path]
+    # a file over 2 GiB (wide format) that this Mk4tcl cannot read would look EMPTY (and the store would hide it behind a new commit)
+    set why [::mkitsql::db::wideRefusal $real]
+    if {$why ne ""} { return -code error -errorcode [list MKIT WIDEFILE] $why }
     # A newer MK Studio puts right an interrupted commit while it opens a file for writing (after taking the lock): the frame
     # check must then come AFTER the open, or it would refuse the very file that is about to be repaired.  An older one does not,
     # so its files are checked first.
@@ -64,6 +67,7 @@ proc ::mkitsql::db::openFile {path args} {
         return -code error -errorcode [list MKIT DAMAGED "not a Metakit database"] "This file isn't a Metakit database, so it was not opened:\n$real"
     }
     variable level ; set level($tag) $vlevel
+    ::mkitsql::db::wideCapable ; ::mkitsql::db::guardReset $tag 1
     return $tag
 }
 # MK Studio's store calls "damaged" what has the recorded size and time but another checksum; when the sum was written in the same second as the
@@ -99,7 +103,7 @@ proc ::mkitsql::db::integrityOf {tag} {
 }
 # what was put right when the file was opened (an interrupted commit), "" if nothing
 proc ::mkitsql::db::repairedNote {tag} { if {[llength [info commands ::store::repairedNote]]} { return [::store::repairedNote $tag] } ; return "" }
-proc ::mkitsql::db::closeFile {tag} { variable level ; variable state ; unset -nocomplain level($tag) state($tag) ; ::store::closeFile $tag ; ::mkitsql::typeForget $tag }
+proc ::mkitsql::db::closeFile {tag} { variable level ; variable state ; unset -nocomplain level($tag) state($tag) ; ::store::closeFile $tag ; ::mkitsql::typeForget $tag ; ::mkitsql::db::guardForget $tag }
 proc ::mkitsql::db::commit {tag} {
     if {[catch {::store::commit $tag} err opts]} {
         # a failed commit (a full disk, Metakit's 2 GiB limit): put the file right if this store can, discard the pending changes, and
@@ -115,21 +119,30 @@ proc ::mkitsql::db::commit {tag} {
         }
         catch {::store::rollback $tag}
         ::mkitsql::typeForget $tag
+        ::mkitsql::db::guardReset $tag 1
         set size [expr {[file exists $path] ? [file size $path] : 0}]
-        return -code error -errorcode [list MKIT COMMITFAILED $size] "The commit failed ($err) - most likely the size limit of a Metakit file (2 GiB) or a full disk. The database file was put back to its last committed state where possible and the changes made since then were discarded (as ROLLBACK does). $note"
+        return -code error -errorcode [list MKIT COMMITFAILED $size] "The commit failed ($err) - most likely the size limit of a Metakit file (2 GiB; a Mk4tcl built for big files has no such limit) or a full disk. The database file was put back to its last committed state where possible and the changes made since then were discarded (as ROLLBACK does). $note"
     }
 }
-proc ::mkitsql::db::rollback {tag} { ::store::rollback $tag }
+proc ::mkitsql::db::rollback {tag} { ::store::rollback $tag ; guardReset $tag 1 }
 proc ::mkitsql::db::layout {path} { ::store::layout $path }
 proc ::mkitsql::db::size {path} { ::store::size $path }
 proc ::mkitsql::db::subSize {path idx prop} { ::store::subSize $path $idx $prop }
-proc ::mkitsql::db::appendRow {path props values} { ::store::appendRow $path $props $values }
-proc ::mkitsql::db::setCell {path idx prop value} { ::store::setCell $path $idx $prop $value }
+proc ::mkitsql::db::appendRow {path props values} {
+    variable wideCap
+    if {$wideCap eq "1"} { guardWrite $path $props $values }
+    ::store::appendRow $path $props $values
+}
+proc ::mkitsql::db::setCell {path idx prop value} {
+    variable wideCap
+    if {$wideCap eq "1"} { guardWrite $path [list $prop] [list $value] }
+    ::store::setCell $path $idx $prop $value
+}
 proc ::mkitsql::db::deleteRows {path indices} { ::store::deleteRows $path $indices }
 proc ::mkitsql::db::restructure {path layout} {
     if {[string first ! $path] < 0} { lassign [split $path .] tag view ; typeGuard $tag $view $layout }
     ::store::restructure $path $layout
-    if {[string first ! $path] < 0} { ::mkitsql::typeRecord $tag $view $layout }
+    if {[string first ! $path] < 0} { ::mkitsql::typeRecord $tag $view $layout ; guardReset $tag 1 }
 }
 proc ::mkitsql::db::parseLayout {spec} { ::store::parseLayout $spec }
 proc ::mkitsql::db::formatLayout {layout} { ::store::formatLayout $layout }

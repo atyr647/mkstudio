@@ -185,8 +185,8 @@ proc ::store::lockText {} {
     if {$lockEndpoint ne ""} { append t " $lockEndpoint" }
     return $t
 }
-proc ::store::readLock {path} {
-    set lf [lockPath $path]
+proc ::store::readLock {path} { return [readLockFile [lockPath $path]] }
+proc ::store::readLockFile {lf} {
     if {[catch {set h [open $lf r] ; set d [string trim [read $h 512]] ; close $h}]} { return "" }
     lassign [split $d " "] pid host role endpoint
     return [dict create pid $pid host $host role [expr {$role eq "-" ? "" : $role}] endpoint $endpoint text $d]
@@ -195,17 +195,19 @@ proc ::store::readLock {path} {
 # What is the state of the lock on this database?  A dict:
 #   state    free | ours | stale | held       ("held": a live (or remote) other process owns it)
 #   pid host role endpoint                     (when there is a lock file)
-proc ::store::lockInfo {path} {
+proc ::store::lockInfo {path} { return [lockInfoFile [lockPath $path]] }
+# (the same for any file that is, or was, a lock file: the takeover judges the file it has moved aside, not only the one in place)
+proc ::store::lockInfoFile {lf} {
     # a lock that is not a plain file (a link, a folder, a fifo) is never followed or read - and never ignored: held, by nobody we can name
-    if {![catch {file lstat [lockPath $path] st}] && $st(type) ne "file"} {
+    if {![catch {file lstat $lf st}] && $st(type) ne "file"} {
         return [dict create state held pid 0 host unknown role "" endpoint "" text ""]
     }
-    set l [readLock $path]
-    if {![file exists [lockPath $path]]} { return [dict create state free] }
+    set l [readLockFile $lf]
+    if {![file exists $lf]} { return [dict create state free] }
     if {$l eq ""} {
         # We could not read it.  If it has vanished meanwhile it is free; if it is still there, somebody we may not even read
         # (another user, a stricter umask) made it: that is a lock held by an owner we cannot name, never a free database.
-        if {![file exists [lockPath $path]]} { return [dict create state free] }
+        if {![file exists $lf]} { return [dict create state free] }
         return [dict create state held pid 0 host unknown role "" endpoint "" text ""]
     }
     set state held
@@ -213,7 +215,7 @@ proc ::store::lockInfo {path} {
     if {![string is integer -strict $pid] || $host eq ""} {
         # empty or garbled: its creator is probably between creating and writing it; if it stays that
         # way for a while the creator died and the lock is stale
-        if {![catch {file mtime [lockPath $path]} mt] && [clock seconds] - $mt > $::store::emptyStale} { set state stale }
+        if {![catch {file mtime $lf} mt] && [clock seconds] - $mt > $::store::emptyStale} { set state stale }
     } elseif {$pid eq [pid] && $host eq [thisHost]} {
         set state ours
     } elseif {$host eq [thisHost]} {
@@ -224,7 +226,7 @@ proc ::store::lockInfo {path} {
             # process that started AFTER the lock file was last written cannot be its owner.)
             # (Windows: asking costs a PowerShell start, about a second - not worth it, and not wanted inside the takeover guard,
             # for a lock that is only seconds old: a pid cannot be reused by a different program in that time.)
-            if {![catch {file mtime [lockPath $path]} mt] && ($::tcl_platform(platform) ne "windows" || [clock seconds] - $mt > 30)} {
+            if {![catch {file mtime $lf} mt] && ($::tcl_platform(platform) ne "windows" || [clock seconds] - $mt > 30)} {
                 set started [procStartTime $pid]
                 if {$started ne "" && $started > $mt + 2} { set state stale }
             }
@@ -253,9 +255,16 @@ proc ::store::lockStep {name} { variable lockHook ; if {$lockHook ne ""} { {*}$l
 # Create the lock file atomically (O_EXCL) so two processes starting at once cannot both win.
 # Returns the text written, "" when no lock could be made (read-only folder: carry on unlocked), or
 # raises STORE LOCKED when somebody else owns it.  Replacing a stale lock happens under a mutex file
-# (<file>.lock.guard), inside which the lock is judged again, deleted and re-created, so processes
+# (<file>.lock.guard), inside which the lock is judged again and then REPLACED BY MOVING IT ASIDE (claimStale), so processes
 # that all see the same stale lock cannot delete each other's fresh one: exactly one wins.  The mutex
 # name and the 10 s abandonment rule are part of the protocol (docs/CONCURRENCY.md; mkit-sql implements the same).
+#
+# Why the lock is moved aside instead of deleted: the guard itself can be wrongly removed (a killed process leaves it; every waiter
+# deletes it by name once it is 10 s old, and one of them can delete the FRESH guard another has just made - a delete by name cannot
+# tell the two apart), and then two processes are inside the takeover together.  A delete by name would let the second one destroy
+# the first one's brand-new lock.  A rename is atomic and hands over exactly the file that was under the name at that instant; the
+# new owner looks at what it got, and a lock that is alive is put back.  The guard has become a way to avoid contention, not the
+# thing that keeps the takeover correct.
 proc ::store::takeLock {path} {
     set lf [lockPath $path] ; set mine [lockText]
     for {set attempt 0} {$attempt < 60} {incr attempt} {
@@ -263,8 +272,12 @@ proc ::store::takeLock {path} {
             lockStep created
             puts -nonewline $h $mine ; close $h
             lockStep written
+            # A process held up between creating the file and writing it (starved, suspended) can have been taken for dead and
+            # overtaken meanwhile - what it wrote went into a file that is no longer under the name.  It must notice, not carry on.
+            if {![stillMine $lf $mine]} { lockStep overtaken ; continue }
             # tidy up a takeover mutex abandoned by a crashed process
             if {![catch {file mtime $lf.guard} mt] && [clock seconds] - $mt > $::store::mutexStale} { lockStep guard-aged ; catch {file delete $lf.guard} }
+            tidyTakeovers $lf
             return $mine
         }
         lockStep create-failed
@@ -282,12 +295,18 @@ proc ::store::takeLock {path} {
             close $mh
             lockStep mutex
             if {[lockHolder $path] eq ""} {
-                lockStep checked                             ;# (test hook: the stale verdict is in, nothing is deleted yet)
-                catch {file delete $lf}
+                lockStep checked                             ;# (test hook: the stale verdict is in, nothing is changed yet)
+                set claim [claimStale $lf]
                 lockStep deleted
-                set rc [catch {open $lf {WRONLY CREAT EXCL}} h]
-                catch {file delete $mx}
-                if {!$rc} { puts -nonewline $h $mine ; close $h ; return $mine }
+                if {$claim in {claimed gone}} {
+                    set rc [catch {open $lf {WRONLY CREAT EXCL}} h]
+                    catch {file delete $mx}
+                    tidyTakeovers $lf
+                    if {!$rc} {
+                        puts -nonewline $h $mine ; close $h
+                        if {[stillMine $lf $mine]} { return $mine }
+                    }
+                } else { catch {file delete $mx} }           ;# alive: a live owner's lock was put back; busy: could not be moved now
             } else { catch {file delete $mx} }
         } elseif {![catch {file mtime $mx} mt] && [clock seconds] - $mt > $::store::mutexStale} {
             lockStep guard-aged                              ;# (test hook: the guard has been judged abandoned, nothing is deleted yet)
@@ -298,6 +317,46 @@ proc ::store::takeLock {path} {
     }
     return -code error -errorcode [list STORE LOCKED 0 unknown "" ""] \
         "Could not take the lock on this database (another process is starting at the same moment), please repeat:\n$path"
+}
+# Is the file under the lock's name the one just written (its text is ours)?  A file that exists but cannot be read at this moment
+# (a virus scanner has it) proves nothing against us; a file that is gone, or holds somebody else's text, is not ours any more.
+proc ::store::stillMine {lf mine} {
+    if {[catch {set h [open $lf r] ; set d [read $h 512] ; close $h}]} { return [file exists $lf] }
+    return [expr {$d eq $mine}]
+}
+# Take a lock file that was judged stale out of the way.  Returns
+#   claimed   it was moved aside, judged again - still stale (or ours, or empty and old) - and deleted: the name is free
+#   gone      there was nothing under the name any more: the name is free
+#   alive     what was moved turned out to be a live owner's lock (somebody got in under a guard that was wrongly removed): it has
+#             been put back, and is not ours to take
+#   busy      the file could not be moved now (Windows: another program has it open): nothing was changed
+# The rename is the one atomic step: whatever file is under the name at that instant is the file that is moved, and it is judged
+# AFTER it has been moved, so a lock that was replaced between the verdict and the move is recognised instead of destroyed.
+namespace eval ::store { variable claimSeq 0 }
+proc ::store::claimStale {lf} {
+    variable claimSeq
+    set aside $lf.take.[clock seconds].[pid].[incr claimSeq]
+    if {[catch {file rename $lf $aside}]} { return [expr {[file exists $lf] ? "busy" : "gone"}] }
+    lockStep claimed                                             ;# (test hook: the lock is out of the way, not yet judged)
+    set state [dict get [lockInfoFile $aside] state]
+    if {$state ne "held"} { catch {file delete $aside} ; return claimed }
+    # Put it back - with a hard link, which fails instead of replacing when the name is taken again meanwhile (a rename would
+    # replace it, on Unix).  Where hard links do not exist (FAT, some network shares) the name is checked and the file renamed back.
+    if {[catch {file link -hard $lf $aside}] && ![file exists $lf]} { catch {file rename $aside $lf} }
+    catch {file delete $aside}
+    return alive
+}
+# Files a takeover moved aside and a killed process never deleted.  The name carries the second it was moved; a live takeover
+# deletes its own within moments, so anything older than the guard limit is litter.
+proc ::store::takeovers {lf} {
+    # (a file name may contain glob characters: they are matched literally)
+    set tail [string map [list \\ \\\\ * \\* ? \\? \[ \\\[ \] \\\] \{ \\\{ \} \\\}] [file tail $lf]]
+    return [glob -nocomplain -directory [file dirname $lf] -- $tail.take.*]
+}
+proc ::store::tidyTakeovers {lf} {
+    foreach f [takeovers $lf] {
+        if {[regexp {\.take\.(\d+)\.\d+\.\d+$} $f -> at] && [clock seconds] - $at > $::store::mutexStale} { catch {file delete $f} }
+    }
 }
 # Remove OUR lock - only if the file still holds exactly what we wrote.  `lf` is the lock file, `mine` its content.
 proc ::store::releaseLock {lf mine} {
@@ -800,6 +859,7 @@ proc ::store::breakLock {path} {
     set lf [lockPath $path] ; set old ""
     catch {set h [open $lf r] ; set old [read $h 512] ; close $h}
     file delete -force $lf $lf.guard
+    foreach f [takeovers $lf] { catch {file delete $f} }
     return [string trim $old]
 }
 # at open for writing: the verdict (ok none changed damaged), and a new baseline when there is none or it is out of date
