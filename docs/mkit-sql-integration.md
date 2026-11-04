@@ -84,7 +84,12 @@ of `37847c1` (`patch -p1 < docs/mkit-sql-protocol-sync.patch`; `syncdisk`, `lock
 4. **mkit-sql's CI job `mkstudio`** checks out MK Studio's *default* branch - which is, at the time of writing, the branch this work
    is on (`ccr-f017368d-kguqg8`; nothing was merged or opened as a pull request from here). It therefore tests the integrated
    MK Studio, and its step "The installer and patch apply to a fresh mkstudio checkout" fails until item 3 is applied there.
-5. Not needed for correctness, noted: mkit-sql's pid-reuse check is Linux-only (MK Studio: also macOS and Windows) - the
+5. **mkit-sql's `damage` suite can kill the process it runs in.** It feeds randomly damaged files to Metakit inside the test
+   process; on the current 8.6.16 runtime the process died with a segmentation fault in one CI run out of four (the same suite
+   passed on the others and locally). It tests mkit-sql's own storage layer, which MK Studio does not use, so CI retries it and
+   warns instead of failing on a death by signal; any ordinary failure still fails. mkit-sql's `-verify` (a throw-away child
+   process) is the intended defence against exactly this, and the suite would be safer if it ran each file in one too.
+6. Not needed for correctness, noted: mkit-sql's pid-reuse check is Linux-only (MK Studio: also macOS and Windows) - the
    stricter-only direction, so a dead process's lock can stay until removed by hand (MK Studio's dialog has *Remove Lock...*).
 
 ## 5. The earlier bulk-mutation comparison
