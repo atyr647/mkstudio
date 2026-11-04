@@ -111,13 +111,6 @@ if [ "${fail:-0}" = 1 ] || [ ! -f "tclkit-${TCL_VERSION}" ]; then
             echo "::group::$p/build.log - last 30 lines"; tail -30 "$p/build.log"; echo "::endgroup::"
         fi
     done
-    if [ -d mk4tcl/inst ]; then
-        echo "::group::what was built for Metakit, and how kitsh was told about it"
-        ls -lR mk4tcl/inst/lib | head -30
-        for a in mk4tcl/inst/lib/*/*.a; do [ -f "$a" ] && { echo "--- $a"; nm "$a" 2>/dev/null | grep -i 'Mk4tcl_Init\|Mk_Init' | head; }; done
-        grep -h -i 'libraries required for\|^ARCHS\|^STRIPLIBS\|^LIBS' kitsh/build/kitsh-*/config.log kitsh/build/kitsh-*/Makefile.common 2>/dev/null | cut -c1-400 | head -30
-        echo "::endgroup::"
-    fi
     exit 1
 fi
 

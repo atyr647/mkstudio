@@ -87,6 +87,12 @@ jobs:
             bash tools/build-kit.sh linux /src/kit-out'
           sudo chown -R "$(id -u):$(id -g)" kit-out
           ls -la kit-out
+      - name: What was built for Metakit, and how kitsh was told about it (diagnostics for the failed link)
+        if: failure()
+        run: |
+          ls -lR kit-out/kitcreator/mk4tcl/inst/lib | head -30 || true
+          for a in kit-out/kitcreator/mk4tcl/inst/lib/*/*.a; do [ -f "$a" ] && { echo "--- $a"; nm "$a" | grep -i 'Mk4tcl_Init\|Mk_Init' | head; }; done || true
+          grep -h -i 'libraries required for\|^ARCHS\|^STRIPLIBS\|^LIBS' kit-out/kitcreator/kitsh/build/kitsh-*/config.log kit-out/kitcreator/kitsh/build/kitsh-*/Makefile.common 2>/dev/null | cut -c1-400 | head -30 || true
       - name: The kit runs (Tk, Metakit, the vfs)
         run: |
           sudo apt-get update && sudo apt-get install -y xvfb
