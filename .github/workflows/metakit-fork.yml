@@ -76,6 +76,14 @@ jobs:
           repository: atyr647/metakit
           ref: ${{ env.FORK_REF }}
           path: metakit-fork
+      # KitCreator's compile of the fork's tcl/mk4tcl.cpp produced the init function C++-mangled (_Z11Mk4tcl_InitP10Tcl_Interp) and without Mk_Init,
+      # which kitsh (plain C) cannot call.  This step gives the functions C linkage in THIS checkout only, to find out whether that is the whole
+      # problem; the fork itself is not changed (a fix belongs there).
+      - name: Give the init functions of tcl/mk4tcl.cpp C linkage (this checkout only)
+        run: |
+          grep -n '^EXTERN int' metakit-fork/tcl/mk4tcl.cpp
+          sed -i 's/^EXTERN int \(Mk[A-Za-z0-9_]*\)(/extern "C" int \1(/' metakit-fork/tcl/mk4tcl.cpp
+          grep -n 'extern "C" int' metakit-fork/tcl/mk4tcl.cpp
       - name: Build Tcl/Tk 8.6.18 + the fork's Metakit in a glibc 2.28 container
         timeout-minutes: 60
         run: |
@@ -91,7 +99,7 @@ jobs:
         if: failure()
         run: |
           ls -lR kit-out/kitcreator/mk4tcl/inst/lib | head -30 || true
-          for a in kit-out/kitcreator/mk4tcl/inst/lib/*/*.a; do [ -f "$a" ] && { echo "--- $a"; nm "$a" | grep -i 'Mk4tcl_Init\|Mk_Init' | head; }; done || true
+          for a in kit-out/kitcreator/mk4tcl/inst/lib/*/*.a; do [ -f "$a" ] && { echo "--- $a"; nm -C "$a" | grep -i 'Mk4tcl_\|Mk_Init\|Mk_Safe' | head; }; done || true
           grep -h -i 'libraries required for\|^ARCHS\|^STRIPLIBS\|^LIBS' kit-out/kitcreator/kitsh/build/kitsh-*/config.log kit-out/kitcreator/kitsh/build/kitsh-*/Makefile.common 2>/dev/null | cut -c1-400 | head -30 || true
       - name: The kit runs (Tk, Metakit, the vfs)
         run: |
