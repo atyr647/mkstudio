@@ -34,8 +34,11 @@ Use a spare machine or a VM whose virtual disk you can power off without a clean
 - [ ] Installed copies (`.deb`, `.app`) open the release page instead of replacing themselves.
 
 ## 3b. Windows saves and the flush
-- [ ] On Windows, *Save* takes one to two seconds longer than on Linux or macOS (the data is forced to disk with PowerShell, three
-      starts per save). A black console window may flash briefly during a save: note whether it does and whether it is bearable.
+- [ ] *mkstudio --info FILE* (on Windows: `mkstudio-windows-x86_64.exe --info %TEMP%\info.txt`, then read the file) says
+      `flush native (FlushFileBuffers)` on Windows, `native (fsync)` on Linux, `native (F_FULLFSYNC)` on macOS. If it says
+      `PowerShell` or `sync`, the native library did not load: note why (a `noexec` temp folder? an antivirus?) and that *Save* then
+      takes a second or two longer on Windows.
+- [ ] On Windows, *Save* of a big change returns in about the time Linux takes (no PowerShell window flashes, no console window).
 - [ ] A database in a folder with an accented letter and a space in its name (`C:\Users\José\My Data\x.mk`) can be opened,
       edited and saved, and the program can be updated while it sits in such a folder.
 

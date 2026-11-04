@@ -17,8 +17,7 @@ checks (real power loss, first run on each system) that automation cannot do.
   save is refused (the changes stay in the open database) instead of two programs saving into one file.
 - **Windows: the disk flush now really runs.** In rc.1 the program asked PowerShell to force each save to disk, but PowerShell
   started straight from a Windows GUI program does nothing at all - no error, no effect - so on Windows saves were *not* forced
-  to disk. They are now (PowerShell is started through `cmd /c`; a test proves that a script really executes). A save on
-  Windows takes one to two seconds longer because of it. Linux and macOS were not affected.
+  to disk. They are now (PowerShell is started through `cmd /c`; a test proves that a script really executes).
 - **A finished save can no longer be undone.** The "undo the unfinished save" record is rewritten to describe the finished file
   before it is deleted, so a record that cannot be deleted (a virus scanner on Windows) or whose deletion is lost in a power
   cut can no longer roll back a save you were told succeeded - or empty a brand-new database.

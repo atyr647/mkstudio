@@ -27,4 +27,4 @@ get() {  # name archive-name wanted-sha256 destination
     echo "verified $2 ($3)"
 }
 get tcl "tcl$v-src.tar.gz" "$tcl_sha" "$kc/tcl/src/tcl$v.tar.gz"
-get tk  "tk$v-src.tar.gz"  "$tk_sha"  "$kc/tk/src/tk$v.tar.gz"
+if [ "${TCL_ONLY:-0}" != 1 ]; then get tk  "tk$v-src.tar.gz"  "$tk_sha"  "$kc/tk/src/tk$v.tar.gz"; fi   # (TCL_ONLY=1: only the headers are wanted)

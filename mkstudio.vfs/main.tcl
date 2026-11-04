@@ -16,6 +16,7 @@ lappend ::auto_path [file join $::mkstudio_root lib]
 # so --selftest writes its answer to a file):
 #   --version              print the version and exit
 #   --selftest FILE        write "ok <version> mk4tcl yes|no" to FILE and exit   (the updater runs this on a download)
+#   --info FILE            write what this build is made of (version, Tcl, system, how it forces data to disk) to FILE and exit
 source [file join $::mkstudio_root lib app-mkstudio version.tcl]
 if {[lindex $argv 0] eq "--version"} {
     puts $::version::current
@@ -26,6 +27,21 @@ if {[lindex $argv 0] eq "--selftest"} {
     source [file join $::mkstudio_root lib app-mkstudio update.tcl]
     set rc [catch {
         set h [open [lindex $argv 1] w] ; puts $h [::update::selftestText] ; close $h
+    }]
+    exit $rc
+}
+
+if {[lindex $argv 0] eq "--info"} {
+    catch {package require Mk4tcl}
+    source [file join $::mkstudio_root lib app-mkstudio store.tcl]
+    set rc [catch {
+        set h [open [lindex $argv 1] w]
+        puts $h "version $::version::current"
+        puts $h "tcl [info patchlevel]"
+        puts $h "system $::tcl_platform(os) $::tcl_platform(osVersion) $::tcl_platform(machine)"
+        puts $h "metakit [expr {[catch {package present Mk4tcl} v] ? {none} : $v}]"
+        puts $h "flush [::store::flushMethod]"
+        close $h
     }]
     exit $rc
 }

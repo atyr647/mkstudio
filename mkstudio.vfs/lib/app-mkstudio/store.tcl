@@ -602,13 +602,43 @@ proc ::store::headerInfo {path} {
     return [dict create size [file size $path] offset $off header $hex]
 }
 # force the files (and the folder entry) to disk where the system can:
-#   Linux/BSD  coreutils `sync FILE...`, else a plain `sync`
-#   macOS      `sync` (flushes the OS cache; the drive's own cache is out of reach from Tcl)
-#   Windows    FlushFileBuffers through PowerShell (.NET FileStream.Flush($true)), if PowerShell can be started
+#   native     the mksync library (native/mksync/mksync.c), when the build has one for this system and it loads: fsync on Linux and
+#              BSD (files and their folders), fcntl(F_FULLFSYNC) on macOS - the call that also empties the drive's own cache -,
+#              FlushFileBuffers on Windows.  No program is started: milliseconds instead of the 0.4 s and more a PowerShell start costs.
+#   otherwise  Linux/BSD  coreutils `sync FILE...`, else a plain `sync`
+#              macOS      `sync` (flushes the OS cache; the drive's own cache is out of reach from Tcl)
+#              Windows    FlushFileBuffers through PowerShell (.NET FileStream.Flush($true)), if PowerShell can be started
 # Returns 1 when something was asked to force the data out, 0 when nothing could be (tests and the status line use it).
+# A refusal from the native call (the system or the disk reported a failure) is a failure: the same call through a program would
+# fail the same way, so it is reported, not retried.  MKS_NATIVE=0 never loads the library (tests of the fallbacks).
+namespace eval ::store { variable native -1 ; variable libdir [file dirname [file dirname [file normalize [info script]]]] }
+proc ::store::nativeFlush {} {
+    variable native ; variable libdir
+    if {$native == -1} {
+        set native 0
+        if {!([info exists ::env(MKS_NATIVE)] && $::env(MKS_NATIVE) eq "0")} {
+            if {[lsearch -exact $::auto_path $libdir] < 0} { lappend ::auto_path $libdir }   ;# (a checkout: lib/ next to this folder)
+            if {![catch {package require mksync}] && [llength [info commands ::mksync::flush]]} { set native 1 }
+        }
+    }
+    return $native
+}
+# what the next flush will use, for the status line and --selftest: "native (fsync)", "sync", "PowerShell", "none"
+proc ::store::flushMethod {} {
+    variable durable
+    if {!$durable} { return "off" }
+    if {[nativeFlush]} { return "native ([mksync::method])" }
+    if {$::tcl_platform(platform) eq "windows"} { return [expr {[winTool powershell] ne "" ? "PowerShell" : "none"}] }
+    return "sync"
+}
 proc ::store::syncDisk {args} {
     variable durable
     if {!$durable} { return 0 }
+    if {[nativeFlush]} {
+        set paths {}
+        foreach p $args { lappend paths $p ; lappend paths [file dirname $p] }
+        return [expr {![catch {mksync::flush {*}[lsort -unique $paths]}]}]
+    }
     if {$::tcl_platform(platform) eq "windows"} { return [syncWindows {*}$args] }
     set paths {}
     foreach p $args { lappend paths $p ; lappend paths [file dirname $p] }

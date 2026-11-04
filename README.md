@@ -247,8 +247,8 @@ Results (about 500 checks; Tcl 8.6 and 8.5; `raw` = Metakit alone):
 often an empty database, silently. So **Metakit alone is not crash-safe in the middle of a commit, and not power-loss safe
 at all.** What MK Studio now does (`store.tcl`):
 
-- before a commit starts it writes `<file>.commit` (the committed header and size) and forces it and the file to disk (`sync` on
-  Linux and macOS, PowerShell on Windows); after the commit it forces the file to disk, then rewrites the record to describe the
+- before a commit starts it writes `<file>.commit` (the committed header and size) and forces it and the file to disk (the native
+  flush below; without it `sync` on Linux and macOS, PowerShell on Windows); after the commit it forces the file to disk, then rewrites the record to describe the
   *finished* file and forces that, then removes it - so a record that cannot be removed (a virus scanner holds it) or whose
   removal is lost in a power cut can never undo a commit that was reported as done;
 - when a database is opened *for writing* (with the lock held) and a record is found, the header and size are put back: the
@@ -256,18 +256,25 @@ at all.** What MK Studio now does (`store.tcl`):
   header's offset. The user is told ("An unfinished commit was undone ...");
 - read-only opens never repair anything (they may see the unfinished state).
 
-Cost: a commit takes about 0.25 s longer on a 30 MB database on Linux and macOS (the `sync`s), one to two seconds on Windows (see below).
+Cost: with the native flush a commit adds a few milliseconds on Linux and Windows (the time the drive itself needs); without it about 0.25 s on a 30 MB database
+on Linux and macOS (the `sync` programs) and one to two seconds on Windows (PowerShell, see below).
 
 **Further hardening** (`tests/test_durability.tcl`):
 
-- **Windows forces the data out too**: `FlushFileBuffers` through PowerShell (`FileStream.Flush($true)`). **PowerShell has to be
+- **The flush is a small native library** (`native/mksync/mksync.c`, about 150 lines of C, one command: `mksync::flush`), built in CI for
+  each system and carried inside the starpack: `fsync` on Linux (the file and its folder), **`fcntl(F_FULLFSYNC)` on macOS** - the call that also
+  empties the drive's own write cache, which `sync` cannot reach - and `FlushFileBuffers` on Windows. No program is started: a flush costs
+  milliseconds, and nothing that looks like malware (a hidden PowerShell with an encoded command) runs on a save. It is linked against the Tcl *stubs*, so
+  one binary loads into every Tcl 8.5 / 8.6 / 9 of its platform, and **it is optional**: where it cannot be loaded (a checkout, a
+  `noexec` temp folder) the program falls back to what it used to do and loses speed, not safety. `MKS_NATIVE=0` forces the fallback; `mkstudio --info FILE` writes which one is in use ("flush native (fsync)"). An error from the native call (the system or the disk reported a
+  failure) is reported as a failed flush, never retried into a success.
+- **The fallback on Windows**: `FlushFileBuffers` through PowerShell (`FileStream.Flush($true)`). **PowerShell has to be
   started through `cmd /c` with the script as `-EncodedCommand`**: started straight from the program it does nothing at all (exit
   status 0, no output, no effect - measured on real runners; a Windows GUI program has no console and Tcl starts console programs
   without one for it). Release 1.0.0-rc.1 started it the straight way, so **its Windows flush never ran** and every check that
   only looked at the exit status still passed; `tests/test_durability.tcl` now makes PowerShell write a file and fails if the file
-  does not appear. The price is real: 0.4-0.7 s per PowerShell start (measured on the CI runners: 358 ms, 703 ms), three starts per save, so **a save
-  takes one to two seconds longer on Windows**. If PowerShell cannot be started the flush stays best-effort and `syncDisk` says so. macOS `sync` flushes the
-  operating system's cache but cannot reach the drive's own cache (`F_FULLFSYNC` is not available from Tcl).
+  does not appear. The price is real: 0.4-0.7 s per PowerShell start (measured on the CI runners: 358 ms, 703 ms), three starts per save. If PowerShell cannot be started the flush stays best-effort and `syncDisk` says so.
+  The fallback on macOS, `sync`, flushes the operating system's cache but cannot reach the drive's own cache.
 - **The first commit of a new database is protected**: the record then says "empty", and a record found at the next open
   makes the file empty again instead of leaving a half-written first save (real kills at every write of a first commit:
   all come out empty or complete, never half).
@@ -291,7 +298,7 @@ Cost: a commit takes about 0.25 s longer on a 30 MB database on Linux and macOS 
 model: pages reach the disk in any order, an 8-byte write is atomic (it lies in one sector), and `sync` really forces data
 out. It does not cover a disk that lies about having written (some cheap SSDs and USB sticks), a filesystem that loses a
 whole file, or data lost from a commit that was already confirmed - and Windows has no `sync` command, so there the
-flush goes through PowerShell (see above) and is only as good as that. A commit that was in flight when the power
+flush is `FlushFileBuffers` (native, or through PowerShell as the fallback) and is only as good as that. A commit that was in flight when the power
 failed is lost (rolled back), by design: it was never confirmed to the user. `mkit-sql` on its own storage layer
 (`db.tcl`) does not have this protocol; in MK Studio it shares `store.tcl`, so it does.
 

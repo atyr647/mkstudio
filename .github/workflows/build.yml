@@ -93,6 +93,20 @@ jobs:
             bash tools/build-kit.sh linux /src/kit-out'
           sudo chown -R "$(id -u):$(id -g)" kit-out     # the container wrote as root
           ls -la kit-out
+      # the native flush library (native/mksync): a few seconds, never cached; built in the same container so that it asks for
+      # no newer glibc than the kit does
+      - name: Build the native flush library in the glibc 2.28 container
+        run: |
+          docker run --rm -v "$PWD":/src -w /src quay.io/pypa/manylinux_2_28_x86_64 bash tools/build-native.sh linux /src/kit-out
+          sudo chown -R "$(id -u):$(id -g)" kit-out
+          LIB=kit-out/mksync-linux-x86_64.so
+          ls -la "$LIB"
+          # nothing but libc, and no glibc newer than 2.28
+          ldd "$LIB"
+          newest=$(objdump -T "$LIB" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1 | cut -d_ -f2)
+          echo "newest glibc symbol: $newest"
+          [ "$(printf '%s\n2.28\n' "$newest" | sort -V | tail -1)" = "2.28" ] || { echo "::error::the flush library needs glibc $newest"; exit 1; }
+          ! ldd "$LIB" | grep -qiE 'libtcl|libstdc' || { echo "::error::the flush library links more than libc"; exit 1; }
       - name: What the kit needs from the machine it runs on
         run: |
           KIT=kit-out/tclkit-8.6.16-linux-x86_64
@@ -123,7 +137,9 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: kit-linux
-          path: kit-out/tclkit-8.6.16-linux-x86_64
+          path: |
+            kit-out/tclkit-8.6.16-linux-x86_64
+            kit-out/mksync-linux-x86_64.so
 
   kit-windows:
     runs-on: ubuntu-latest
@@ -152,6 +168,18 @@ jobs:
           echo 'exit 0' | "$TCLKIT" && echo "native tclkit works: $TCLKIT"
           bash tools/build-kit.sh windows "$PWD/kit-out"
           ls -la kit-out
+      - name: Build the native flush library with mingw-w64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mingw-w64
+          bash tools/build-native.sh windows "$PWD/kit-out"
+          LIB=kit-out/mksync-windows-x86_64.dll
+          ls -la "$LIB"; file "$LIB"
+          x86_64-w64-mingw32-objdump -p "$LIB" | grep -i 'DLL Name' | sort -u
+          # only what every Windows has
+          if x86_64-w64-mingw32-objdump -p "$LIB" | grep -i 'DLL Name' | grep -qivE 'KERNEL32|msvcrt'; then
+            echo "::error::the flush library depends on a DLL that is not part of Windows"; exit 1
+          fi
       - name: What the kit needs from Windows
         run: |
           KIT=kit-out/tclkit-8.6.16-windows-x86_64.exe
@@ -164,13 +192,19 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: kit-windows
-          path: kit-out/tclkit-8.6.16-windows-x86_64.exe
+          path: |
+            kit-out/tclkit-8.6.16-windows-x86_64.exe
+            kit-out/mksync-windows-x86_64.dll
 
   # ---------------------------------------------------------------- Linux: test + build every starpack
   linux:
     needs: [kit-linux, kit-windows]
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      # the compiled flush library the kit job built: every suite below forces data to disk through it (Linux: fsync)
+      MKS_MKSYNC_DIR: ${{ github.workspace }}/tools/ext
+      MKS_REQUIRE_NATIVE: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -229,6 +263,11 @@ jobs:
             for t in test_durability test_crash test_update; do REAL_MK=1 $kit tests/run.tcl tests/$t.tcl; done
           done
 
+      - name: Native flush library (mksync) - loads in every runtime, flushes, falls back
+        run: |
+          for kit in tools/ext/tclkit-8.6.16-linux-x86_64 tools/ext/tclkit-8.6.3-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+            echo "=== $kit"; $kit tests/test_mksync.tcl
+          done
       - name: Write-lock protocol, crash points and chaos (Tcl 8.6 and 8.5)
         run: |
           for kit in tools/ext/tclkit-8.6.16-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
@@ -255,6 +294,11 @@ jobs:
         run: MKS_REQUIRE_CURRENT=1 ./build.sh all
       - name: Verify embedded payloads
         run: tools/ext/tclkit-8.6.16-linux-x86_64 tests/verify_payload.tcl dist/*
+      - name: The Linux starpack uses the native flush - it finds its own copy of the library, MKS_MKSYNC_DIR unset
+        run: |
+          env -u MKS_MKSYNC_DIR ./dist/mkstudio-linux-x86_64 --info "$RUNNER_TEMP/info.txt"
+          cat "$RUNNER_TEMP/info.txt"
+          grep -q '^flush native (fsync)' "$RUNNER_TEMP/info.txt"
       - name: Launch the Linux starpack
         run: tests/smoke_starpack.sh
       - name: Real self-update - the real starpack replaces a running program (Tcl 8.6 and 8.5)
@@ -294,6 +338,7 @@ jobs:
     env:
       REAL_MK: '1'
       KIT: tools/ext/tclkit-8.6.16-windows-x86_64.exe
+      MKS_REQUIRE_NATIVE: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -311,7 +356,9 @@ jobs:
         timeout-minutes: 25
         run: |
           fail=0
-          for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_durability test_crash test_update test_lock_protocol test_lock_crash test_grid test_engine_wiring gui_logic; do
+          # the compiled flush library the kit job built: forcing data to disk (test_durability, MKS_DURABLE=1) goes through it
+          export MKS_MKSYNC_DIR="$(cygpath -w "$PWD/tools/ext")"
+          for t in test_mksync test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_durability test_crash test_update test_lock_protocol test_lock_crash test_grid test_engine_wiring gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
             # forcing data to disk starts PowerShell twice per commit: only the durability test does it for real
             D=0; [ "$t" = test_durability ] && D=1
@@ -333,6 +380,14 @@ jobs:
           ./dist/mkstudio-windows-x86_64.exe --selftest "$(cygpath -w "$RUNNER_TEMP/st.txt")"
           for i in $(seq 1 30); do [ -s "$RUNNER_TEMP/st.txt" ] && break; sleep 1; done
           cat "$RUNNER_TEMP/st.txt"; grep -q "^ok $v mk4tcl yes" "$RUNNER_TEMP/st.txt"
+
+      - name: The Windows starpack uses the native flush (it must find its own copy of the library)
+        timeout-minutes: 3
+        run: |
+          rm -f "$RUNNER_TEMP/info.txt"
+          ./dist/mkstudio-windows-x86_64.exe --info "$(cygpath -w "$RUNNER_TEMP/info.txt")"
+          for i in $(seq 1 30); do [ -s "$RUNNER_TEMP/info.txt" ] && break; sleep 1; done
+          cat "$RUNNER_TEMP/info.txt"; grep -q '^flush native (FlushFileBuffers)' "$RUNNER_TEMP/info.txt"
 
       - name: Live update check - the real GitHub release feed, real download, real checksum, real starpack
         timeout-minutes: 12
@@ -448,11 +503,21 @@ jobs:
           echo "KIT=$KIT" >> "$GITHUB_ENV"
           file "$KIT"
 
+      # the native flush library (native/mksync): fcntl(F_FULLFSYNC), the call that also empties the drive's own write cache;
+      # built natively here (arm64 on the Apple-silicon runner, x86_64 on the Intel one), never cached - it takes seconds
+      - name: Build the native flush library
+        run: |
+          tools/build-native.sh macos "$GITHUB_WORKSPACE/native-out"
+          LIB="$GITHUB_WORKSPACE/native-out/mksync-macos-$(uname -m).dylib"
+          file "$LIB"; otool -L "$LIB"; codesign -dv "$LIB" 2>&1 | head -3 || true
+          echo "MKS_MKSYNC_DIR=$GITHUB_WORKSPACE/native-out" >> "$GITHUB_ENV"
+          echo "MKS_REQUIRE_NATIVE=1" >> "$GITHUB_ENV"
+
       - name: Engine, contract, persistence and UI tests on macOS (real Metakit, current Tk)
         timeout-minutes: 15
         run: |
           fail=0
-          for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_durability test_crash test_update test_lock_protocol test_lock_crash test_grid test_engine_wiring gui_logic; do
+          for t in test_mksync test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_durability test_crash test_update test_lock_protocol test_lock_crash test_grid test_engine_wiring gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
             MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$log" perl -e 'alarm 300; exec @ARGV' "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
@@ -469,7 +534,7 @@ jobs:
           cp "$KIT" "$RUNNER_TEMP/runtime" && chmod +x "$RUNNER_TEMP/runtime"
           mkdir -p dist
           OUT=dist/mkstudio-macos-$(uname -m)
-          "$KIT" tools/wrap.tcl "$RUNNER_TEMP/runtime" mkstudio.vfs "$OUT"
+          "$KIT" tools/wrap.tcl "$RUNNER_TEMP/runtime" mkstudio.vfs "$OUT" "$MKS_MKSYNC_DIR/mksync-macos-$(uname -m).dylib"
           chmod +x "$OUT"
           "$KIT" tests/verify_payload.tcl "$OUT"
           # an appended payload invalidates the signature; Apple silicon refuses unsigned code
@@ -482,6 +547,8 @@ jobs:
           v=$(grep -o 'current [0-9][^ ]*' mkstudio.vfs/lib/app-mkstudio/version.tcl | cut -d' ' -f2)
           test "$("./$OUT" --version)" = "$v"
           "./$OUT" --selftest "$RUNNER_TEMP/st.txt"; cat "$RUNNER_TEMP/st.txt"; grep -q "^ok $v mk4tcl yes" "$RUNNER_TEMP/st.txt"
+          # the starpack finds and loads its own copy of the flush library (no MKS_MKSYNC_DIR)
+          env -u MKS_MKSYNC_DIR "./$OUT" --info "$RUNNER_TEMP/info.txt"; cat "$RUNNER_TEMP/info.txt"; grep -q '^flush native (F_FULLFSYNC)' "$RUNNER_TEMP/info.txt"
 
       - name: Real self-update - the real starpack replaces a running program
         run: MKS_TEST_STARPACK="$PWD/$OUT" "$KIT" tests/run.tcl tests/test_update.tcl

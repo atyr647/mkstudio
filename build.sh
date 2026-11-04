@@ -8,7 +8,8 @@
 # macOS starpacks are built by CI on a Mac (.github/workflows/build.yml): there is no usable prebuilt
 # macOS tclkit - the old ones crash on current macOS - so a current one is compiled with KitCreator
 # there.  To do it by hand on a Mac: build a tclkit (Tcl/Tk 8.6 + Metakit, --enable-aqua=yes), then
-#   KIT=/path/to/that/tclkit tclkit tools/wrap.tcl <copy of that tclkit> mkstudio.vfs dist/mkstudio-macos
+#   tools/build-native.sh macos native-out        (the flush library; optional - without it the program starts `sync` instead)
+#   KIT=/path/to/that/tclkit tclkit tools/wrap.tcl <copy of that tclkit> mkstudio.vfs dist/mkstudio-macos native-out/mksync-macos-*.dylib
 #   codesign --force --sign - dist/mkstudio-macos
 #
 # Runtimes: the current Tcl/Tk 8.6.16 kits (CI builds them with tools/build-kit.sh and puts them in tools/ext/) are
@@ -36,15 +37,18 @@ mkdir -p dist
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
-wrap() {  # runtime output
+wrap() {  # runtime output native-library-pattern
     [ -f "$1" ] || { echo "build.sh: no runtime to wrap onto" >&2; exit 1; }
     cp "$1" "$TMP/runtime"            # a copy: a running tclkit mounts its own path as a vfs
-    "$KIT" tools/wrap.tcl "$TMP/runtime" mkstudio.vfs "$2"
+    # the compiled flush library for that platform, when CI built one (tools/build-native.sh); without it the program falls back
+    # to starting `sync` / PowerShell, which is slower but just as safe
+    # shellcheck disable=SC2086
+    "$KIT" tools/wrap.tcl "$TMP/runtime" mkstudio.vfs "$2" $(ls $3 2>/dev/null || true)
     chmod +x "$2"
 }
 case $what in
-    linux)   wrap "$(linux_rt)"   dist/mkstudio-linux-x86_64 ;;
-    windows) wrap "$(windows_rt)" dist/mkstudio-windows-x86_64.exe ;;
+    linux)   wrap "$(linux_rt)"   dist/mkstudio-linux-x86_64 "tools/ext/mksync-linux-*.so" ;;
+    windows) wrap "$(windows_rt)" dist/mkstudio-windows-x86_64.exe "tools/ext/mksync-windows-*.dll" ;;
     macos)   echo "macOS starpacks are built by CI on a Mac (see the comment at the top of this file)."; exit 1 ;;
     all)     "$0" linux; "$0" windows ;;
     *)       echo "usage: $0 [linux|windows|all]"; exit 1 ;;
