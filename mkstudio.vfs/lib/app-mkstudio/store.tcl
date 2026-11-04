@@ -711,6 +711,13 @@ proc ::store::beginCommit {path} {
     }
     set rec [commitRecord $path]
     if {[catch { set h [open $rec w] ; puts -nonewline $h $line ; close $h }]} { return 0 }
+    # The checksum file describes the file as it is BEFORE this commit.  If a power cut left the new file next to that old checksum
+    # (the checksum is rewritten only after the commit) and the two happened to have the same size and modification second - a commit
+    # that fits into the space an earlier one freed, two saves within a second - the old checksum would call the new, perfectly good
+    # file "damaged".  (Found by the block-level crash test: tests/blockdev_crash.sh.)  So it is removed first, in the same flush that
+    # makes the record durable, and a new one is written and flushed when the commit is done: at any moment after a power cut the
+    # checksum is the one of this very file or there is none (then the next open makes a fresh baseline).
+    catch {file delete [sumPath $path]}
     syncDisk $rec $path
     return 1
 }
@@ -824,6 +831,7 @@ proc ::store::sumWrite {path} {
     set tmp [sumPath $path].tmp
     set h [open $tmp w] ; puts -nonewline $h $line ; close $h
     file rename -force $tmp [sumPath $path]
+    syncDisk [sumPath $path]                    ;# the new name and its content on the disk before the save is called done
     return 1
 }
 # ok | none (no sum / not covered) | changed (size or time differ: modified by something else) | damaged
