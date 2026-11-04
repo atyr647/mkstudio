@@ -175,8 +175,14 @@ user rather than guess. Copying or moving a database: take `.mk` only, with no `
 ## API (`store.tcl`)
 
     ::store::openFile path ?-readonly? ?-create?   takes/refuses the lock; error code {STORE LOCKED pid host role endpoint}
+                                                   (the path is made canonical first: symbolic links resolved)
     ::store::closeFile tag                         releases our lock (only ours)
+    ::store::canonical path                        the real path a database and its lock file are named after
     ::store::lockInfo path                         dict: state free|ours|stale|held, pid host role endpoint
+                                                   (a lock that is not a plain file, or cannot be read, is "held" by pid 0 / host unknown)
+    ::store::breakLock path                        remove a lock the USER says is dead (the application asks first); returns its text
+    ::store::verifyLock tag                        is the lock still ours?  commit calls it; error code {STORE LOCKLOST text}
+    ::store::unprotectedNote tag                   "" or why this open has no lock / record / backup (a folder that takes no new files)
     ::store::lockedByOther tag                     for a read-only open: who holds the write lock ("" if nobody)
     set ::store::lockRole server                   before openFile: announce a long-lived owner ...
     set ::store::lockEndpoint tcp://host:port      ... and where clients should connect
@@ -186,7 +192,8 @@ user rather than guess. Copying or moving a database: take `.mk` only, with no `
     ::store::cacheConfigure -budget MB             derived-data cache budget (default 256 MB, env MKS_CACHE_MB; 0 = off)
     ::store::cacheStats                            entries bytes budget hits misses evictions
     ::store::integrityState tag                    ok none changed damaged - the checksum verdict at the last write-open
-    ::store::restoreBackup path                    put <path>.bak back (call with the file closed)
+    ::store::restoreBackup path                    put the backup back (the protected <path>.bak.good if there is one, else <path>.bak);
+                                                   the damaged file is kept as <path>.damaged, .damaged.1, ... (call with the file closed)
 
 ## Checklist for adding mkit-sql or a server
 
@@ -197,6 +204,8 @@ user rather than guess. Copying or moving a database: take `.mk` only, with no `
 - [ ] results that read live data implement the provider contract and pass `tests/provider_contract.tcl`
 - [ ] statements that change data call `::mkql::lzFreezeAll` first (or the equivalent in the new engine)
 - [ ] runs `tests/test_lock_protocol.tcl` against its own lock implementation if it has one (replace the child)
+- [ ] resolves symbolic links before naming the lock, treats a lock that is not a plain file or cannot be read as held, and checks
+      that its lock is still its own just before it writes (see "Conformance" and `store::verifyLock` above)
 
 ## Results, caches and lifetimes
 
@@ -221,3 +230,6 @@ racers are mkit-sql's implementation. `tests/test_lock_crash.tcl` kills a proces
 and releasing (created, written, holding the mutex, between delete and create, after release) and then runs a chaos loop:
 eight processes take the lock repeatedly while the test SIGKILLs random ones; no two live processes ever hold it at once
 and it is never lost. `tests/test_crash_safety.tcl` covers crash recovery of the data and read-only access.
+`tests/test_durability.tcl` covers the rest of what is described here: a lock replaced behind a program's back refuses the commit, a vanished
+lock is taken again, a foreign lock survives a close, a lock that is a folder or cannot be read is held, symbolic links and hard links to
+an open database, `breakLock`, a read-only folder. `tests/soak_lock_chaos.tcl` (the manual "lock soak" CI job) produced the measurements above.

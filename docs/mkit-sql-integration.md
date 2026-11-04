@@ -81,8 +81,9 @@ of `37847c1` (`patch -p1 < docs/mkit-sql-protocol-sync.patch`; `syncdisk`, `lock
 3. **`integration/install-into-mkstudio.sh`** fails (the patch is already applied) against an MK Studio that carries the
    integration, and so does the CI step "The installer and patch apply to a fresh mkstudio checkout". The patch makes the
    script say so and exit 0 when `mkstudio.vfs/lib/mkitsql/SOURCE` exists; that CI step can then stay or go.
-4. **mkit-sql's CI job `mkstudio`** checks out MK Studio's *default* branch. Until the work on this branch is merged there, that
-   job tests the older MK Studio. (Nothing was merged or opened as a pull request from here.)
+4. **mkit-sql's CI job `mkstudio`** checks out MK Studio's *default* branch - which is, at the time of writing, the branch this work
+   is on (`ccr-f017368d-kguqg8`; nothing was merged or opened as a pull request from here). It therefore tests the integrated
+   MK Studio, and its step "The installer and patch apply to a fresh mkstudio checkout" fails until item 3 is applied there.
 5. Not needed for correctness, noted: mkit-sql's pid-reuse check is Linux-only (MK Studio: also macOS and Windows) - the
    stricter-only direction, so a dead process's lock can stay until removed by hand (MK Studio's dialog has *Remove Lock...*).
 

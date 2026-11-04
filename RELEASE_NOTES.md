@@ -88,6 +88,10 @@ There is no code-signing certificate behind them. In practice:
 ### Known limits
 
 - Metakit is unmaintained and has no checksums of its own; MK Studio adds them (and a backup) for files up to 512 MB.
+- **mkit-sql is not faster at everything.** A query result is limited to 100,000 rows in memory (the window says when it was cut);
+  on a 500,000-row table `ORDER BY ... LIMIT 50` takes about 4 s and scattered `DELETE`s are about twice as slow as with the old
+  built-in dialect, which streams results of any size and caches sorts. `MKS_ENGINE=mkql` starts the program with that dialect;
+  the README has the measured table.
 - Concurrent writers are kept apart by an advisory lock only (`docs/CONCURRENCY.md` lists what that does not cover: a hard link
   to an open database, a process frozen for many seconds at exactly the wrong moment). On macOS-Intel the lock stress test
   twice saw two processes inside at once under deliberately extreme load; the cause is not established.

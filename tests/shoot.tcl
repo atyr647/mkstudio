@@ -143,10 +143,10 @@ switch -- $scenario {
     hover {
         set id [::app::openData $tag.employees employees]
         set t [::app::docFrame $id].g.t
-        update
-        lassign [$t bbox r4] x y
+        settle
+        lassign [$t bbox s4] x y
         ::ui::hoverMove $t [expr {$x + 100}] [expr {$y + 5}]
-        $t selection set r1
+        $t selection set s1
         shot $out
     }
     empty {
@@ -156,7 +156,7 @@ switch -- $scenario {
         shot $out
     }
     main {
-        set txt "-- Sample database. Press F5 to run the whole script.\nSELECT TOP 10 name, title, salary\nFROM employees\nORDER BY salary DESC;\n\nSELECT dept, COUNT(*) AS people, ROUND(AVG(salary), 0) AS avg_salary\nFROM employees\nGROUP BY dept\nORDER BY avg_salary DESC;\n\n-- skills is a subview (a nested table in every row).\nSELECT id, name, skills FROM employees WHERE skills >= 3;"
+        set txt "-- Sample database. Press F5 to run the whole script.\nSELECT name, title, salary\nFROM employees\nORDER BY salary DESC\nLIMIT 10;\n\nSELECT dept, COUNT(*) AS people, ROUND(AVG(salary), 0) AS avg_salary\nFROM employees\nGROUP BY dept\nORDER BY avg_salary DESC;\n\n-- skills is a subview (a nested table in every row).\nSELECT id, name, skills FROM employees WHERE skills >= 3;"
         set id [::app::newQuery $txt $tag 1]
         expandAll
         set t .main.ex.t

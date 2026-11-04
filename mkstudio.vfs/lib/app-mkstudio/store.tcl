@@ -1,6 +1,6 @@
 # store.tcl -- the ONLY file in MK Studio that talks to Mk4tcl (mk::*).
 #
-# Everything else (the MKQL engine, the explorer, the grids, the designer)
+# Everything else (the SQL engine, the explorer, the grids, the designer)
 # goes through the ::store API below, so the Metakit surface area stays small
 # and easy to audit.
 #

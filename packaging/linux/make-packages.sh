@@ -38,8 +38,8 @@ Installed-Size: $SIZE
 Maintainer: atyr647 <atyr647@users.noreply.github.com>
 Homepage: https://github.com/atyr647/mkstudio
 Description: Workbench for Metakit databases
- Browse, query (SQL-like), design and edit Metakit databases. One self-contained
- program (a Tcl/Tk starpack); no other software needed.
+ Browse, query (standard SQL), design and edit Metakit databases. One self-contained
+ program (a Tcl/Tk starpack); only the usual X11 libraries are needed.
 CTL
 cat > "$P/DEBIAN/postinst" <<'PI'
 #!/bin/sh

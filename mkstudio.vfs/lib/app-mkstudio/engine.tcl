@@ -1,10 +1,14 @@
 # engine.tcl -- the ONE seam between MK Studio's UI and its query language.
 #
 # The UI never parses or interprets query text itself.  It only calls the procs
-# and reads the variables below.  The built-in dialect (mkql.tcl) is a small
-# stand-in so the app is usable on its own; to plug in a different language
-# (for example a standard-SQL-to-Metakit engine), replace the bodies of the two
-# procs and set the variables.  Nothing else in the UI needs to change.
+# and reads the variables below.  The procs and variables defined at the bottom
+# of this file belong to the built-in dialect (mkql.tcl), a small engine that the
+# tests use as a stand-in and a reference.  The program normally runs mkit-sql
+# (standard SQL; mkstudio.vfs/lib/mkitsql), whose engine_studio.tcl REPLACES the
+# bodies of the two procs and sets the variables - that is all it takes to plug in
+# another language; nothing else in the UI changes.  loader.tcl picks the engine
+# (MKS_ENGINE=mkql selects the built-in dialect).  The error code of a syntax
+# error stays {MKQL SYNTAX ...} whatever the engine: it is the editor's contract.
 # `tests/engine_contract.tcl` checks that an engine honours this contract.
 #
 # ---- procs -------------------------------------------------------------------
@@ -69,7 +73,7 @@
 #                         (reset it to 0 when a statement starts)
 
 namespace eval ::engine {
-    variable name "MKQL (built-in)"
+    variable name "MKQL (built-in dialect)"
     variable keywords {}
     variable functions {}
     variable types {STRING TEXT INT INTEGER LONG BIGINT FLOAT REAL DOUBLE BYTES BLOB}

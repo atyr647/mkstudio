@@ -33,11 +33,23 @@ Use a spare machine or a VM whose virtual disk you can power off without a clean
 - [ ] Disconnect from the network and check again: a plain message, no crash.
 - [ ] Installed copies (`.deb`, `.app`) open the release page instead of replacing themselves.
 
+## 3b. Windows saves and the flush
+- [ ] On Windows, *Save* takes about a second longer than on Linux or macOS (the data is forced to disk with PowerShell, three
+      starts per save). A black console window may flash briefly during a save: note whether it does and whether it is bearable.
+- [ ] A database in a folder with an accented letter and a space in its name (`C:\Users\José\My Data\x.mk`) can be opened,
+      edited and saved, and the program can be updated while it sits in such a folder.
+
 ## 4. Using it
 - [ ] Open a database; sort, filter, edit a cell, add a row, delete a row, **Save**, **Roll Back**. Close, reopen: as expected.
 - [ ] Run a query that returns 500,000 rows; scroll fast; the window stays responsive. Cancel a long query: it stops.
 - [ ] Open the same file in two copies of MK Studio: the second says who owns it and opens read-only.
-- [ ] Kill MK Studio from the task manager while editing, start it again: no complaint, the file opens, the last *saved* state is there.
+- [ ] Kill MK Studio (task manager / `kill -9`) while a database is open, start it again and open the same file: *Database in use*
+      does not appear (the dead process's lock is recognised). If it does appear, *Remove Lock...* clears it after a confirmation.
+- [ ] **SQL**: run `SELECT name, salary FROM employees ORDER BY salary DESC LIMIT 5` on the sample database; a `JOIN` with
+      `departments`; a `WITH` query; an `UPDATE`, then *Roll Back* (nothing changed) and again then *Commit* (kept after reopening).
+      A typo (`SELEC 1`) is underlined in the editor with a message. *Cancel* stops a long query (a cross join of the 500,000-row
+      table with itself) within a second or two.
+- [ ] Kill MK Studio from the task manager while editing, start it again: no complaint about the file, it opens, the last *saved* state is there.
 - [ ] High-DPI screen / 150% scaling: text and grid are readable, nothing is cut off.
 - [ ] Dark mode of the operating system: nothing unreadable.
 

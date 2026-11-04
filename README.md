@@ -14,8 +14,9 @@ included) that you can copy anywhere and run.
   their subview contents), double-click a `> N rows` cell to open a subview
 - **Bytes columns** - size and hex preview in the grid; a hex viewer with export, replace-from-file and clear
 - **Add Column** - one click from the data editor, or in the **Designer** with rename, retype and drop (a renamed column keeps its position)
-- **Query windows** - syntax highlighting, completion, Find, multiple result tabs, cancel, error underlining; big results
-  **stream**: a `SELECT *` over 500,000 rows opens in ~0.15 s and costs memory only for the rows on screen
+- **Query windows** - standard SQL (mkit-sql: joins, CTEs, window functions, `MERGE`, ...), syntax highlighting, completion, Find,
+  multiple result tabs, cancel, error underlining. A result is limited to 100,000 rows in memory (the window says when it was cut);
+  the built-in dialect (`MKS_ENGINE=mkql`) streams results of any size instead - see *Performance and limits*
 - **Commit / Roll Back** - files are opened `-nocommit`: nothing reaches disk until you commit
 - **Safety** - refuses files that aren't Metakit databases; read-only databases disable every write control;
   a second MK Studio asking to edit a database that is already open for editing is offered a read-only view instead
@@ -63,7 +64,7 @@ certificate** - there is none behind this project - so each system asks you to c
 | Windows 10/11 | `MKStudio-<version>-windows-x64-setup.exe` (per-user, no administrator rights; Start menu entry, uninstaller, optional desktop shortcut and "Open with" for `.mk` files) or the single file `mkstudio-windows-x86_64.exe` | SmartScreen: *More info > Run anyway* |
 | macOS | `MKStudio-<version>-macos-arm64.dmg` (Apple silicon) / `-x86_64.dmg` (Intel): drag to Applications | macOS 15 and later: try to open it once, then *System Settings > Privacy & Security > Open Anyway*; macOS 14 and earlier: right-click the app > *Open* |
 | Debian / Ubuntu | `mkstudio_<version>_amd64.deb` (`sudo apt install ./mkstudio_*.deb`) | |
-| other Linux | `MKStudio-<version>-linux-x86_64.tar.gz`, then `sh install.sh` (installs into `~/.local`, no root) | |
+| other Linux | `MKStudio-<version>-linux-x86_64.tar.gz`, then `sh install.sh` (installs into `~/.local`, no root) | needs glibc 2.28 or newer (RHEL 8+, Debian 10+, Ubuntu 18.10+) and the X11, Xft and fontconfig libraries every desktop has |
 
 `SHA256SUMS` lists every file. A checksum catches a damaged download, **not** a malicious one (whoever controls the GitHub
 account controls the checksums too) - download only from the project's own releases page. `mkstudio --version` prints the
@@ -114,7 +115,8 @@ An error that nothing handled is caught: a dialog says so, and a report is writt
 Reports Folder*; `%LOCALAPPDATA%\MKStudio\crashes`, `~/Library/Logs/MKStudio`, `~/.local/state/mkstudio/crashes`).
 It holds the version, system, Tcl/Tk versions, the error message, the call stack as **procedure names and line numbers**
 and the last things the program did ("database opened", "query executed", "committed" - never SQL, rows or values); your
-home folder and user name are replaced and database file names shortened. **Nothing is sent anywhere by the program.** The
+home folder and user name are replaced, every file path is cut to `<folder>/<file>` plus its extension, and quoted text in an error
+message (where a value could slip in) is removed. **Nothing is sent anywhere by the program.** The
 dialog can copy the report or open a pre-filled GitHub issue in your browser; you read it and press submit yourself.
 A crash nothing can catch (Metakit or Tk dying, a power cut) is noticed at the next start: every running copy keeps a small
 marker file with its recent breadcrumbs, and a marker whose process is gone becomes a report. `tests/test_crash.tcl`
@@ -154,12 +156,13 @@ Every row below is something that was actually run; the CI badge-of-truth is the
 |---|---|
 | All suites on **real Metakit** (Mk4tcl 2.4.9.7) | Linux, on the current **8.6.16** runtime, the 2014 **8.6.3** and **8.5.17** - pass |
 | **Windows** (`windows-latest`) | engine, contract, persistence, differential, crash-safety, durability, update, grid and UI suites pass with the current Windows runtime (8.6.16, cross-built); the built `.exe` launches and keeps running; a running copy is really replaced by the update helper, from a folder with spaces, parentheses and an accented letter in its name |
-| **macOS** (`macos-15-intel` and `macos-latest`/Apple silicon) | the same suites pass with a KitCreator-built Tcl/Tk 8.6.16 (native Aqua); the starpack is wrapped, signed, payload-verified and launches |
+| **macOS** (`macos-15-intel` and `macos-latest`/Apple silicon) | the same suites pass with a KitCreator-built Tcl/Tk 8.6.16 (native Aqua); the starpack is wrapped on that runtime, payload-verified and launches |
+| mkit-sql as the query language | `tests/test_engine_wiring.tcl` on every OS; mkit-sql's own studio-side suites (contract, integration, locking, commit failure, damage, power loss, checksum, review regressions) against this program's `store.tcl`, on the pinned commit, in CI |
 | Real-world file (a tclkit's own boot database: subviews + binary columns) | opens, browses, hex view works |
 | 500,000-row file | see the numbers below |
 | Packaged Linux starpack | launches, opens a database, no errors; `--version` / `--selftest` answer correctly |
 | Installers | `.deb` is installed, run and removed on a Linux runner; the tarball installs for one user; the Windows setup is installed silently, run, upgraded over itself and uninstalled on a Windows runner (Start menu entry, registry entries, files all checked); the macOS `.dmg` is mounted, signature verified, the app run and started as an app |
-| Update path, crash reports, first-commit / checksum / backup | `tests/test_update.tcl` (120 checks incl. a real download from a fake feed and a **live check against the real GitHub release** on every OS), `tests/test_crash.tcl` (66), `tests/test_durability.tcl` (100+), the Help menu / damaged-file / update dialogs in `tests/gui_logic.tcl` |
+| Update path, crash reports, first-commit / checksum / backup | `tests/test_update.tcl` (120 checks incl. a real download from a fake feed and a **live check against the real GitHub release** on every OS), `tests/test_crash.tcl` (66), `tests/test_durability.tcl` (112), the Help menu / damaged-file / update dialogs in `tests/gui_logic.tcl` |
 | HiDPI | verified with Tk scaling 2.0 on Linux; Windows/macOS DPI behaviour depends on the runtime's manifest |
 | Screen readers | **not supported**: Tk has no accessibility API. Keyboard operation, visible focus and a high-contrast theme are provided instead |
 
@@ -168,7 +171,8 @@ Tests (all in `tests/`):
 - `lint.tcl` - no proc shadows a Tcl/Tk command, ASCII-only sources, no 8.6-only commands, no unguarded X11-only keysyms
 - `test_engine_wiring.tcl` - mkit-sql is the engine behind the seam: its version is the vendored one, parse offsets and syntax-error codes
   reach the editor, a statement's change lands in the store's open database and is committed, rolled back, locked and checksummed there
-- `test_mkql.tcl`, `engine_contract.tcl` - the built-in dialect and the engine contract
+- `test_mkql.tcl`, `engine_contract.tcl` - the built-in dialect and the engine contract (these and the next five suites test the
+  built-in dialect, which the tests pin with `MKS_ENGINE=mkql`; mkit-sql has its own, much larger test suite in its repository)
 - `test_engine_diff.tcl` - **thousands of random queries** (predicates, expressions, aggregates, grouping, ordering,
   limits) through the optimised executor and through the original simple one (`mkql_reference.tcl`); results must be
   identical (rows, values, types, row ids - and success or failure), also when the result is forced to stream lazily.
@@ -184,12 +188,16 @@ Tests (all in `tests/`):
   multi-database eviction), and an engine-independent conformance suite any engine's providers can be run through
 - `persist.tcl`, `test_crash_safety.tcl`, `test_power_loss.tcl`, `test_lock_protocol.tcl`, `test_lock_crash.tcl` - persistence,
   crash safety, power loss (synthesised and real-kill states, three ways of opening them), the write-lock protocol (incl. racing against mkit-sql's own implementation) and the lock under crashes (next section)
-- `bench_mutation.tcl` - bulk `UPDATE`/`DELETE` of MK Studio's engine vs mkit-sql on identical files, results compared
+- `test_update_live.tcl` - the update path against the *real* GitHub release (real API, download, checksum, the published program started)
+- `soak_lock_chaos.tcl` - the lock chaos test repeated and measured (the manual "lock soak" CI job)
+- `bench.tcl` - the 500,000-row scale benchmark below, for either engine; `bench_mutation.tcl` - bulk `UPDATE`/`DELETE` of MK Studio's
+  engine vs mkit-sql on identical files, results compared
 - `test_grid.tcl` - the virtualised grid driven with real mouse and key events (100,000 rows in memory, a Metakit view,
   selection ranges, keyboard, sorting, the sort cache, editing in a scrolled grid, streaming results incl. staleness and
   freezing, empty results)
 - `gui_logic.tcl` - the UI logic incl. every popup menu and undo
-- `verify_payload.tcl`, `smoke_starpack.sh`, `bench.tcl`, and `shoot.tcl` for screenshots
+- `verify_payload.tcl`, `smoke_starpack.sh`, and `shoot.tcl` for screenshots
+- what no test can do is in [`docs/QA-CHECKLIST.md`](docs/QA-CHECKLIST.md): the hour of manual checks before a release
 
 A pure-Tcl `mk::` stand-in (`mock_mk4tcl.tcl`) lets most of the suite also run without Metakit; it is test-only.
 
@@ -239,8 +247,10 @@ Results (about 500 checks; Tcl 8.6 and 8.5; `raw` = Metakit alone):
 often an empty database, silently. So **Metakit alone is not crash-safe in the middle of a commit, and not power-loss safe
 at all.** What MK Studio now does (`store.tcl`):
 
-- before a commit starts it writes `<file>.commit` (the committed header and size) and, where the system has `sync`
-  (Linux, macOS), forces it and the file to disk; after the commit it forces the file to disk and removes the record;
+- before a commit starts it writes `<file>.commit` (the committed header and size) and forces it and the file to disk (`sync` on
+  Linux and macOS, PowerShell on Windows); after the commit it forces the file to disk, then rewrites the record to describe the
+  *finished* file and forces that, then removes it - so a record that cannot be removed (a virus scanner holds it) or whose
+  removal is lost in a power cut can never undo a commit that was reported as done;
 - when a database is opened *for writing* (with the lock held) and a record is found, the header and size are put back: the
   database is exactly what it was before that commit; with no record, a file longer than its header says is cut back to the
   header's offset. The user is told ("An unfinished commit was undone ...");
@@ -265,8 +275,13 @@ Cost: a commit takes about 0.25 s longer on a 30 MB database on Linux and macOS 
   the finished file. At the next open for writing the sum is checked - but only if size and time still match (a file another
   program legitimately changed just gets a new baseline). Same size and time but different content is what a bad sector or
   bit rot looks like: MK Studio does not touch the file, says so, and offers the backup.
-- **A backup of the file as it was before the first commit of an editing session** is kept as `<file>.bak` (never replaced
-  by a copy that fails the check). *Restore Backup* keeps the damaged file as `<file>.damaged`.
+- **A backup of the file as it was before the first commit of an editing session** is kept as `<file>.bak` (copied completely and
+  forced to disk before it replaces the previous one; never replaced by a copy that fails the check). If a file that failed its
+  checksum is opened anyway and saved, a second copy of the good backup is kept as `<file>.bak.good`, because the next session would
+  otherwise copy the damaged data over `.bak`. *Restore Backup* prefers that copy and keeps the damaged file as `<file>.damaged`
+  (`.damaged.1`, ... - an earlier one is never overwritten).
+- **A folder that takes no new files** (read-only) means no lock, no record and no backup: saving still works, and the window says
+  so when the database is opened.
 - Cost (measured): the CRC of 100 MB takes 0.15 s on every commit, the backup copy 0.35 s once per editing session - a 29 MB database
   adds about 40 ms per commit. The backup needs as much free disk space as the database.
 - Not covered: files larger than 512 MB (no checksum or backup - the limit is `store::sumLimit`), damage that happens
@@ -276,7 +291,7 @@ Cost: a commit takes about 0.25 s longer on a 30 MB database on Linux and macOS 
 model: pages reach the disk in any order, an 8-byte write is atomic (it lies in one sector), and `sync` really forces data
 out. It does not cover a disk that lies about having written (some cheap SSDs and USB sticks), a filesystem that loses a
 whole file, or data lost from a commit that was already confirmed - and Windows has no `sync` command, so there the
-flush goes through PowerShell (see below) and is only as good as that. A commit that was in flight when the power
+flush goes through PowerShell (see above) and is only as good as that. A commit that was in flight when the power
 failed is lost (rolled back), by design: it was never confirmed to the user. `mkit-sql` on its own storage layer
 (`db.tcl`) does not have this protocol; in MK Studio it shares `store.tcl`, so it does.
 
@@ -292,8 +307,13 @@ and holds while it has the file open for writing.
 - a lock left behind by a crashed process is recognised (its pid is gone) and taken over, so a crash never locks you out;
   a lock from another machine (a network share) is respected, since its liveness can't be checked;
 - a long-lived owner such as a server announces itself (`role`, `endpoint`) so clients are told who to talk to;
-- a process that started after the lock file was written (a reused pid) is not its owner; a zombie is not running;
-- a process only ever removes *its own* lock.
+- a process that started after the lock file was written (a reused pid) is not its owner (Linux, macOS and Windows); a zombie is
+  not running; a lock that is not a plain file, or cannot be read, counts as held;
+- the lock is named after the file's *real* path (symbolic links resolved), so two names of one database share one lock;
+- a process only ever removes *its own* lock; for a lock that is dead but looks held (another computer's name, a recycled pid) the
+  "Database in use" dialog offers *Remove Lock...* after a confirmation;
+- just before a commit writes, the program checks that the lock file still holds its own text, and refuses to save if somebody else's
+  is there (`docs/CONCURRENCY.md` has the measurements that made this necessary).
 
 `tests/test_lock_protocol.tcl` checks this against hand-written independent implementations of the protocol and races six
 real processes for a free lock and for the same stale lock - half of them mkit-sql's own implementation when
@@ -310,22 +330,36 @@ copies, lazy results) is guarded by a per-database *generation* that every chang
 
 ## Performance and limits (500,000 rows, 29 MB, Linux)
 
-| operation | now | was |
+Measured with `tests/bench.tcl` on one shared Linux VM, Tcl 8.6.3, real Metakit, both engines in the same session, one run each
+(treat differences under ~30% as noise; the absolute figures move by a factor of two between runs on shared hardware). The first
+column is the default engine, **mkit-sql**; the second is the built-in dialect (`MKS_ENGINE=mkql`), which has its own streaming
+and caching layer. Neither engine is faster at everything.
+
+| operation | mkit-sql (default) | built-in dialect |
 |---|---|---|
-| open file, list views / layout | ~40 ms | |
-| open a view in the editor / jump to any row | ~0.1 s / ~4 ms | 0.16 s for the first 5,000 rows only |
-| `SELECT * FROM big` (all 500,000 rows, streamed) | ~0.2 s, ~80 MB | 100,000-row cap, seconds, ~hundreds of MB |
-| `SELECT ... ORDER BY <column>` over all rows (streamed) | ~1.2-2.8 s | |
-| `SELECT ... LIMIT 100` | ~6 ms (warm) | ~10 ms |
-| `WHERE` on `=`, `<`, `<=`, `>`, `>=`, `BETWEEN`, `IN`, text `=` (pushed into Metakit) | 0.15-0.35 s | ~6.5 s |
-| `WHERE` that can't be pushed (`LIKE`, expressions), full scan | ~2 s | ~6.5 s |
-| `SELECT COUNT(*)` | ~1 ms | ~6 s |
-| `SUM / MIN / MAX` over everything; `GROUP BY` | ~2.5 s; ~2.5 s | ~7 s; ~7.2 s |
-| `ORDER BY <number column> ... LIMIT n` | ~1.2 s first time, ~60 ms after | ~11.5 s (41 s originally) |
-| click a column header in the editor (sorts all 500,000 rows) | ~1.5 s first time, instant after (cached) | sorted the loaded page only |
+| open file, list views / layout (the store; same for both) | ~75 ms | ~80 ms |
+| `SELECT ... LIMIT 100` | ~30 ms | ~15 ms |
+| `WHERE` on `=`, ranges, `IN`, `BETWEEN` (pushed into Metakit), 6,658 rows out | 0.17-0.19 s | 0.18-0.22 s |
+| `WHERE name LIKE 'person 4999%'` | **~0.1 s** (prefix decided inside Metakit) | ~1.7 s (full scan) |
+| `SELECT COUNT(*)` | ~1 ms | ~1 ms |
+| `COUNT(*)` with two conditions | ~0.27 s | ~0.28 s |
+| `SUM / MIN / MAX` over everything | ~3.9 s | ~3.1 s |
+| `GROUP BY` 50 groups | ~3.7 s | ~2.9 s |
+| `ORDER BY <number> DESC LIMIT 50` | ~4.1 s every time | ~0.9 s first time, **~0.3 s** after (cached column) |
+| `ORDER BY <text> LIMIT 50` | ~4.2 s | ~4.0 s |
+| `SELECT *` over all 500,000 rows | ~1.7 s, **first 100,000 rows only** (the window says so) | **~0.16 s, all rows, streamed** |
+| `SELECT ... ORDER BY <number>` over all rows | ~8-10 s, first 100,000 rows only | ~2.3 s first time, ~1.2 s after, all rows, streamed |
+| `UPDATE` 10,000 scattered rows of a string column | ~9 s | ~10.6 s |
+| `UPDATE` 10,000 contiguous rows | ~17.7 s | ~23.9 s (this VM was slower during this part; the same statement took ~9 s in earlier runs) |
+| `DELETE` 10,000 scattered rows | **~29 s** | ~13.8 s |
+| open a view in the editor / jump to any row (the grid; same for both) | ~0.1 s / ~4 ms | |
+| click a column header in the editor (sorts all 500,000 rows) | ~1.5 s first time, instant after (cached) | |
 | select all + copy 500,000 rows (34 MB) | ~10 s | |
-| `UPDATE` 10,000 rows of a string column (contiguous or scattered) | **~9-10 s** | ~24 s |
-| `DELETE` 10,000 scattered rows | **~10 s** | ~32 s |
+
+What this means: mkit-sql is the richer language and answers prefix `LIKE` far faster; the built-in dialect is faster for big sorts,
+repeated `ORDER BY ... LIMIT`, and results too large for memory (it hands the grid a streaming source), and quicker at scattered
+`DELETE`. If you work with half-million-row views and mostly browse and sort, `MKS_ENGINE=mkql` is the better tool today; if you
+need joins, CTEs, windows and standard syntax, mkit-sql is the only one that has them. Metakit's own limits (below) apply to both.
 
 Mutations are still the slowest thing here, and the limit is **Metakit's design**: columns are stored contiguously,
 so rewriting a variable-length value or deleting a row shifts everything after it (2-4 ms each on 500,000 rows,
@@ -337,12 +371,11 @@ never slow, and a run of consecutive deletes is one call. If the copy fails the 
 nothing is half-changed. The app keeps the UI responsive, skips writes that change nothing, and Roll Back
 undoes a whole run (and is fast). Going much beyond this needs a different storage layout, not a smarter loop.
 
-**Compared with mkit-sql's rebuild** (200,000 rows, identical statements and files, results identical row for row):
-a 100,000-row scattered delete 4.5 s vs 6.7 s; 4,000 scattered deletes 5.9 s vs 23.6 s (mkit-sql rebuilds only from 20,000
-changes; the break-even is ~1,000); `UPDATE name = name || 'xx'` on every row 6.9 s vs 18.4 s (its cost is the update
-pipeline, not the rebuild). Details and a recommendation to keep one algorithm: `docs/mkit-sql-integration.md`.
+(An earlier version of this section compared the two engines' bulk `UPDATE` / `DELETE` rebuilds at an older mkit-sql; the table
+above supersedes it. `tests/bench_mutation.tcl` still runs identical statements on identical files through both and compares the
+resulting tables row by row in CI.)
 
-How the speed-ups work, and their limits:
+How the built-in dialect's speed-ups work, and their limits (the grid and the store parts apply to both engines):
 
 - **The grid is virtualised.** The treeview holds only the rows that fit in the window (about 30); scrolling re-labels
   them. Rows come from a data source: query results from memory, a Metakit view read on demand (a small cache), or an
@@ -401,7 +434,11 @@ mkstudio.vfs/lib/app-mkstudio/
     crash.tcl     error handler, crash reports, unexpected-end detection
     theme icons menus widgets grid editor explorer docs app
 packaging/     NSIS installer, .deb/.tar.gz, macOS .app/.dmg, icons (tools/make-icons.py draws them)
-tests/  tools/  build.sh  .github/workflows/build.yml
+tests/         the suites above; tools/  runtime build (build-kit.sh, fetch-runtimes.sh), wrap.tcl, sync-mkitsql.sh, make-icons.py
+build.sh  .github/workflows/build.yml   (build, test and release; a manual "lock soak" job; the release job publishes a tag only when everything is green)
 RELEASE_NOTES.md       the text of the current release
-docs/CONCURRENCY.md    the shared write-lock / generation policy (for mkit-sql or a server)
+docs/CONCURRENCY.md    the shared write-lock / generation policy (for mkit-sql or a server), with its measurements
+docs/mkit-sql-integration.md   how mkit-sql is wired in, what was found, what differs; docs/mkit-sql-protocol-sync.patch for its repository
+docs/QA-CHECKLIST.md   the manual checks automation cannot do
+docs/screenshots/      what the program looks like
 ```

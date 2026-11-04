@@ -1,4 +1,4 @@
-# editor.tcl -- the MKQL query editor: line numbers, syntax highlighting,
+# editor.tcl -- the SQL query editor: line numbers, syntax highlighting,
 # current-line marker, auto-indent, comment toggle, error marking, completion.
 #
 #   ::editor::create w ?-poscmd cmd? ?-modcmd cmd? ?-runcmd cmd? ?-completer cmd?

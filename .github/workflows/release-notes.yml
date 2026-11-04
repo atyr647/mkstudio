@@ -1,0 +1,28 @@
+name: release-notes
+# Puts the CURRENT RELEASE_NOTES.md on an existing release's page (the page text is copied when a release is published; this refreshes it
+# after the notes were corrected).  Only for the release whose version is the one in this source: its notes describe that version.
+# Run it from the Actions page with the tag, e.g. v1.0.0-rc.2.  It touches the text only, never the files of the release.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag whose page text is replaced (must be v + the version in version.tcl)'
+        required: true
+permissions:
+  contents: write
+jobs:
+  notes:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Replace the page text
+        run: |
+          v=$(grep -o 'current [0-9][^ ]*' mkstudio.vfs/lib/app-mkstudio/version.tcl | cut -d' ' -f2)
+          test "$TAG" = "v$v" || { echo "::error::tag $TAG does not match the version $v in this source"; exit 1; }
+          sed "s/<version>/$v/g" RELEASE_NOTES.md > notes.md
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isPrerelease
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --notes-file notes.md
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq .body | head -5
