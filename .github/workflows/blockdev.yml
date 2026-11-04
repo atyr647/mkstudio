@@ -27,7 +27,7 @@ jobs:
     # ext4 is the one that gates; the others are reported (their results are in the log)
     continue-on-error: ${{ matrix.fs != 'ext4' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Tools
         run: sudo apt-get update && sudo apt-get install -y e2fsprogs xfsprogs btrfs-progs
       - name: What this kernel offers
@@ -45,3 +45,27 @@ jobs:
           ls -la native-out
       - name: Block-level crash test on ${{ matrix.fs }}
         run: sudo -E env "MKS_MKSYNC_DIR=$PWD/native-out" tests/blockdev_crash.sh "$PWD/tools/ext/tclkit-8.6.3-linux-x86_64" "${{ github.event.inputs.commits || '6' }}" ${{ matrix.fs }}
+
+  # A test that cannot fail proves nothing.  The negative control runs the same test with the durable flushes switched OFF (MKS_DURABLE=0:
+  # no fsync after the record, the file or the folder): then an acknowledged commit CAN be lost in a power cut, and the test must say so.
+  # This job passes only if the test fails.
+  negative-control:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: sudo apt-get update && sudo apt-get install -y e2fsprogs
+      - name: A tclkit with Metakit (the 2014 8.6.3 one, SHA1-checked) and the native flush library
+        run: |
+          tools/fetch-runtimes.sh linux
+          chmod +x tools/ext/tclkit-8.6.3-linux-x86_64
+          tools/build-native.sh linux "$PWD/native-out"
+      - name: The test must FAIL without the flushes
+        run: |
+          sudo modprobe dm-log-writes || true
+          if sudo -E env "MKS_MKSYNC_DIR=$PWD/native-out" MKS_DURABLE=0 tests/blockdev_crash.sh "$PWD/tools/ext/tclkit-8.6.3-linux-x86_64" 6 ext4 | tee control.log; then
+            echo "::error::the crash test PASSED with the flushes switched off: it cannot tell a safe commit from an unsafe one"; exit 1
+          fi
+          grep -q "acknowledged commit is lost" control.log || { echo "::error::it failed, but not because an acknowledged commit was lost"; exit 1; }
+          echo "negative control: the test failed as it must ($(grep -c 'FAIL at entry' control.log) crash points shown)"

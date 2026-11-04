@@ -36,6 +36,9 @@ for {set k 2} {$k <= $n} {incr k} {
     store::commit $t
     mark ack-$k
     record $k $t
+    # halfway: close and open again - a second editing session, which takes the lock afresh, checks the checksum of what the first one
+    # left and makes the backup of the file before its first commit
+    if {$k == $n / 2} { store::closeFile $t ; mark reopened ; set t [store::openFile $db] }
 }
 store::closeFile $t
 mark closed
