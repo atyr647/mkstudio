@@ -38,3 +38,16 @@ jobs:
           rm -f "$RUNNER_TEMP/tw.log" "$RUNNER_TEMP/tw.trace"
           MKS_TRACE="$(cygpath -w "$RUNNER_TEMP/tw.trace")" MKS_TEST_LOG="$(cygpath -w "$RUNNER_TEMP/tw.log")" EXPECT_WIDE=1 timeout 90 "$KIT" "$(cygpath -w "$PWD/tests/run.tcl")" "$(cygpath -w "$PWD/tests/test_wide.tcl")" && rc=0 || rc=$?
           echo "=== test_wide: exit $rc"; tail -12 "$RUNNER_TEMP/tw.log" | sed 's/^/    log: /'; echo "--- last store commands:"; tail -25 "$RUNNER_TEMP/tw.trace" | sed 's/^/    /'
+      - name: Is the hung process spinning, blocked, or waiting behind a crash dialog?
+        run: |
+          KIT="$PWD/kit/tclkit-8.6.18-windows-x86_64.exe"
+          rm -f "$RUNNER_TEMP/tw2.log" "$RUNNER_TEMP/tw2.trace"
+          MKS_TRACE="$(cygpath -w "$RUNNER_TEMP/tw2.trace")" MKS_TEST_LOG="$(cygpath -w "$RUNNER_TEMP/tw2.log")" EXPECT_WIDE=1 "$KIT" "$(cygpath -w "$PWD/tests/run.tcl")" "$(cygpath -w "$PWD/tests/test_wide.tcl")" &
+          sleep 25
+          echo "--- processes:"; tasklist | grep -iE "tclkit|werfault|wer|dwwin|drwatson" || echo "(none matched)"
+          ps_out() { powershell -NoProfile -Command "Get-Process | Where-Object { \$_.ProcessName -like 'tclkit*' -or \$_.ProcessName -like 'WerFault*' } | Select-Object ProcessName,Id,CPU,@{n='Threads';e={\$_.Threads.Count}},Responding,WorkingSet64 | Format-Table -AutoSize | Out-String -Width 200"; }
+          ps_out; sleep 8; ps_out
+          echo "--- log tail:"; tail -3 "$RUNNER_TEMP/tw2.log" | sed 's/^/    /'
+          echo "--- WER / application error events:"
+          powershell -NoProfile -Command "Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=(Get-Date).AddMinutes(-10)} -ErrorAction SilentlyContinue | Where-Object { \$_.ProviderName -match 'Application Error|Windows Error Reporting|Application Hang' } | Select-Object -First 5 | ForEach-Object { \$_.ProviderName + ': ' + \$_.Message.Substring(0, [Math]::Min(600, \$_.Message.Length)) }" || true
+          taskkill //F //IM "tclkit-8.6.18-windows-x86_64.exe" || true
