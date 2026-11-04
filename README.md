@@ -307,6 +307,22 @@ on Linux and macOS (the `sync` programs) and one to two seconds on Windows (Powe
 - Not covered: files larger than 512 MB (no checksum or backup - the limit is `store::sumLimit`), damage that happens
   *before* the first baseline, damage that keeps size and time and is also in `.sum` itself.
 
+**Files over 2 GiB - and the Metakit that can hold them.** Stock Metakit keeps a file's size in one signed 32-bit word, so a database
+file cannot pass 2 GiB (a commit that would is undone and reported). The author's fork,
+[atyr647/metakit](https://github.com/atyr647/metakit) (branch `ccr-7001915e-qdjw33`), uses 64-bit file positions: below 2 GiB its files
+are byte for byte the stock ones; past 2 GiB it writes "wide" tails and flags the header, and a stock Metakit shown such a file sees an
+**empty** database (and a commit would hide the data). The programs released here still use the stock Metakit, so MK Studio **refuses** a
+wide file with an explanation (nothing is touched; the read-only and the editing open alike), and it is ready for the fork:
+`store.tcl` probes the loaded library with a small wide file it builds itself, understands the wide frame in the repair of an
+interrupted commit, and guards the one limit the fork keeps - a single column (or memo) of 2^31-1 bytes, which Metakit would otherwise answer
+by *ending the program* - by refusing the edit that would pass it (`STORE COLUMNFULL`). Verified (workflow `metakit-fork.yml`, also every
+Monday): the fork's own tests (23,497 checks, including crashes after every single write); all of MK Studio's suites on a Mk4tcl built from
+the fork (`tools/build-metakit-fork.sh`) and on a Linux tclkit built with it (`METAKIT_SRC=... tools/build-kit.sh`); a real database of
+2.9 GiB through `store.tcl` - 30 commits of 100 MiB of blobs crossing 2 GiB, every value read back, a new process opening it, the column
+refused near 2 GiB, processes killed in 6 commits and in 5 commits that cross 2 GiB (each file holds one commit or the other, and later commits
+work: `tests/test_widebig.tcl`); the block-level crash test on a real file system. Not decided: whether the released programs should be built
+with the fork (the open item in `docs/OPEN-ITEMS.md`).
+
 **Limits - please read.** The result is "the last confirmed commit, or the one before it, never a mixture", *given* the
 model: pages reach the disk in any order, an 8-byte write is atomic (it lies in one sector), and `sync` really forces data
 out. It does not cover a disk that lies about having written (some cheap SSDs and USB sticks), a filesystem that loses a

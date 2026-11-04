@@ -1,0 +1,110 @@
+name: metakit-fork
+# MK Studio on the Metakit FORK with 64-bit file positions (https://github.com/atyr647/metakit): its branch is checked out at its latest commit (or
+# the ref given), built, and
+#   * the fork's own tests run (regress, and twide: the wide marks, crashes after every single write),
+#   * MK Studio's suites run on a Mk4tcl built from it instead of the one inside the runtime,
+#   * a database file past 2 GiB is made, edited, killed in the middle of commits (also the one that crosses 2 GiB) and reopened (tests/test_widebig.tcl),
+#   * the block-level crash test (a real file system, the power cut after every write) runs on it,
+#   * a Linux tclkit is built WITH it (tools/build-kit.sh, METAKIT_SRC) and the same suites run on that.
+# The shipped programs still use the stock Metakit; this shows what switching would (not) break.  Runs on request, every Monday, and when MK Studio's
+# storage code or these files change.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'branch, tag or commit of atyr647/metakit to test'
+        default: 'ccr-7001915e-qdjw33'
+  schedule:
+    - cron: '17 5 * * 1'
+  push:
+    branches: [ccr-f017368d-kguqg8]
+    paths:
+      - '.github/workflows/metakit-fork.yml'
+      - 'tools/build-metakit-fork.sh'
+      - 'tools/build-kit.sh'
+      - 'tests/test_wide*.tcl'
+      - 'tests/wide*.tcl'
+      - 'mkstudio.vfs/lib/app-mkstudio/store.tcl'
+env:
+  FORK_REF: ${{ github.event.inputs.ref || 'ccr-7001915e-qdjw33' }}
+jobs:
+  library:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: atyr647/metakit
+          ref: ${{ env.FORK_REF }}
+          path: metakit-fork
+      - name: Which commit of the fork
+        run: git -C metakit-fork log -1 --format='%H %ad %s' --date=short
+      - name: Tools
+        run: sudo apt-get update && sudo apt-get install -y tcl8.6 tcl8.6-dev tk8.6 g++ make xvfb e2fsprogs
+      - name: Build the fork's Mk4tcl, and run the fork's own tests
+        run: |
+          FORK_SELFTEST=1 tools/build-metakit-fork.sh metakit-fork "$RUNNER_TEMP/mk4fork"
+          echo "TCLLIBPATH=$RUNNER_TEMP/mk4fork" >> "$GITHUB_ENV"
+          echo "MKS_MKSYNC_DIR=$PWD/native-out" >> "$GITHUB_ENV"
+          tools/build-native.sh linux "$PWD/native-out"
+      - name: MK Studio's suites on a Mk4tcl built from the fork
+        run: |
+          fail=0
+          for t in test_wide engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_durability test_crash test_lock_protocol test_lock_crash test_grid test_engine_wiring gui_logic test_mksync; do
+            echo "=== $t"
+            REAL_MK=1 EXPECT_WIDE=1 MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views xvfb-run -a tclsh8.6 tests/run.tcl "tests/$t.tcl" || { echo "FAILED: $t"; fail=1; }
+          done
+          exit $fail
+      - name: A database file past 2 GiB (about 4.5 GB of disk, a few minutes)
+        run: EXPECT_WIDE=1 REAL_MK=1 tclsh8.6 tests/test_widebig.tcl
+      - name: The block-level crash test on the fork (ext4)
+        run: |
+          sudo modprobe dm-log-writes || true
+          sudo -E env "TCLLIBPATH=$TCLLIBPATH" "MKS_MKSYNC_DIR=$MKS_MKSYNC_DIR" tests/blockdev_crash.sh "$(command -v tclsh8.6)" 6 ext4
+
+  kit-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          repository: atyr647/metakit
+          ref: ${{ env.FORK_REF }}
+          path: metakit-fork
+      - name: Build Tcl/Tk 8.6.18 + the fork's Metakit in a glibc 2.28 container
+        timeout-minutes: 60
+        run: |
+          mkdir -p kit-out
+          docker run --rm -v "$PWD":/src -w /src -e METAKIT_SRC=/src/metakit-fork quay.io/pypa/manylinux_2_28_x86_64 bash -c '
+            set -e
+            yum install -y tcl autoconf automake libX11-devel libXft-devel fontconfig-devel freetype-devel libXext-devel libXrender-devel libXScrnSaver-devel
+            git config --global --add safe.directory /src/metakit-fork
+            bash tools/build-kit.sh linux /src/kit-out'
+          sudo chown -R "$(id -u):$(id -g)" kit-out
+          ls -la kit-out
+      - name: The kit runs (Tk, Metakit, the vfs)
+        run: |
+          sudo apt-get update && sudo apt-get install -y xvfb
+          KIT=$PWD/kit-out/tclkit-8.6.18-linux-x86_64
+          chmod +x "$KIT"
+          echo "KIT=$KIT" >> "$GITHUB_ENV"
+          cat > "$RUNNER_TEMP/smoke.tcl" <<'EOS'
+          puts "tcl [info patchlevel]"
+          package require Tk
+          puts "mk4tcl [package require Mk4tcl]"
+          puts "vfs [package require vfs::mk4]"
+          exit 0
+          EOS
+          xvfb-run -a "$KIT" "$RUNNER_TEMP/smoke.tcl"
+      - name: MK Studio's suites on the kit built with the fork
+        run: |
+          fail=0
+          for t in test_wide persist test_crash_safety test_durability test_power_loss test_crash test_lock_protocol test_grid test_engine_wiring gui_logic; do
+            echo "=== $t"
+            REAL_MK=1 EXPECT_WIDE=1 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views xvfb-run -a "$KIT" tests/run.tcl "tests/$t.tcl" || { echo "FAILED: $t"; fail=1; }
+          done
+          exit $fail
+      - name: A database file past 2 GiB, on the kit
+        run: EXPECT_WIDE=1 REAL_MK=1 "$KIT" tests/test_widebig.tcl

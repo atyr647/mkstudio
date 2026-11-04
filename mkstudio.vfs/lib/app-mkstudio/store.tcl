@@ -491,6 +491,9 @@ proc ::store::openFile {path args} {
         if {[sameFile $file($t) $path]} { error "File is already open as '$t'." }
     }
     if {!$create && ![file exists $path]} { error "File not found: $path" }
+    # a file over 2 GiB (wide format) that this Mk4tcl cannot read would look EMPTY: refuse before anything touches it
+    set why [wideRefusal $path]
+    if {$why ne ""} { return -code error -errorcode [list STORE WIDEFILE] $why }
     set holder [lockHolder $path]
     set lf "" ; set mine "" ; set repairNote "" ; set integ ""
     if {!$readonly} {
@@ -525,6 +528,7 @@ proc ::store::openFile {path args} {
     if {$integ ne ""} { variable integrity ; set integrity($tag) $integ }
     set file($tag) $path ; set ro($tag) $readonly ; set dirty($tag) 0
     touchGen $tag
+    wideCapable ; guardReset $tag 1                  ;# the library is probed here, never in the middle of an edit
     if {$readonly} {
         if {$holder ne ""} { set lockedBy($tag) $holder }
     } elseif {$lf ne ""} {
@@ -561,6 +565,7 @@ proc ::store::closeFile {tag} {
     lockStep released
     unset -nocomplain lockedBy($tag)
     catch {mk::file close $tag}
+    guardForget $tag
     set i [lsearch -exact $tags $tag]
     if {$i >= 0} { set tags [lreplace $tags $i $i] }
     unset -nocomplain file($tag) ro($tag) dirty($tag)
@@ -592,14 +597,23 @@ namespace eval ::store { variable durable [expr {[info exists ::env(MKS_DURABLE)
 
 proc ::store::commitRecord {path} { return $path.commit }
 
-# {size S offset H header <8 bytes as hex>} for a Metakit file with the usual header, "" for anything else
+# {size S offset H header <8 bytes as hex> wide 0|1} for a Metakit file with the usual header, "" for anything else.  A "wide" file (written
+# by a Metakit built for files over 2 GiB: bit 0x40 of the fourth header byte, 24-byte tails; see "Files over 2 GiB" below) keeps no
+# usable file size in its header: its offset is reported as the file size.
 proc ::store::headerInfo {path} {
     if {[catch {set h [open $path rb] ; set d [read $h 8] ; close $h}] || [string length $d] < 8} { return "" }
     set magic [string range $d 0 1]
-    if {$magic eq "JL"} { binary scan $d x4I off } elseif {$magic eq "LJ"} { binary scan $d x4i off } else { return "" }
+    if {$magic ne "JL" && $magic ne "LJ"} { return "" }
     if {[string index $d 2] ne "\x1a"} { return "" }
     binary scan $d H* hex
-    return [dict create size [file size $path] offset $off header $hex]
+    set wide [wideHeader $d]
+    if {$wide} {
+        set off [file size $path]
+    } else {
+        if {$magic eq "JL"} { binary scan $d x4I off } else { binary scan $d x4i off }
+        set off [expr {$off & 0xFFFFFFFF}]
+    }
+    return [dict create size [file size $path] offset $off header $hex wide $wide]
 }
 # force the files (and the folder entry) to disk where the system can:
 #   native     the mksync library (native/mksync/mksync.c), when the build has one for this system and it loads: fsync on Linux and
@@ -752,12 +766,160 @@ proc ::store::endCommit {path} {
 # Does a valid 16-byte Metakit footer end exactly at `end` (the state a committed file of that size has)?  The repairs below only
 # cut or restore a file when this holds for the state they restore: a damaged header (an offset that is too small, a record that
 # does not match) must never make them throw real data away.
-proc ::store::footerOkAt {path end} {
-    if {$end < 24 || $end > [file size $path]} { return 0 }
-    if {[catch {set h [open $path rb] ; set head [read $h 2] ; seek $h [expr {$end - 16}] start ; set tail [read $h 16] ; close $h}] || [string length $tail] != 16} { return 0 }
+proc ::store::footerOkAt {path end {wide 0}} {
+    set n [expr {$wide ? 24 : 16}]
+    if {$end < 8 + $n || $end > [file size $path]} { return 0 }
+    if {[catch {set h [open $path rb] ; set head [read $h 2] ; seek $h [expr {$end - $n}] start ; set tail [read $h $n] ; close $h}] || [string length $tail] != $n} { return 0 }
+    if {$wide} {
+        # three tails of 24 bytes, big-endian: skip 0x82, extension 0x83, commit 0x81 (src/marks.h of the 64-bit Metakit)
+        binary scan $tail cH6IcH6IcH6I t1 z skLo t2 skHi rHi t3 len rLo
+        if {($t1 & 0xFF) != 0x82 || $z ne "000000" || ($t2 & 0xFF) != 0x83 || ($t3 & 0xFF) != 0x81} { return 0 }
+        set skip [expr {([scan $skHi %x] << 32) + ($skLo & 0xFFFFFFFF)}]
+        set root [expr {(($rHi & 0xFFFFFFFF) << 32) + ($rLo & 0xFFFFFFFF)}]
+        return [expr {$skip == $end - 24 && $root < $skip}]
+    }
     set fmt [expr {$head eq "JL" ? "I" : "i"}]
     binary scan $tail $fmt$fmt$fmt$fmt w0 footPos w2 tocPos
     return [expr {($w0 & 0xFFFFFFFF) == 0x80000000 && (($w2 >> 24) & 0xFF) == 0x80 && ($footPos & 0xFFFFFFFF) == $end - 16 && ($tocPos & 0xFFFFFFFF) < $end - 16}]
+}
+
+# ---- files over 2 GiB: the Metakit that can hold them, and the one that cannot -------------------------------------------------
+# Stock Metakit keeps file positions in a signed 32-bit word: a file cannot pass 2 GiB (a commit that would fails).  A Metakit built from
+# https://github.com/atyr647/metakit (the branch with the 64-bit file positions) can: past 2 GiB it writes "wide" tails (24 bytes: skip,
+# extension, commit) and flags the header (bit 0x40 of its fourth byte); files below 2 GiB are byte for byte what they always were, and
+# a commit to a wide file APPENDS its tails (nothing at the end is overwritten).  A stock Metakit given such a file sees an EMPTY database
+# - and a commit would hide the data behind new bytes - so
+#   - wideCapable asks the loaded library, once, with a small wide file it builds itself (a behaviour test, no version number),
+#   - openFile refuses a wide file when the library cannot read it (nothing is touched),
+#   - the repair of an interrupted commit knows the wide frame,
+#   - one column (or memo) stays limited to 2^31-1 bytes whatever the file size, and Metakit ENDS THE PROGRAM when an edit grows it past
+#     that: the column guard below refuses such an edit first.
+namespace eval ::store {
+    variable wideCap ""
+    variable maxColumnBytes 2147483647
+}
+# is this 8-byte header the header of a wide file?
+proc ::store::wideHeader {head8} {
+    binary scan [string index $head8 3] c b3
+    expr {([string range $head8 0 1] eq "JL" || [string range $head8 0 1] eq "LJ") && ($b3 & 0xC0) == 0x40}
+}
+proc ::store::isWide {path} {
+    if {[catch {set h [open $path rb] ; set d [read $h 8] ; close $h}] || [string length $d] < 8} { return 0 }
+    wideHeader $d
+}
+# is the header given as 16 hex digits (as the commit record keeps it) a wide one?
+proc ::store::wideHex {hex} {
+    if {[string length $hex] != 16 || ![string is xdigit -strict $hex]} { return 0 }
+    wideHeader [binary format H* $hex]
+}
+# A standard file made by the library, turned into a wide one (what a 64-bit Metakit writes past 2 GiB): the three wide tails replace the
+# two standard ones and the header is flagged.  Used by the probe and by the tests.  Error unless the data is a small committed JL file.
+proc ::store::wideConvert {data} {
+    set n [string length $data]
+    if {$n < 40 || [string range $data 0 1] ne "JL" || [string index $data 2] ne "\x1a"} { error "not a standard Metakit file" }
+    binary scan [string range $data end-15 end] IIII w0 skip w2 root
+    if {($w0 & 0xFFFFFFFF) != 0x80000000 || (($w2 >> 24) & 0xFF) != 0x80 || ($skip & 0xFFFFFFFF) != $n - 16} { error "not a committed Metakit file" }
+    set len [expr {$w2 & 0xFFFFFF}]
+    set tails [binary format "cH6IcH6IcH6I" 0x82 000000 [expr {$skip & 0xFFFFFFFF}]  0x83 000000 0  0x81 [format %06x $len] [expr {$root & 0xFFFFFFFF}]]
+    return [binary format a2cc "JL" 0x1a 0x40][binary format I [expr {$n + 8}]][string range $data 8 end-16]$tails
+}
+# 1 if the loaded Mk4tcl reads files over 2 GiB.  MKS_WIDE=0 in the environment forces 0 (to test the refusals).
+proc ::store::wideCapable {} {
+    variable wideCap
+    if {$wideCap ne ""} { return $wideCap }
+    set cap 0
+    if {[info exists ::env(MKS_WIDE)] && $::env(MKS_WIDE) eq "0"} {
+        set cap 0
+    } elseif {[llength [info commands ::mk::file]] && ![catch {probeWide} r] && $r eq "1"} {
+        set cap 1
+    }
+    set wideCap $cap
+}
+proc ::store::probeWide {} {
+    set dir /tmp
+    foreach v {TMPDIR TEMP TMP} { if {[info exists ::env($v)] && [file isdirectory $::env($v)]} { set dir $::env($v) ; break } }
+    set base [file join $dir mkstudio-probe-[pid]-[clock milliseconds]-[expr {int(rand() * 1000000)}]]
+    set t __mks_probe_[pid]
+    set ok 0
+    catch {
+        # a standard file with one row, made by the library itself
+        set ch [open $base.a {WRONLY CREAT EXCL}] ; close $ch
+        mk::file open $t $base.a
+        mk::view layout $t.p {k:I}
+        mk::row append $t.p k 42
+        mk::file commit $t
+        mk::file close $t
+        set ch [open $base.a rb] ; set data [read $ch] ; close $ch
+        set ch [open $base.b {WRONLY CREAT EXCL}] ; fconfigure $ch -translation binary ; puts -nonewline $ch [wideConvert $data] ; close $ch
+        # a library that knows the wide format finds the row, any other one finds no database at all
+        mk::file open $t $base.b -readonly
+        if {![catch {mk::view size $t.p} n] && $n == 1 && [mk::get $t.p!0 k] == 42} { set ok 1 }
+        mk::file close $t
+    }
+    catch {mk::file close $t}
+    foreach f [list $base.a $base.b] { catch {file delete $f} }
+    return $ok
+}
+# A wide file with a library that cannot read it: why it must not be opened ("" if all is well)
+proc ::store::wideRefusal {path} {
+    if {![file exists $path] || ![isWide $path] || [wideCapable]} { return "" }
+    return "This file is larger than 2 GiB and uses the wide format of a Metakit built for big files. The Metakit library in this program cannot read it (it would show an empty database, and saving would hide the data), so it was not opened.\nUse a build of MK Studio with a Mk4tcl made from https://github.com/atyr647/metakit, or open the file in the program that wrote it.\n$path"
+}
+# ---- the column guard (a Metakit that can write wide files only) ----------------------------------------------------------------
+# A column is never larger than the file plus what has been written since the last commit, so the check costs nothing until that sum nears
+# the limit; then the size of the column is counted once (fixed-width types: rows x width; text and blobs: a pass over the column) and kept up
+# to date for the rest of the session (deletes are not subtracted: the count only errs on the safe side).
+namespace eval ::store {
+    variable guardBase ; variable guardPend ; variable guardCol ; variable guardSlack 4194304
+    array set guardBase {} ; array set guardPend {} ; array set guardCol {}
+}
+# the handle `tag` was opened, committed, rolled back or restructured: the size of the file now, nothing pending
+proc ::store::guardReset {tag {forget 0}} {
+    variable guardBase ; variable guardPend ; variable guardCol ; variable file
+    if {![wideCapable]} return
+    set p [expr {[info exists file($tag)] ? $file($tag) : ""}]
+    set guardBase($tag) [expr {$p ne "" && [file exists $p] ? [file size $p] : 0}]
+    set guardPend($tag) 0
+    if {$forget} { array unset guardCol [list $tag *] }
+}
+proc ::store::guardForget {tag} {
+    variable guardBase ; variable guardPend ; variable guardCol
+    unset -nocomplain guardBase($tag) guardPend($tag)
+    array unset guardCol [list $tag *]
+}
+# `path` is tag.view (or tag.view!row.sub...); `props` the columns about to receive `values`
+proc ::store::guardWrite {path props values} {
+    variable wideCap ; variable guardBase ; variable guardPend ; variable maxColumnBytes ; variable guardSlack
+    if {$wideCap ne "1"} return
+    set tag [lindex [split $path .] 0]
+    if {![info exists guardBase($tag)]} { guardReset $tag }
+    set add 0
+    foreach v $values { incr add [expr {[string bytelength $v] + 1}] }
+    incr guardPend($tag) $add
+    if {$guardBase($tag) + $guardPend($tag) + $guardSlack < $maxColumnBytes} return
+    if {[string first ! $path] >= 0} return                   ;# a subview of one row: its columns are small by construction
+    foreach p $props v $values { guardColumn $path $tag $p [expr {[string bytelength $v] + 1}] }
+}
+proc ::store::guardColumn {path tag prop add} {
+    variable guardCol ; variable maxColumnBytes ; variable guardSlack
+    set key [list $tag $path $prop]
+    if {![info exists guardCol($key)]} {
+        set type S
+        foreach c [layout $path] { if {[lindex $c 0] eq $prop} { set type [lindex $c 1] } }
+        set rows [mk::view size $path]
+        switch -- $type {
+            I - F { set total [expr {$rows * 4}] }
+            L - D { set total [expr {$rows * 8}] }
+            default { set total 0 ; for {set i 0} {$i < $rows} {incr i} { incr total [expr {[string bytelength [mk::get $path!$i $prop]] + 1}] } }
+        }
+        set guardCol($key) [list $total $type]
+    }
+    lassign $guardCol($key) total type
+    if {$type in {I F}} { set add 4 } elseif {$type in {L D}} { set add 8 }
+    if {$total + $add + $guardSlack > $maxColumnBytes} {
+        return -code error -errorcode [list STORE COLUMNFULL $path $prop] "Column $prop of [lindex [split $path .] 1] would grow past the limit of one Metakit column (2 GiB less one byte; $total bytes are used): a database FILE can be larger, one column cannot. Split the table (by year, say) or keep large values outside the database."
+    }
+    set guardCol($key) [list [expr {$total + $add}] $type]
 }
 # Put right an interrupted commit.  Needs the write lock.  Returns "" (nothing to do) or what was done.
 proc ::store::repairFile {path} {
@@ -781,7 +943,7 @@ proc ::store::repairFile {path} {
                 file delete $rec                                      ;# the commit never wrote anything
                 return ""
             }
-            if {[file size $path] >= $size && ![footerOkAt $path $size]} {
+            if {[file size $path] >= $size && ![footerOkAt $path $size [wideHex $hex]]} {
                 return "Warning: an interrupted commit was found, but the file does not end in a valid footer where it should; nothing was changed."
             }
             if {[file size $path] >= $size} {
@@ -798,7 +960,7 @@ proc ::store::repairFile {path} {
         }
         file delete $rec
     }
-    if {$info ne "" && [dict get $info size] > [dict get $info offset] && [footerOkAt $path [dict get $info offset]]} {
+    if {$info ne "" && ![dict get $info wide] && [dict get $info size] > [dict get $info offset] && [footerOkAt $path [dict get $info offset]]} {
         set h [open $path r+b] ; chan truncate $h [dict get $info offset] ; close $h
         return "The unfinished end of an interrupted commit was discarded."
     }
@@ -943,6 +1105,7 @@ proc ::store::commit {tag} {
     }
     mk::file commit $tag
     set dirty($tag) 0
+    guardReset $tag
     if {$record} { endCommit $file($tag) }
 }
 
@@ -957,6 +1120,7 @@ proc ::store::rollback {tag} {
         mk::file open $tag $file($tag) {*}$opts
     }
     set dirty($tag) 0
+    guardReset $tag 1
     touchGen $tag
 }
 
@@ -1190,6 +1354,7 @@ proc ::store::subSize {path idx prop} { mk::view size $path!$idx.$prop }
 # -- writing rows ------------------------------------------------------------
 # Returns the index of the new row.
 proc ::store::appendRow {path props values} {
+    guardWrite $path $props $values
     set args {}
     foreach p $props v $values { lappend args $p $v }
     set cur [mk::row append $path {*}$args]
@@ -1198,6 +1363,7 @@ proc ::store::appendRow {path props values} {
 }
 
 proc ::store::setCell {path idx prop value} {
+    guardWrite $path [list $prop] [list $value]
     mk::set $path!$idx $prop $value
     touchPath $path
 }
@@ -1231,6 +1397,7 @@ proc ::store::copyRows {src dst layout from to drop mods} {
             }
             set args {}
             foreach p $props v $vals { lappend args $p $v }
+            if {$::store::wideCap eq "1"} { guardWrite $dst $props $vals }
             set cur [mk::row append $dst {*}$args]
             foreach c $subs {
                 lassign $c name t sub
@@ -1314,7 +1481,7 @@ proc ::store::updateRows {path changes {tick {}}} {
     set n 0
     foreach i [lsort -integer [dict keys $changes]] {
         if {$tick ne ""} { if {$n % 500 == 0} { {*}$tick $n } }
-        foreach {p v} [dict get $changes $i] { mk::set $path!$i $p $v }
+        foreach {p v} [dict get $changes $i] { if {$::store::wideCap eq "1"} { guardWrite $path [list $p] [list $v] } ; mk::set $path!$i $p $v }
         incr n
     }
     touchPath $path
@@ -1380,6 +1547,7 @@ proc ::store::dropView {tag name} {
 # unchanged and drops the rest.
 proc ::store::restructure {path layout} {
     mk::view layout $path [formatLayout $layout]
+    if {[string first ! $path] < 0} { guardReset [lindex [split $path .] 0] 1 }
     touchPath $path
 }
 
@@ -1424,6 +1592,7 @@ proc ::store::copyColumn {path from to type} {
                         set v [expr {[string is double -strict $v] ? int($v) : 0}] } }
             F - D { if {![string is double -strict $v]} { set v 0 } }
         }
+        if {$::store::wideCap eq "1"} { guardWrite $path [list $to] [list $v] }
         mk::set $path!$i $to $v
     }
 }

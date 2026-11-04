@@ -612,6 +612,10 @@ proc ::app::openOne {path} {
                 ::ui::problem "Could not open the file:\n\n$path\n\n$tag" "Open database"
                 return ""
             }
+        } elseif {[lindex $code 0] eq "STORE" && [lindex $code 1] eq "WIDEFILE"} {
+            # (the message names the file and says what to do)
+            ::ui::problem $tag "File needs a bigger Metakit"
+            return ""
         } else {
             ::ui::problem "Could not open the file as a Metakit database:\n\n$path\n\n$tag" "Open database"
             return ""

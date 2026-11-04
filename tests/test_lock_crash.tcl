@@ -178,7 +178,13 @@ fresh
 lassign [stallRun 60 claimed 60] a b ev lines
 puts "  stall after moving the lock aside: [join $lines {; }]"
 ok "aside stall: nobody held the lock at the same time as somebody else" [expr {![overlapped $ev]}] $lines
-ok "aside stall: the newcomer got the lock, the woken process was refused" [expr {[dict exists $ev $b ACQUIRED] && [dict exists $ev $a REFUSED]}] $lines
+if {$::tcl_platform(platform) eq "windows"} {
+    # (every liveness check starts tasklist there - about a second each - so the woken process may only look at the lock after the newcomer is
+    # done and then simply takes it: what must hold is that they were never inside together, checked above)
+    puts "  (Windows: the woken process was refused: [expr {[dict exists $ev $a REFUSED] ? {yes} : {no - it looked after the newcomer had finished}}])"
+} else {
+    ok "aside stall: the newcomer got the lock, the woken process was refused" [expr {[dict exists $ev $b ACQUIRED] && [dict exists $ev $a REFUSED]}] $lines
+}
 check "aside stall: no litter after both are done" [lsort [glob -nocomplain $db.lock.take.*]] {}
 fresh
 
@@ -198,7 +204,7 @@ check "claimStale: ... and its time and size" [list [file mtime $lf] [file size 
 ok "claimStale: ... and no copy left" [expr {![llength [store::takeovers $lf]]}]
 file delete $lf
 # the same with a file name full of glob characters
-set odd [tmp {lock [abc] *?{x}.mk}]
+set odd [tmp [expr {$::tcl_platform(platform) eq "windows" ? {lock [abc] {x} 'q'.mk} : {lock [abc] *?{x}.mk}}]]    ;# (* and ? cannot be in a Windows file name)
 foreach f [glob -nocomplain -directory [file dirname $odd] -- [string map [list \[ \\\[ \] \\\] * \\* ? \\? \{ \\\{ \} \\\}] [file tail $odd]]*] { file delete $f }
 set olf [store::lockPath $odd]
 set h [open $olf w] ; puts -nonewline $h "4242 some-other-machine" ; close $h

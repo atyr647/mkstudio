@@ -57,6 +57,19 @@ bash build/pre.sh
 # Tcl and Tk: KitCreator knows no checksum for versions newer than 8.6.14 and would download them over plain HTTP unchecked
 "$here/seed-tcl-sources.sh" "$PWD" "$TCL_VERSION"
 
+# Optional: build the kit with ANOTHER Metakit - the fork with 64-bit file positions (https://github.com/atyr647/metakit) - instead of the
+# stock 2.4.9.7 tarball:   METAKIT_SRC=<a checkout of the fork> tools/build-kit.sh linux WORKDIR
+# KitCreator builds a source tree it finds in mk4tcl/buildsrc instead of downloading one.  Its patches are for the stock source (they make
+# it build with current compilers and cross-compilers); the fork carries its own fixes, so they are not applied.
+if [ -n "${METAKIT_SRC:-}" ]; then
+    [ -f "$METAKIT_SRC/unix/configure" ] || { echo "METAKIT_SRC=$METAKIT_SRC is not a Metakit source tree" >&2; exit 1; }
+    echo "building with the Metakit of $METAKIT_SRC ($(git -C "$METAKIT_SRC" rev-parse HEAD 2>/dev/null || echo 'unknown commit'))" >&2
+    rm -rf mk4tcl/buildsrc ; mkdir -p mk4tcl/buildsrc
+    cp -R "$METAKIT_SRC" mk4tcl/buildsrc/metakit-2.4.9.7
+    rm -rf mk4tcl/buildsrc/metakit-2.4.9.7/.git
+    find mk4tcl/patches -name 'metakit-2.4.9.7-*.diff' -exec rm -f {} +
+fi
+
 # Metakit is old C++ and kitsh uses K&R-style C parameter lists: keep the compilers in the dialects they were written for
 export CXXFLAGS="-std=c++11 -Wno-register -Wno-deprecated -w"
 export CFLAGS="-w -std=gnu99"

@@ -23,6 +23,7 @@ set required [info exists ::env(MKS_REQUIRE_NATIVE)]
 set ::env(MKS_MKSYNC_DIR) $libdir
 lappend ::auto_path [file normalize [file join $here .. mkstudio.vfs lib]]
 source $here/../mkstudio.vfs/lib/app-mkstudio/store.tcl
+set ::store::durable 1                  ;# (CI turns the flushes off for most suites on Windows to save time; this one is about them)
 
 set have [expr {![catch {package require mksync} err]}]
 if {!$have} {

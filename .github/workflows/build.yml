@@ -269,6 +269,11 @@ jobs:
             for t in test_durability test_crash test_update; do REAL_MK=1 $kit tests/run.tcl tests/$t.tcl; done
           done
 
+      - name: Files over 2 GiB - the stock Metakit of the runtime must refuse them, never show them as empty (Tcl 8.6 and 8.5)
+        run: |
+          for kit in tools/ext/tclkit-8.6.18-linux-x86_64 tools/ext/tclkit-8.6.3-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+            echo "=== $kit"; EXPECT_WIDE=0 REAL_MK=1 $kit tests/test_wide.tcl
+          done
       - name: Native flush library (mksync) - loads in every runtime, flushes, falls back
         run: |
           for kit in tools/ext/tclkit-8.6.18-linux-x86_64 tools/ext/tclkit-8.6.3-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
@@ -364,11 +369,11 @@ jobs:
           fail=0
           # the compiled flush library the kit job built: forcing data to disk (test_durability, MKS_DURABLE=1) goes through it
           export MKS_MKSYNC_DIR="$(cygpath -w "$PWD/tools/ext")"
-          for t in test_mksync test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_durability test_crash test_update test_lock_protocol test_lock_crash test_grid test_engine_wiring gui_logic; do
+          for t in test_mksync test_wide test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_durability test_crash test_update test_lock_protocol test_lock_crash test_grid test_engine_wiring gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
             # forcing data to disk starts PowerShell twice per commit: only the durability test does it for real
             D=0; [ "$t" = test_durability ] && D=1
-            MKS_TEST_STARPACK="$(cygpath -w "$PWD/dist/mkstudio-windows-x86_64.exe")" MKS_TEST_TIMEOUT=480 MKS_DURABLE=$D MKS_EXPECT_FLUSH=1 MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$(cygpath -w "$log")" timeout 540 "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
+            MKS_TEST_STARPACK="$(cygpath -w "$PWD/dist/mkstudio-windows-x86_64.exe")" MKS_TEST_TIMEOUT=480 MKS_DURABLE=$D MKS_EXPECT_FLUSH=1 EXPECT_WIDE=0 MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$(cygpath -w "$log")" timeout 540 "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
           done
           exit $fail
@@ -486,9 +491,9 @@ jobs:
         timeout-minutes: 15
         run: |
           fail=0
-          for t in test_mksync test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_durability test_crash test_update test_lock_protocol test_lock_crash test_grid test_engine_wiring gui_logic; do
+          for t in test_mksync test_wide test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_durability test_crash test_update test_lock_protocol test_lock_crash test_grid test_engine_wiring gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
-            MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$log" perl -e 'alarm 300; exec @ARGV' "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
+            EXPECT_WIDE=0 MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$log" perl -e 'alarm 300; exec @ARGV' "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
           done
           exit $fail
