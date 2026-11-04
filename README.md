@@ -283,7 +283,7 @@ on Linux and macOS (the `sync` programs) and one to two seconds on Windows (Powe
   status 0, no output, no effect - measured on real runners; a Windows GUI program has no console and Tcl starts console programs
   without one for it). Release 1.0.0-rc.1 started it the straight way, so **its Windows flush never ran** and every check that
   only looked at the exit status still passed; `tests/test_durability.tcl` now makes PowerShell write a file and fails if the file
-  does not appear. The price is real: 0.4-0.7 s per PowerShell start (measured on the CI runners: 358 ms, 703 ms), three starts per save. If PowerShell cannot be started the flush stays best-effort and `syncDisk` says so.
+  does not appear. The price is real: 0.4-0.7 s per PowerShell start (measured on the CI runners: 358 ms, 703 ms), three starts per save (CI measured 2.2 s per start on a loaded Windows runner, against 0.1 ms for the native call). If PowerShell cannot be started the flush stays best-effort and `syncDisk` says so.
   The fallback on macOS, `sync`, flushes the operating system's cache but cannot reach the drive's own cache.
 - **The first commit of a new database is protected**: the record then says "empty", and a record found at the next open
   makes the file empty again instead of leaving a half-written first save (real kills at every write of a first commit:

@@ -242,10 +242,11 @@ ok "odd name: ... and the file is there" [file exists $olf]
 file delete $olf
 # litter of a killed takeover: only a copy older than the guard limit is deleted; breakLock takes all
 set old [expr {[clock seconds] - 100}] ; set new [clock seconds]
-foreach n [list $olf.take.$old.999999.1 $olf.take.$old.1.2 $olf.take.$new.999999.3] { set h [open $n w] ; close $h }
+set livepid [expr {$::tcl_platform(platform) eq "windows" ? 4 : 1}]                      ;# a process that is always there (init / the System process)
+foreach n [list $olf.take.$old.999999.1 $olf.take.$old.$livepid.2 $olf.take.$new.999999.3] { set h [open $n w] ; close $h }
 store::tidyTakeovers $olf
 set rest {} ; foreach f [store::takeovers $olf] { lappend rest [file tail $f] }
-check "tidy: only a file that is old AND whose process is gone goes (not an old one of a live process, not a recent one)" [lsort $rest] [lsort [list [file tail $olf].take.$old.1.2 [file tail $olf].take.$new.999999.3]]
+check "tidy: only a file that is old AND whose process is gone goes (not an old one of a live process, not a recent one)" [lsort $rest] [lsort [list [file tail $olf].take.$old.$livepid.2 [file tail $olf].take.$new.999999.3]]
 store::breakLock $odd
 check "breakLock: takes the litter too" [llength [store::takeovers $olf]] 0
 fresh
