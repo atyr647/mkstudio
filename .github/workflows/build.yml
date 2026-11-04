@@ -162,8 +162,8 @@ jobs:
         if: steps.cache.outputs.cache-hit != 'true'
         timeout-minutes: 50
         run: |
-          sudo apt-get update
-          sudo apt-get install -y mingw-w64 tcl8.6 autoconf automake
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y mingw-w64 tcl8.6 autoconf automake
           # the win32 thread model needs no winpthread DLL
           sudo update-alternatives --set x86_64-w64-mingw32-gcc /usr/bin/x86_64-w64-mingw32-gcc-win32
           sudo update-alternatives --set x86_64-w64-mingw32-g++ /usr/bin/x86_64-w64-mingw32-g++-win32
@@ -175,9 +175,10 @@ jobs:
           bash tools/build-kit.sh windows "$PWD/kit-out"
           ls -la kit-out
       - name: Build the native flush library with mingw-w64
+        timeout-minutes: 15
         run: |
-          sudo apt-get update
-          sudo apt-get install -y mingw-w64
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 update
+          sudo apt-get -o Acquire::Retries=3 -o Acquire::http::Timeout=30 install -y mingw-w64
           bash tools/build-native.sh windows "$PWD/kit-out"
           LIB=kit-out/mksync-windows-x86_64.dll
           ls -la "$LIB"; file "$LIB"

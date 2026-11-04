@@ -21,9 +21,9 @@ case $v in
     *) echo "seed-tcl-sources.sh: no pinned checksums for Tcl/Tk $v - add them (see the comment above)" >&2; exit 1 ;;
 esac
 sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }
-get() {  # name archive-name wanted-sha256 destination
+get() {  # name archive-name wanted-sha256 destination   (a stalled mirror is given up on and retried: below 20 kB/s for 30 s, or 15 minutes in all)
     mkdir -p "$(dirname "$4")"
-    curl -fsSL --retry 3 -o "$4.part" "https://downloads.sourceforge.net/project/tcl/Tcl/$v/$2"
+    curl -fsSL --retry 4 --connect-timeout 30 --speed-limit 20000 --speed-time 30 --max-time 900 -o "$4.part" "https://downloads.sourceforge.net/project/tcl/Tcl/$v/$2"
     got=$(sha256 "$4.part")
     if [ "$got" != "$3" ]; then rm -f "$4.part"; echo "SHA-256 of $2 is $got, expected $3" >&2; exit 1; fi
     mv "$4.part" "$4"
