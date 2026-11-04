@@ -21,6 +21,12 @@ on:
 permissions:
   contents: write   # only used to attach starpacks to a tagged release
 
+# A newer push to the same branch replaces the run in progress (the full matrix takes the better part of an hour); a release run
+# (workflow_dispatch / tag) is never cancelled.
+concurrency:
+  group: build-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'pull_request' }}
+
 jobs:
 
   # ---------------------------------------------------------------- manual: how safe is the write lock, measured
@@ -36,17 +42,17 @@ jobs:
       REAL_MK: '1'
       MKS_CHAOS_KEEP: ${{ github.workspace }}/soak-logs
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: The macOS kit built by the macos job (cached)
         if: startsWith(matrix.os, 'macos')
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
-          path: kitcreator/tclkit-8.6.16
-          key: tclkit-${{ matrix.os }}-8.6.16-aqua-v3
+          path: kitcreator/tclkit-8.6.18
+          key: tclkit-${{ matrix.os }}-8.6.18-aqua-v3
           fail-on-cache-miss: true
       - name: Pick the kit
         run: |
-          if [ "$RUNNER_OS" = macOS ]; then KIT="$GITHUB_WORKSPACE/kitcreator/tclkit-8.6.16"; else tools/fetch-runtimes.sh linux; KIT="$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.3-linux-x86_64"; fi
+          if [ "$RUNNER_OS" = macOS ]; then KIT="$GITHUB_WORKSPACE/kitcreator/tclkit-8.6.18"; else tools/fetch-runtimes.sh linux; KIT="$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.3-linux-x86_64"; fi
           chmod +x "$KIT"; echo "KIT=$KIT" >> "$GITHUB_ENV"
           uname -a; nproc 2>/dev/null || sysctl -n hw.ncpu
       - name: A. shortened limits (1 s), nothing excused - the harshest setting
@@ -58,7 +64,7 @@ jobs:
       - name: Summary
         if: always()
         run: grep -H "SUMMARY\|VIOLATION" soak-*.txt || true
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: soak-${{ matrix.os }}
@@ -68,21 +74,21 @@ jobs:
           if-no-files-found: ignore
 
   # ---------------------------------------------------------------- current Tcl/Tk runtimes for Linux and Windows
-  # The prebuilt tclkits (Tcl/Tk 8.6.3, 2014, zlib 1.2.8) are old.  Current Tcl/Tk 8.6.16 + Metakit kits are built
+  # The prebuilt tclkits (Tcl/Tk 8.6.3, 2014, zlib 1.2.8) are old.  Current Tcl/Tk 8.6.18 + Metakit kits are built
   # here with KitCreator (tools/build-kit.sh), the way the macOS job builds its own, and cached until the script changes.
   kit-linux:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Cache the kit
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
-          path: kit-out/tclkit-8.6.16-linux-x86_64
+          path: kit-out/tclkit-8.6.18-linux-x86_64
           key: kit-linux-${{ hashFiles('tools/build-kit.sh') }}
       # glibc 2.28 (AlmaLinux 8): the kit then runs on RHEL 8+, Debian 10+, Ubuntu 18.10+ and anything newer
-      - name: Build Tcl/Tk 8.6.16 + Metakit in a glibc 2.28 container
+      - name: Build Tcl/Tk 8.6.18 + Metakit in a glibc 2.28 container
         if: steps.cache.outputs.cache-hit != 'true'
         timeout-minutes: 50
         run: |
@@ -109,7 +115,7 @@ jobs:
           ! ldd "$LIB" | grep -qiE 'libtcl|libstdc' || { echo "::error::the flush library links more than libc"; exit 1; }
       - name: What the kit needs from the machine it runs on
         run: |
-          KIT=kit-out/tclkit-8.6.16-linux-x86_64
+          KIT=kit-out/tclkit-8.6.18-linux-x86_64
           chmod +x "$KIT"
           ls -la "$KIT"
           ldd "$KIT"
@@ -121,7 +127,7 @@ jobs:
       - name: Smoke test - Tk opens a window, Metakit and the vfs work
         run: |
           sudo apt-get update && sudo apt-get install -y xvfb
-          KIT=$PWD/kit-out/tclkit-8.6.16-linux-x86_64
+          KIT=$PWD/kit-out/tclkit-8.6.18-linux-x86_64
           cat > "$RUNNER_TEMP/smoke.tcl" <<'EOS'
           puts "tcl [info patchlevel]"
           package require Tk
@@ -134,25 +140,25 @@ jobs:
           exit 0
           EOS
           xvfb-run -a "$KIT" "$RUNNER_TEMP/smoke.tcl"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: kit-linux
           path: |
-            kit-out/tclkit-8.6.16-linux-x86_64
+            kit-out/tclkit-8.6.18-linux-x86_64
             kit-out/mksync-linux-x86_64.so
 
   kit-windows:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Cache the kit
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
-          path: kit-out/tclkit-8.6.16-windows-x86_64.exe
+          path: kit-out/tclkit-8.6.18-windows-x86_64.exe
           key: kit-windows-${{ hashFiles('tools/build-kit.sh') }}
-      - name: Build Tcl/Tk 8.6.16 + Metakit with mingw-w64
+      - name: Build Tcl/Tk 8.6.18 + Metakit with mingw-w64
         if: steps.cache.outputs.cache-hit != 'true'
         timeout-minutes: 50
         run: |
@@ -182,18 +188,18 @@ jobs:
           fi
       - name: What the kit needs from Windows
         run: |
-          KIT=kit-out/tclkit-8.6.16-windows-x86_64.exe
+          KIT=kit-out/tclkit-8.6.18-windows-x86_64.exe
           ls -la "$KIT"; file "$KIT"
           x86_64-w64-mingw32-objdump -p "$KIT" | grep -i 'DLL Name' | sort -u
           # a mingw runtime DLL here would make the program fail on a machine without it
           if x86_64-w64-mingw32-objdump -p "$KIT" | grep -i 'DLL Name' | grep -qiE 'libgcc|libstdc|libwinpthread|zlib1'; then
             echo "::error::the kit depends on a mingw runtime DLL"; exit 1
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: kit-windows
           path: |
-            kit-out/tclkit-8.6.16-windows-x86_64.exe
+            kit-out/tclkit-8.6.18-windows-x86_64.exe
             kit-out/mksync-windows-x86_64.dll
 
   # ---------------------------------------------------------------- Linux: test + build every starpack
@@ -206,17 +212,17 @@ jobs:
       MKS_MKSYNC_DIR: ${{ github.workspace }}/tools/ext
       MKS_REQUIRE_NATIVE: '1'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: kit-linux
           path: tools/ext
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: kit-windows
           path: tools/ext
       - name: Current runtimes are executable
-        run: chmod +x tools/ext/tclkit-8.6.16-*
+        run: chmod +x tools/ext/tclkit-8.6.18-*
 
       - name: Install tools
         run: sudo apt-get update && sudo apt-get install -y tcl8.6 xvfb imagemagick strace
@@ -228,11 +234,11 @@ jobs:
         run: tclsh8.6 tests/lint.tcl
       - name: Engine tests (stand-in Metakit)
         run: tclsh8.6 tests/test_mkql.tcl
-      # Every suite runs on BOTH Tcl runtimes (current 8.6.16 and 8.5.17) against real Metakit; the ones that can also
+      # Every suite runs on BOTH Tcl runtimes (current 8.6.18 and 8.5.17) against real Metakit; the ones that can also
       # run on the pure-Tcl stand-in do that too.
       - name: Engine, contract, persistence, semantics, provider lifecycle and contract (real Metakit, Tcl 8.6 and 8.5)
         run: |
-          for kit in tools/ext/tclkit-8.6.16-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+          for kit in tools/ext/tclkit-8.6.18-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
             echo "=== $kit"
             for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract; do
               echo "--- $t"; REAL_MK=1 $kit tests/$t.tcl
@@ -244,56 +250,56 @@ jobs:
       - name: Optimised executor == reference executor (random queries; stand-in, Metakit 8.6, Metakit 8.5)
         run: |
           MKS_FUZZ=1000 tclsh8.6 tests/test_engine_diff.tcl
-          MKS_FUZZ=1500 REAL_MK=1 tools/ext/tclkit-8.6.16-linux-x86_64 tests/test_engine_diff.tcl
+          MKS_FUZZ=1500 REAL_MK=1 tools/ext/tclkit-8.6.18-linux-x86_64 tests/test_engine_diff.tcl
           MKS_FUZZ=800 MKS_SEED=5 REAL_MK=1 tools/ext/tclkit-8.5.17-linux-x86_64 tests/test_engine_diff.tcl
 
       - name: Crash-safe editing (real Metakit, kills a committing process; Tcl 8.6 and 8.5)
         run: |
-          MKS_CRASH_TRIALS=15 tools/ext/tclkit-8.6.16-linux-x86_64 tests/run.tcl tests/test_crash_safety.tcl
+          MKS_CRASH_TRIALS=15 tools/ext/tclkit-8.6.18-linux-x86_64 tests/run.tcl tests/test_crash_safety.tcl
           MKS_CRASH_TRIALS=8 tools/ext/tclkit-8.5.17-linux-x86_64 tests/run.tcl tests/test_crash_safety.tcl
 
       - name: Power loss, best effort (synthesised after-power-cut files; real kills at every point of a real commit)
         run: |
-          REAL_MK=1 tools/ext/tclkit-8.6.16-linux-x86_64 tests/run.tcl tests/test_power_loss.tcl
+          REAL_MK=1 tools/ext/tclkit-8.6.18-linux-x86_64 tests/run.tcl tests/test_power_loss.tcl
           MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views REAL_MK=1 tools/ext/tclkit-8.5.17-linux-x86_64 tests/run.tcl tests/test_power_loss.tcl
 
       - name: Power safety (first commit, checksum, backup), crash reports, update path (Tcl 8.6 and 8.5)
         run: |
-          for kit in tools/ext/tclkit-8.6.16-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+          for kit in tools/ext/tclkit-8.6.18-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
             for t in test_durability test_crash test_update; do REAL_MK=1 $kit tests/run.tcl tests/$t.tcl; done
           done
 
       - name: Native flush library (mksync) - loads in every runtime, flushes, falls back
         run: |
-          for kit in tools/ext/tclkit-8.6.16-linux-x86_64 tools/ext/tclkit-8.6.3-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+          for kit in tools/ext/tclkit-8.6.18-linux-x86_64 tools/ext/tclkit-8.6.3-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
             echo "=== $kit"; $kit tests/test_mksync.tcl
           done
       - name: Write-lock protocol, crash points and chaos (Tcl 8.6 and 8.5)
         run: |
-          for kit in tools/ext/tclkit-8.6.16-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+          for kit in tools/ext/tclkit-8.6.18-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
             REAL_MK=1 $kit tests/run.tcl tests/test_lock_protocol.tcl
             REAL_MK=1 $kit tests/run.tcl tests/test_lock_crash.tcl
           done
 
       - name: Grid virtualisation (real Metakit, Tcl 8.6 and 8.5)
         run: |
-          REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.6.16-linux-x86_64 tests/test_grid.tcl
+          REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.6.18-linux-x86_64 tests/test_grid.tcl
           REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.5.17-linux-x86_64 tests/test_grid.tcl
 
       - name: mkit-sql wired in as the query language (real Metakit, Tcl 8.6 and 8.5)
         run: |
-          for kit in tools/ext/tclkit-8.6.16-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+          for kit in tools/ext/tclkit-8.6.18-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
             REAL_MK=1 xvfb-run -a $kit tests/run.tcl tests/test_engine_wiring.tcl
           done
       - name: UI logic (real Metakit, Tcl 8.6)
-        run: REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.6.16-linux-x86_64 tests/gui_logic.tcl
+        run: REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.6.18-linux-x86_64 tests/gui_logic.tcl
       - name: UI logic (real Metakit, Tcl 8.5)
         run: REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.5.17-linux-x86_64 tests/gui_logic.tcl
 
       - name: Build starpacks (Linux, Windows) on the current runtimes
         run: MKS_REQUIRE_CURRENT=1 ./build.sh all
       - name: Verify embedded payloads
-        run: tools/ext/tclkit-8.6.16-linux-x86_64 tests/verify_payload.tcl dist/*
+        run: tools/ext/tclkit-8.6.18-linux-x86_64 tests/verify_payload.tcl dist/*
       - name: The Linux starpack uses the native flush - it finds its own copy of the library, MKS_MKSYNC_DIR unset
         run: |
           env -u MKS_MKSYNC_DIR ./dist/mkstudio-linux-x86_64 --info "$RUNNER_TEMP/info.txt"
@@ -303,7 +309,7 @@ jobs:
         run: tests/smoke_starpack.sh
       - name: Real self-update - the real starpack replaces a running program (Tcl 8.6 and 8.5)
         run: |
-          for kit in tools/ext/tclkit-8.6.16-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+          for kit in tools/ext/tclkit-8.6.18-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
             MKS_TEST_STARPACK="$PWD/dist/mkstudio-linux-x86_64" REAL_MK=1 $kit tests/run.tcl tests/test_update.tcl
           done
       - name: --version and --selftest of the Linux starpack
@@ -318,11 +324,11 @@ jobs:
           MKS_UPDATE_TOKEN: ${{ github.token }}
         run: |
           for try in 1 2 3; do
-            REAL_MK=1 tools/ext/tclkit-8.6.16-linux-x86_64 tests/run.tcl tests/test_update_live.tcl && break
+            REAL_MK=1 tools/ext/tclkit-8.6.18-linux-x86_64 tests/run.tcl tests/test_update_live.tcl && break
             [ $try = 3 ] && exit 1; echo "(attempt $try failed; the network may be busy - trying again)"; sleep 20
           done
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: starpacks
           path: dist/*
@@ -337,16 +343,16 @@ jobs:
         shell: bash
     env:
       REAL_MK: '1'
-      KIT: tools/ext/tclkit-8.6.16-windows-x86_64.exe
+      KIT: tools/ext/tclkit-8.6.18-windows-x86_64.exe
       MKS_REQUIRE_NATIVE: '1'
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: starpacks
           path: dist
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: kit-windows
           path: tools/ext
@@ -417,7 +423,7 @@ jobs:
           kill $PID || true
           echo "Windows starpack ran 12s and kept running"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: windows-screenshot
@@ -438,13 +444,13 @@ jobs:
     timeout-minutes: 60
     env:
       REAL_MK: '1'
-      TCL_VERSION: 8.6.16
+      TCL_VERSION: 8.6.18
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Cache the tclkit
         id: cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: kitcreator/tclkit-${{ env.TCL_VERSION }}
           key: tclkit-${{ matrix.os }}-${{ env.TCL_VERSION }}-aqua-v3
@@ -454,47 +460,10 @@ jobs:
         timeout-minutes: 45
         run: |
           brew install autoconf automake || true
-          curl -fsSL "https://kitcreator.rkeene.org/fossil/tarball/kitcreator.tar.gz?uuid=trunk" -o kc.tgz
-          tar xzf kc.tgz
-          cd kitcreator
-
-          # (1) KitCreator pins zlib 1.2.8 (2013), which does not compile against the current
-          #     macOS SDK (zutil.h redefines fdopen).  Use 1.3.1 from the zlib project's GitHub
-          #     release; the checksum is computed here and printed so it can be pinned.
-          ZV=1.3.1
-          curl -fsSL -o zlib.tgz "https://github.com/madler/zlib/releases/download/v${ZV}/zlib-${ZV}.tar.gz"
-          SHA=$(shasum -a 256 zlib.tgz | cut -d' ' -f1)
-          echo "zlib ${ZV} sha256 ${SHA}"
-          sed -i '' -e "s|^version=.*|version=\"${ZV}\"|" \
-                    -e "s|^url=.*|url=\"https://github.com/madler/zlib/releases/download/v\${version}/zlib-\${version}.tar.gz\"|" \
-                    -e "s|^sha256=.*|sha256='${SHA}'|" zlib/build.sh
-          head -8 zlib/build.sh
-
-          # (2) a repository checkout (not a release tarball) needs kitsh's generated files
-          bash build/pre.sh
-
-          # (2b) Tcl and Tk 8.6.16 are newer than KitCreator's checksum table: it would fetch them over plain HTTP, unchecked.
-          #      Fetch them over HTTPS and check the SHA-256 (tools/seed-tcl-sources.sh) before it looks for them.
-          "$GITHUB_WORKSPACE/tools/seed-tcl-sources.sh" "$PWD" "${TCL_VERSION}"
-
-          # Metakit is old C++ and kitsh uses K&R-style C parameter lists.  autoconf 2.72
-          # adds -std=gnu23 (where those are errors), and the later -std wins, so pin C99.
-          export CXXFLAGS="-std=c++11 -Wno-register -Wno-deprecated -w"
-          export CFLAGS="-w -std=gnu99"
-          # Tk builds the X11 flavour unless told otherwise (no X11 headers on Apple silicon runners,
-          # and an X server would be needed to run it anyway): ask for the native Aqua Tk.
-          if ! ./kitcreator ${TCL_VERSION} --enable-aqua=yes; then
-            echo "::error::KitCreator failed"
-            # Tk tries macosx, unix, win, ... in turn, so the LAST error is a Windows one; show the FIRST
-            echo "::group::tk/build.log - first errors"
-            grep -n -m6 -i -B3 -A6 'error\|No such file\|not found' tk/build.log | head -90 || true
-            echo "::endgroup::"
-            for p in zlib kitsh; do
-              [ -f "$p/build.log" ] && { echo "::group::$p/build.log (last 40 lines)"; tail -40 "$p/build.log"; echo "::endgroup::"; }
-            done
-            exit 1
-          fi
-          ls -la tclkit-${TCL_VERSION}
+          # the same script as the Linux and Windows kits: KitCreator from the tarball kept in tools/vendor (checked against its
+          # SHA-256), zlib, Tcl and Tk checked against pinned SHA-256, the Aqua flavour of Tk.  It builds in $GITHUB_WORKSPACE/kitcreator.
+          tools/build-kit.sh macos "$GITHUB_WORKSPACE"
+          ls -la "kitcreator/tclkit-${TCL_VERSION}"
 
       - name: Use the built tclkit
         run: |
@@ -597,7 +566,7 @@ jobs:
           kill $PID || true
           echo "macOS starpack ran 12s and kept running"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: macos-${{ matrix.os }}
@@ -627,8 +596,8 @@ jobs:
       matrix:
         which: [pinned, upstream]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: kit-linux
           path: tools/ext
@@ -636,13 +605,13 @@ jobs:
         id: src
         run: |
           if [ "${{ matrix.which }}" = pinned ]; then echo "commit=$(sed -n 's/^commit //p' mkstudio.vfs/lib/mkitsql/SOURCE)" >> "$GITHUB_OUTPUT"; else echo "commit=" >> "$GITHUB_OUTPUT"; fi
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: atyr647/mkit-sql
           ref: ${{ steps.src.outputs.commit }}      # empty = the repository's default branch
           path: mkit-sql
       - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y xvfb && chmod +x tools/ext/tclkit-8.6.16-linux-x86_64
+        run: sudo apt-get update && sudo apt-get install -y xvfb && chmod +x tools/ext/tclkit-8.6.18-linux-x86_64
       - name: Fetch tclkit runtimes
         run: tools/fetch-runtimes.sh
       - name: The vendored engine is byte for byte the pinned mkit-sql commit
@@ -650,7 +619,7 @@ jobs:
         run: tools/sync-mkitsql.sh --check mkit-sql
       - name: Lock protocol - mixed races and crash points with mkit-sql's implementation
         run: |
-          for kit in tools/ext/tclkit-8.6.16-linux-x86_64 tools/ext/tclkit-8.6.3-linux-x86_64; do
+          for kit in tools/ext/tclkit-8.6.18-linux-x86_64 tools/ext/tclkit-8.6.3-linux-x86_64; do
             MKITSQL_DIR="$PWD/mkit-sql" REAL_MK=1 MKS_RACE_ROUNDS=3 $kit tests/run.tcl tests/test_lock_protocol.tcl
           done
       - name: mkit-sql's studio-side suites, against this store.tcl (current runtime and the 2014 one)
@@ -658,10 +627,12 @@ jobs:
         run: |
           export MKSTUDIO_DIR="$GITHUB_WORKSPACE" MKIT_MK4TCL=builtin
           export MKIT_STORE="$GITHUB_WORKSPACE/mkstudio.vfs/lib/app-mkstudio/store.tcl"
-          for kit in "$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.16-linux-x86_64" "$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.3-linux-x86_64"; do
+          for kit in "$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.18-linux-x86_64" "$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.3-linux-x86_64"; do
             echo "=== $kit"
             for t in studio_contract studio_listbug studio_repair attest locking lock_crash lock_takeover first_commit commitfail commitfail_records damage review_regress dropview insertrows run; do
               echo "--- $t"
+              # (a suite this mkit-sql commit does not have yet - the upstream leg may be older than the pinned one - is skipped, not failed)
+              [ -f "tests/$t.tcl" ] || { echo "(no tests/$t.tcl in this mkit-sql checkout)"; continue; }
               if [ "$t" = damage ]; then
                 # mkit-sql's own storage layer reading randomly damaged files IN this process: Metakit may segfault on garbage (it did once
                 # on the current runtime, 1 run in 4).  A death by signal is retried and, if it keeps happening, reported - not a failure of
@@ -680,9 +651,9 @@ jobs:
           done
       - name: mkit-sql's power-loss suite, against this store.tcl
         working-directory: mkit-sql
-        run: MKSTUDIO_DIR="$GITHUB_WORKSPACE" MKIT_MK4TCL=builtin MKIT_STORE="$GITHUB_WORKSPACE/mkstudio.vfs/lib/app-mkstudio/store.tcl" "$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.16-linux-x86_64" tests/power_loss.tcl
+        run: MKSTUDIO_DIR="$GITHUB_WORKSPACE" MKIT_MK4TCL=builtin MKIT_STORE="$GITHUB_WORKSPACE/mkstudio.vfs/lib/app-mkstudio/store.tcl" "$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.18-linux-x86_64" tests/power_loss.tcl
       - name: Bulk mutation, MK Studio vs mkit-sql (identical workloads, results must be identical)
-        run: MKITSQL_DIR="$PWD/mkit-sql" REAL_MK=1 tools/ext/tclkit-8.6.16-linux-x86_64 tests/bench_mutation.tcl 100000
+        run: MKITSQL_DIR="$PWD/mkit-sql" REAL_MK=1 tools/ext/tclkit-8.6.18-linux-x86_64 tests/bench_mutation.tcl 100000
 
   # ---------------------------------------------------------------- installers that can be built anywhere
   package:
@@ -690,8 +661,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: starpacks
           path: dist
@@ -727,7 +698,7 @@ jobs:
           sh "$HOME"/MKStudio-*-linux-x86_64/install.sh
           "$HOME/.local/bin/mkstudio" --selftest "$HOME/st.txt"; cat "$HOME/st.txt"
           grep -q "^Exec=$HOME/.local/bin/mkstudio" "$HOME/.local/share/applications/mkstudio.desktop"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: packages
           path: packages/*
@@ -740,8 +711,8 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
         with:
           name: packages
           path: packages
@@ -785,22 +756,22 @@ jobs:
     env:
       TAG: ${{ inputs.release_tag || github.ref_name }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: The tag must be the version in the source
         run: |
           v=$(grep -o 'current [0-9][^ ]*' mkstudio.vfs/lib/app-mkstudio/version.tcl | cut -d' ' -f2)
           test "$TAG" = "v$v" || { echo "::error::tag $TAG does not match the version $v in version.tcl"; exit 1; }
           echo "VERSION=$v" >> "$GITHUB_ENV"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: starpacks
           path: dist
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: macos-*
           path: dist
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: packages
           path: dist
@@ -824,7 +795,7 @@ jobs:
           cat SHA256SUMS
           cd ..
           sed "s/<version>/$VERSION/g" RELEASE_NOTES.md > notes.md
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/mkstudio-*

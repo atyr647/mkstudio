@@ -21,7 +21,7 @@ State described here: MK Studio with **mkit-sql 0.4.1** (`atyr647/mkit-sql` at `
   `mk::view delete` leaves the rows behind: a table re-created under the same name came back with its old rows), the repairs in
   `store::repairFile` only cut or restore a file when a valid Metakit footer ends where they are about to cut (a damaged
   record must never make them throw real data away), and row reads go through a workaround for a list bug in Tcl 8.5 and
-  8.6.3 (rows whose first cell is text starting with `#`; healthy Tcl versions - including the 8.6.16 runtime the programs are
+  8.6.3 (rows whose first cell is text starting with `#`; healthy Tcl versions - including the 8.6.18 runtime the programs are
   built on - skip it).
 
 ## 2. Conflicts, and how they were resolved
@@ -45,7 +45,7 @@ State described here: MK Studio with **mkit-sql 0.4.1** (`atyr647/mkit-sql` at `
 
 ## 3. What was run against what
 
-Against **this** `store.tcl` (current runtime 8.6.16, the 2014 8.6.3 and 8.5.17 kits, Linux; Windows and macOS run the engine
+Against **this** `store.tcl` (current runtime 8.6.18, the 2014 8.6.3 and 8.5.17 kits, Linux; Windows and macOS run the engine
 wiring and UI suites):
 
 | suite (mkit-sql's own, run with `MKIT_STORE` = this store.tcl) | result |

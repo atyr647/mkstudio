@@ -130,7 +130,7 @@ process.
     ./build.sh all                      # + Windows (.exe)
     ./dist/mkstudio-linux-x86_64 [file.mk ...]
 
-**The released programs are built on a current Tcl/Tk 8.6.16 + Metakit runtime** that CI compiles with
+**The released programs are built on a current Tcl/Tk 8.6.18 + Metakit runtime** that CI compiles with
 [KitCreator](https://kitcreator.rkeene.org/) (a pinned revision, zlib 1.3.1; `tools/build-kit.sh`; each runtime is cached
 until that script changes): **Linux** in a glibc 2.28 container (so it runs on RHEL 8+, Debian 10+, Ubuntu 18.10+ and
 newer; it links the system's X11/Xft/fontconfig, as every Tk program does), **Windows** cross-built with mingw-w64 (the
@@ -154,9 +154,9 @@ Every row below is something that was actually run; the CI badge-of-truth is the
 
 | | status |
 |---|---|
-| All suites on **real Metakit** (Mk4tcl 2.4.9.7) | Linux, on the current **8.6.16** runtime, the 2014 **8.6.3** and **8.5.17** - pass |
-| **Windows** (`windows-latest`) | engine, contract, persistence, differential, crash-safety, durability, update, grid and UI suites pass with the current Windows runtime (8.6.16, cross-built); the built `.exe` launches and keeps running; a running copy is really replaced by the update helper, from a folder with spaces, parentheses and an accented letter in its name |
-| **macOS** (`macos-15-intel` and `macos-latest`/Apple silicon) | the same suites pass with a KitCreator-built Tcl/Tk 8.6.16 (native Aqua); the starpack is wrapped on that runtime, payload-verified and launches |
+| All suites on **real Metakit** (Mk4tcl 2.4.9.7) | Linux, on the current **8.6.18** runtime, the 2014 **8.6.3** and **8.5.17** - pass |
+| **Windows** (`windows-latest`) | engine, contract, persistence, differential, crash-safety, durability, update, grid and UI suites pass with the current Windows runtime (8.6.18, cross-built); the built `.exe` launches and keeps running; a running copy is really replaced by the update helper, from a folder with spaces, parentheses and an accented letter in its name |
+| **macOS** (`macos-15-intel` and `macos-latest`/Apple silicon) | the same suites pass with a KitCreator-built Tcl/Tk 8.6.18 (native Aqua); the starpack is wrapped on that runtime, payload-verified and launches |
 | mkit-sql as the query language | `tests/test_engine_wiring.tcl` on every OS; mkit-sql's own studio-side suites (contract, integration, locking, commit failure, damage, power loss, checksum, review regressions) against this program's `store.tcl`, on the pinned commit, in CI |
 | Real-world file (a tclkit's own boot database: subviews + binary columns) | opens, browses, hex view works |
 | 500,000-row file | see the numbers below |
@@ -188,6 +188,16 @@ Tests (all in `tests/`):
   multi-database eviction), and an engine-independent conformance suite any engine's providers can be run through
 - `persist.tcl`, `test_crash_safety.tcl`, `test_power_loss.tcl`, `test_lock_protocol.tcl`, `test_lock_crash.tcl` - persistence,
   crash safety, power loss (synthesised and real-kill states, three ways of opening them), the write-lock protocol (incl. racing against mkit-sql's own implementation) and the lock under crashes (next section)
+- `test_mksync.tcl` - the native flush library: it loads through the same `pkgIndex.tcl` the starpack carries (into Tcl 8.5, 8.6.3 and the
+  current runtime), flushes files and folders, skips a missing path, handles names with spaces, accents, CJK and brackets, a path beyond 260
+  characters, a file another channel has open with unwritten data, and falls back to a program when switched off; CI runs it on all three
+  systems and checks that each starpack carries the library byte for byte and reports `flush native (...)` by itself
+- `blockdev_crash.sh` (+ `blockdev_workload.tcl`, `blockdev_crash.py`, `blockdev_check.tcl`, workflow `blockdev.yml`) - the **block-level crash
+  test**: ext4, xfs and btrfs on a Linux device-mapper `dm-log-writes` device that records every write in the order the disk completes
+  them (its worst case for a power failure); MK Studio makes a series of real commits on it (a new database, edits, growth, a second editing
+  session with its backup) with the durable flushes on; the log is then replayed onto a copy of the original disk and the power is "cut"
+  after up to 400 different writes; each resulting disk state is mounted (the file system recovers its journal), the database is opened as
+  MK Studio opens it, and must hold exactly one of the commits - never older than the last one acknowledged, never a mixture, never reported damaged
 - `test_update_live.tcl` - the update path against the *real* GitHub release (real API, download, checksum, the published program started)
 - `soak_lock_chaos.tcl` - the lock chaos test repeated and measured (the manual "lock soak" CI job)
 - `bench.tcl` - the 500,000-row scale benchmark below, for either engine; `bench_mutation.tcl` - bulk `UPDATE`/`DELETE` of MK Studio's
@@ -281,7 +291,10 @@ on Linux and macOS (the `sync` programs) and one to two seconds on Windows (Powe
 - **Silent corruption is detected**: after every commit `<file>.sum` stores a CRC-32, the size and the modification time of
   the finished file. At the next open for writing the sum is checked - but only if size and time still match (a file another
   program legitimately changed just gets a new baseline). Same size and time but different content is what a bad sector or
-  bit rot looks like: MK Studio does not touch the file, says so, and offers the backup.
+  bit rot looks like: MK Studio does not touch the file, says so, and offers the backup. The checksum file is removed in the same flush
+  that makes the commit record durable and flushed again when it is rewritten, so after a power cut it is the checksum of *this* file
+  or there is none (a fresh baseline is made at the next open) - an old checksum next to a newer, good file of the same size and
+  modification second would be called "damaged" (the block-level crash test found exactly that on ext4: 20 of 222 simulated power cuts).
 - **A backup of the file as it was before the first commit of an editing session** is kept as `<file>.bak` (copied completely and
   forced to disk before it replaces the previous one; never replaced by a copy that fails the check). If a file that failed its
   checksum is opened anyway and saved, a second copy of the good backup is kept as `<file>.bak.good`, because the next session would

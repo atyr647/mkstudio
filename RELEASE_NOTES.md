@@ -1,11 +1,37 @@
-## MK Studio 1.0.0-rc.2 - release candidate
+## MK Studio 1.0.0-rc.3 - release candidate
 
 A workbench for Metakit databases: browse, query (SQL-like), design and edit, as one self-contained program.
 This is a **release candidate**: everything below is tested, but it has not yet had months of use by other people.
 Please try it on copies of databases you care about and report what you find. `docs/QA-CHECKLIST.md` lists the hour of manual
 checks (real power loss, first run on each system) that automation cannot do.
 
-### What changed since 1.0.0-rc.1
+### What changed since 1.0.0-rc.2
+
+- **The lock can no longer be taken away from a live program by a takeover race.** After a crash the next program takes over the
+  dead one's lock file; two programs doing that at the same moment could (under a rare timing, reproduced on demand) end up with the
+  second one deleting the first one's brand-new lock, and both believing they owned the database. A takeover now moves the old lock
+  aside with one atomic step and looks at what it actually got - a live lock is put back - and a program re-reads its lock after
+  writing it. The program that is overtaken because it was frozen at the wrong moment notices when it wakes up. The check made just
+  before every save stays. In a stress test with eight programs, random kills and freezes: 8,425 lock acquisitions, no overlap.
+  The same fix is in mkit-sql 0.4.1.
+- **Saves reach the disk through a small native library instead of starting programs.** On Windows each save used to start PowerShell
+  three times (0.4-0.7 s each, hidden, with an encoded command - which also looks like malware to some virus scanners); now it is one
+  call, milliseconds. On macOS it is `F_FULLFSYNC`, which also empties the drive's own write cache (`sync` could not). On Linux it is
+  `fsync` on the file and its folder. The library is compiled in CI for each system and carried inside the program; where it cannot be
+  loaded the program does what it did before. `mkstudio --info FILE` says which one is in use.
+- **Tested against a real file system's write ordering - and it found something.** A new CI test puts ext4, xfs and btrfs on a device
+  that logs every write in the order the disk completes them, makes real commits with MK Studio on it, replays the log onto a copy of
+  the disk and "cuts the power" after every single write (318, 96 and 265 different disk states): each one is mounted, the database is
+  opened, and it must hold exactly one of the commits - never older than the last one acknowledged, never reported damaged. All pass.
+  The first run found that on ext4, after some power cuts, an old checksum file could sit beside the new, good database and the program
+  would call it "damaged" (nothing was lost, but it offers a restore); the checksum is now removed when a save begins and flushed when
+  it is rewritten. The same test with the flushes switched off fails as it must. (A model of disk ordering is not the real thing; this
+  is the real thing, short of pulling a plug. It does not cover a disk that lies or a write torn inside one sector.)
+- **Tcl/Tk 8.6.18** (the last 8.6 release) on all three systems, built from checked sources with KitCreator kept in the repository -
+  the macOS build used to take KitCreator's moving "trunk" unchecked.
+- mkit-sql 0.4.1 (the lock fix, an unreadable lock counts as held, its Windows flush now runs, a licence file).
+
+### Also new in rc.2 (since rc.1)
 
 - **Standard SQL.** The query window now runs [mkit-sql](https://github.com/atyr647/mkit-sql) 0.4.1: joins, CTEs including
   `WITH RECURSIVE`, window functions, `MERGE`, `LATERAL`, `ROLLUP`/`CUBE`, dates and intervals, `EXPLAIN`, and bounded memory for big
@@ -34,7 +60,7 @@ checks (real power loss, first run on each system) that automation cannot do.
 - **Crash reports**: a user name with `(`, `[` or `*` in it no longer breaks the report; many "unexpected end" reports can no
   longer push out the real crash report; quoted text in error messages (where a value could slip in) and any file path are
   removed.
-- **Current runtimes everywhere**: Windows and Linux programs now run on Tcl/Tk 8.6.16 with zlib 1.3.1 (they were on the 2014
+- **Current runtimes everywhere**: Windows and Linux programs now run on Tcl/Tk 8.6.18 with zlib 1.3.1 (they were on the 2014
   Tcl/Tk 8.6.3 with zlib 1.2.8); the Linux program needs glibc 2.28 or newer.
 - **The update check is tested against the real GitHub release** on Linux, macOS and Windows in CI: real API, real download,
   real checksum, the real published program started with `--selftest`.

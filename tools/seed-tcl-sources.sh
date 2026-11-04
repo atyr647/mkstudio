@@ -15,6 +15,9 @@ case $v in
     8.6.16)
         tcl_sha=91cb8fa61771c63c262efb553059b7c7ad6757afa5857af6265e4b0bdc2a14a5
         tk_sha=be9f94d3575d4b3099d84bc3c10de8994df2d7aa405208173c709cc404a7e5fe ;;
+    8.6.18)                      # the last 8.6 release (2026-05-11)
+        tcl_sha=14f9af32b1767ff718477a8f974ad03c34341097e6b43f4ce54644ee974e268e
+        tk_sha=95cd528a80f5e4bdb557af9b14a7197d6860793a3894e25e7c9fad2ed05d4c3c ;;
     *) echo "seed-tcl-sources.sh: no pinned checksums for Tcl/Tk $v - add them (see the comment above)" >&2; exit 1 ;;
 esac
 sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi; }

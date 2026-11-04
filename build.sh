@@ -12,7 +12,7 @@
 #   KIT=/path/to/that/tclkit tclkit tools/wrap.tcl <copy of that tclkit> mkstudio.vfs dist/mkstudio-macos native-out/mksync-macos-*.dylib
 #   codesign --force --sign - dist/mkstudio-macos
 #
-# Runtimes: the current Tcl/Tk 8.6.16 kits (CI builds them with tools/build-kit.sh and puts them in tools/ext/) are
+# Runtimes: the current Tcl/Tk 8.6.18 kits (CI builds them with tools/build-kit.sh and puts them in tools/ext/) are
 # used when present; otherwise the 2014 prebuilt ones from tools/fetch-runtimes.sh (SHA1-verified).  Set
 # MKS_REQUIRE_CURRENT=1 to refuse that fallback (CI does).  Wrapping only
 # appends the application's Metakit payload to a runtime, so any platform's
@@ -30,8 +30,8 @@ runtime() {
     echo "build.sh: WARNING: $1 not found - using the 2014 runtime $2" >&2
     echo "$2"
 }
-linux_rt()   { runtime tools/ext/tclkit-8.6.16-linux-x86_64 tools/ext/tclkit-8.6.3-linux-x86_64; }
-windows_rt() { runtime tools/ext/tclkit-8.6.16-windows-x86_64.exe tools/ext/tclkit-8.6.3-win32-x86_64.exe; }
+linux_rt()   { runtime tools/ext/tclkit-8.6.18-linux-x86_64 tools/ext/tclkit-8.6.3-linux-x86_64; }
+windows_rt() { runtime tools/ext/tclkit-8.6.18-windows-x86_64.exe tools/ext/tclkit-8.6.3-win32-x86_64.exe; }
 case $what in all|macos) ;; *) KIT=${KIT:-$(linux_rt)} ;; esac   # the kit that does the wrapping (any runnable kit)
 mkdir -p dist
 TMP=$(mktemp -d)

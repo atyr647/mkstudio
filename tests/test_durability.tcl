@@ -123,6 +123,20 @@ set f [tmp dur_sum.mk]
 set t [mkdb $f 400] ; store::closeFile $t
 check sum_ok_after_commit [store::sumCheck $f] ok
 set t [store::openFile $f] ; check open_reports_ok [store::integrityState $t] ok ; store::closeFile $t
+# The checksum file never outlives a commit that changes the file (found by the block-level crash test): beginCommit removes it, in the same
+# flush that makes the record durable; the commit rewrites it and flushes it.  A power cut in between leaves NO sum, never an old one.
+set t [store::openFile $f]
+store::setCell $t.items 3 label "changed for the sum test"
+check sum_exists_before_commit [file exists $f.sum] 1
+set rec [store::beginCommit $f]
+check begin_commit_wrote_a_record $rec 1
+check sum_gone_once_the_commit_begins [file exists $f.sum] 0
+store::endCommit $f
+check sum_back_after_endCommit [file exists $f.sum] 1
+store::commit $t
+check sum_valid_after_the_commit [store::sumCheck $f] ok
+store::closeFile $t
+check sum_valid_after_close [store::sumCheck $f] ok
 # flip one byte in the middle of the data, keep size and modification time: that is what bit rot looks like
 set mt [file mtime $f] ; set d [readbin $f] ; set pos [expr {[string length $d] / 2}]
 set orig [string index $d $pos] ; set flipped [format %c [expr {([scan $orig %c] + 1) % 256}]]

@@ -4,16 +4,18 @@
 #
 #   tools/build-kit.sh linux   WORKDIR     native build (CI runs it in a glibc 2.28 container so it runs on old distros)
 #   tools/build-kit.sh windows WORKDIR     mingw-w64 cross-build from Linux
+#   tools/build-kit.sh macos   WORKDIR     native build on a Mac (Aqua Tk)
 #
 # Prints the path of the finished kit on its last line.  Everything downloaded is pinned and checked: KitCreator by revision +
-# SHA-256 of the tarball; zlib, Tcl and Tk by SHA-256 (tools/seed-tcl-sources.sh); Metakit, tclvfs and itcl by the checksums in
+# SHA-256 of the tarball - and the tarball itself is kept in tools/vendor/ (310 KB), so a build does not depend on a one-person
+# server being up; zlib, Tcl and Tk by SHA-256 (tools/seed-tcl-sources.sh); Metakit, tclvfs and itcl by the checksums in
 # KitCreator's own build scripts.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)       # (before any cd: this script is called with a relative path)
 
-platform=${1:?usage: build-kit.sh linux|windows WORKDIR}
-work=${2:?usage: build-kit.sh linux|windows WORKDIR}
-TCL_VERSION=${TCL_VERSION:-8.6.16}
+platform=${1:?usage: build-kit.sh linux|windows|macos WORKDIR}
+work=${2:?usage: build-kit.sh linux|windows|macos WORKDIR}
+TCL_VERSION=${TCL_VERSION:-8.6.18}
 
 # KitCreator trunk, 2024-05-21 "Upgrade to Tcl/Tk 8.6.14" (a later Tcl version is only a download name for it)
 KC_UUID=97a1e6339fc8869c
@@ -31,14 +33,22 @@ fetch() {  # url file sha256
 
 mkdir -p "$work"; cd "$work"
 rm -rf kitcreator kc.tgz zlib.tgz
-fetch "https://kitcreator.rkeene.org/fossil/tarball/kitcreator.tar.gz?uuid=${KC_UUID}" kc.tgz "$KC_SHA256"
+vendored="$here/vendor/kitcreator-${KC_UUID}.tar.gz"
+if [ -f "$vendored" ]; then
+    got=$(sha256 "$vendored")
+    if [ "$got" != "$KC_SHA256" ]; then echo "SHA-256 mismatch for $vendored: got $got, want $KC_SHA256" >&2; exit 1; fi
+    cp "$vendored" kc.tgz
+else
+    fetch "https://kitcreator.rkeene.org/fossil/tarball/kitcreator.tar.gz?uuid=${KC_UUID}" kc.tgz "$KC_SHA256"
+fi
 tar xzf kc.tgz
 fetch "https://github.com/madler/zlib/releases/download/v${ZLIB_VERSION}/zlib-${ZLIB_VERSION}.tar.gz" zlib.tgz "$ZLIB_SHA256"
 cd kitcreator
 
-sed -i -e "s|^version=.*|version=\"${ZLIB_VERSION}\"|" \
-       -e "s|^url=.*|url=\"https://github.com/madler/zlib/releases/download/v\${version}/zlib-\${version}.tar.gz\"|" \
-       -e "s|^sha256=.*|sha256='${ZLIB_SHA256}'|" zlib/build.sh
+sed -i.bak -e "s|^version=.*|version=\"${ZLIB_VERSION}\"|" \
+           -e "s|^url=.*|url=\"https://github.com/madler/zlib/releases/download/v\${version}/zlib-\${version}.tar.gz\"|" \
+           -e "s|^sha256=.*|sha256='${ZLIB_SHA256}'|" zlib/build.sh      # (-i.bak: the same on GNU and BSD sed)
+rm -f zlib/build.sh.bak
 grep -q "sha256='${ZLIB_SHA256}'" zlib/build.sh || { echo "could not pin zlib in KitCreator" >&2; exit 1; }
 
 # a repository checkout (not a release tarball) needs kitsh's generated files
@@ -70,6 +80,10 @@ windows)
     export tcl_cv_strtod_unbroken=ok tcl_cv_strtod_buggy=ok
     ./kitcreator "$TCL_VERSION" --host=x86_64-w64-mingw32 || fail=1
     ;;
+macos)
+    # the native Aqua Tk: there are no X11 headers on Apple silicon, and an X server would be needed to run the X11 flavour anyway
+    ./kitcreator "$TCL_VERSION" --enable-aqua=yes || fail=1
+    ;;
 *) echo "unknown platform $platform" >&2; exit 1 ;;
 esac
 
@@ -87,7 +101,8 @@ if [ "${fail:-0}" = 1 ] || [ ! -f "tclkit-${TCL_VERSION}" ]; then
     exit 1
 fi
 
-out="$work/tclkit-${TCL_VERSION}-$platform-x86_64"
+arch=x86_64 ; [ "$platform" = macos ] && arch=$(uname -m)
+out="$work/tclkit-${TCL_VERSION}-$platform-$arch"
 [ "$platform" = windows ] && out="$out.exe"
 cp "tclkit-${TCL_VERSION}" "$out"
 chmod +x "$out"

@@ -17,7 +17,7 @@ jobs:
       TAG: ${{ inputs.tag }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Replace the page text
         run: |
           v=$(grep -o 'current [0-9][^ ]*' mkstudio.vfs/lib/app-mkstudio/version.tcl | cut -d' ' -f2)

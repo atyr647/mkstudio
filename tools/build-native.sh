@@ -14,7 +14,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 root=$(dirname "$here")
 platform=${1:?usage: build-native.sh linux|windows|macos OUTDIR}
 out=${2:?usage: build-native.sh linux|windows|macos OUTDIR}
-TCL_VERSION=${TCL_VERSION:-8.6.16}
+TCL_VERSION=${TCL_VERSION:-8.6.18}
 mkdir -p "$out"
 work=$(mktemp -d "${TMPDIR:-/tmp}/mksync-build.XXXXXX")
 trap 'rm -rf "$work"' EXIT
