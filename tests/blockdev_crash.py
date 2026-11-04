@@ -8,7 +8,7 @@ workload (begin-k / ack-k) say which commits had begun and which had been acknow
 
   blockdev_crash.py --log LOG --base BASE.img --work DIR --expected FILE --kit TCLKIT --db crash.mk [--max-points N] [--fs ext4]
 """
-import argparse, os, shutil, struct, subprocess, sys, re
+import argparse, os, shutil, struct, subprocess, sys, re, time
 
 MAGIC = 0x6a736677736872
 F_FLUSH, F_FUA, F_DISCARD, F_MARK, F_META = 1, 2, 4, 8, 16
@@ -97,6 +97,13 @@ def main():
             m = sh('mount', '-t', a.fs, loop, mnt, check=False)
             if m.returncode != 0:
                 bad.append((p, lo, hi, 'the file system does not mount: ' + m.stdout.strip())); continue
+            # The power cut and the next start are minutes apart in real life; here they are seconds.  A lock file (or takeover guard) left by the
+            # dead process is therefore aged by an hour, as a reboot would have done - otherwise the 5 s rule for "its creator may be
+            # about to write it" would call a half-made lock alive.  Nothing else is touched (the database's own time is part of its checksum).
+            old = time.time() - 3600
+            for suffix in ('.lock', '.lock.guard'):
+                f = os.path.join(mnt, a.db + suffix)
+                if os.path.lexists(f): os.utime(f, (old, old))
             try:
                 r = sh(a.kit, os.path.join(here, 'blockdev_check.tcl'), os.path.join(mnt, a.db), a.expected, str(lo), str(hi), check=False)
             finally:
