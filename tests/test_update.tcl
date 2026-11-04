@@ -305,9 +305,11 @@ ok package_managed_reason [string match "*package manager*" $::update::lastError
 # the Windows helper: a PowerShell command with the program's path inside it, quoted (a quote in the name is doubled)
 set weird "C:\\Users\\Jos\u00e9 (work)\\it's here\\mkstudio (1).exe"
 set hc [::update::helperCommand $weird]
-ok helper_has_the_path_quoted [expr {[string first "\$exe='C:\\Users\\Jos\u00e9 (work)\\it''s here\\mkstudio (1).exe'" $hc] == 0}] $hc
-ok helper_waits_until_the_program_exits_no_deadline [expr {[string match "*while(Test-Path -LiteralPath \$new)*" $hc] && ![string match "*900*" $hc]}] $hc
+ok helper_has_the_path_quoted [expr {[string first "\$exe = 'C:\\Users\\Jos\u00e9 (work)\\it''s here\\mkstudio (1).exe'" $hc] == 0}] $hc
+ok helper_waits_until_the_program_exits_no_deadline [expr {[string match "*while (Test-Path -LiteralPath \$new)*" $hc] && ![string match "*900*" $hc]}] $hc
 ok helper_retries_the_final_move [string match "*\$i -lt 15*" $hc]
+ok helper_statements_are_separated [expr {[llength [split $hc "\n"]] >= 10}]
+ok helper_first_statements_each_on_a_line [string match "*\n\$new = \$exe + '.new'\n*" $hc] $hc
 ok helper_puts_the_old_one_back [string match "*Move-Item -LiteralPath \$old -Destination \$exe*" $hc]
 ok helper_starts_the_new_one_on_request [string match "*Start-Process -FilePath \$exe*" $hc]
 ok helper_never_uses_the_shell_or_env [expr {![string match "*cmd*" $hc] && ![string match "*env:*" $hc]}]

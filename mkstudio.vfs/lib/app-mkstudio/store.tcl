@@ -218,8 +218,12 @@ proc ::store::lockInfo {path} {
         } else {
             # alive - but is it the process that wrote the lock, or a newer one that got the same pid?  (Linux: a
             # process that started AFTER the lock file was last written cannot be its owner.)
-            set started [procStartTime $pid]
-            if {$started ne "" && ![catch {file mtime [lockPath $path]} mt] && $started > $mt + 2} { set state stale }
+            # (Windows: asking costs a PowerShell start, about a second - not worth it, and not wanted inside the takeover guard,
+            # for a lock that is only seconds old: a pid cannot be reused by a different program in that time.)
+            if {![catch {file mtime [lockPath $path]} mt] && ($::tcl_platform(platform) ne "windows" || [clock seconds] - $mt > 30)} {
+                set started [procStartTime $pid]
+                if {$started ne "" && $started > $mt + 2} { set state stale }
+            }
         }
     }
     return [dict merge $l [dict create state $state]]

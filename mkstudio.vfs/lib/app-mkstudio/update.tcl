@@ -465,16 +465,22 @@ namespace eval ::update { variable deferred 0 }
 proc ::update::psq {s} { return "'[string map {' ''} $s]'" }
 proc ::update::helperCommand {exe} {
     set e [psq [file nativename $exe]]
+    # (one statement per line: this is script text, not a command line)
     return [join [list \
-        "\$exe=$e" "\$new=\$exe+'.new'" "\$old=\$exe+'.old'" "\$mark=\$exe+'.restart'" \
-        "while(Test-Path -LiteralPath \$new){" \
-        " try{ Move-Item -LiteralPath \$exe -Destination \$old -Force -ErrorAction Stop } catch { Start-Sleep -Seconds 1; continue }" \
-        " \$placed=\$false" \
-        " for(\$i=0;\$i -lt 15;\$i++){ try{ Move-Item -LiteralPath \$new -Destination \$exe -Force -ErrorAction Stop; \$placed=\$true; break } catch { Start-Sleep -Seconds 1 } }" \
-        " if(-not \$placed){ Move-Item -LiteralPath \$old -Destination \$exe -Force; break }" \
-        " if(Test-Path -LiteralPath \$mark){ Remove-Item -LiteralPath \$mark -Force; Start-Process -FilePath \$exe }" \
-        " break" \
-        "}"] " "]
+        "\$exe = $e" \
+        "\$new = \$exe + '.new'" \
+        "\$old = \$exe + '.old'" \
+        "\$mark = \$exe + '.restart'" \
+        "while (Test-Path -LiteralPath \$new) {" \
+        "  try { Move-Item -LiteralPath \$exe -Destination \$old -Force -ErrorAction Stop } catch { Start-Sleep -Seconds 1; continue }" \
+        "  \$placed = \$false" \
+        "  for (\$i = 0; \$i -lt 15; \$i++) {" \
+        "    try { Move-Item -LiteralPath \$new -Destination \$exe -Force -ErrorAction Stop; \$placed = \$true; break } catch { Start-Sleep -Seconds 1 }" \
+        "  }" \
+        "  if (-not \$placed) { Move-Item -LiteralPath \$old -Destination \$exe -Force; break }" \
+        "  if (Test-Path -LiteralPath \$mark) { Remove-Item -LiteralPath \$mark -Force; Start-Process -FilePath \$exe }" \
+        "  break" \
+        "}"] "\n"]
 }
 proc ::update::stageWindows {exe new} {
     set argv [psCommand [helperCommand $exe]]
