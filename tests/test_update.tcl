@@ -300,8 +300,10 @@ if {$::tcl_platform(platform) ne "windows"} {
 file delete -force $d1 $d2
 # a copy installed by the package manager is not replaced in place, even by root
 namespace eval ::starkit {} ; set ::starkit::mode starpack
-check package_managed_copy_not_replaced [::update::selfReplaceable /usr/bin/mkstudio] ""
-ok package_managed_reason [string match "*package manager*" $::update::lastError] $::update::lastError
+if {$::tcl_platform(platform) ne "windows"} {
+    check package_managed_copy_not_replaced [::update::selfReplaceable /usr/bin/mkstudio] ""
+    ok package_managed_reason [string match "*package manager*" $::update::lastError] $::update::lastError
+}
 # the Windows helper: a PowerShell command with the program's path inside it, quoted (a quote in the name is doubled)
 set weird "C:\\Users\\Jos\u00e9 (work)\\it's here\\mkstudio (1).exe"
 set hc [::update::helperCommand $weird]

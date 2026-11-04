@@ -1,5 +1,7 @@
 #!/bin/sh
-# Download the tclkit runtimes used to build and test MK Studio into tools/ext/.
+# Download the OLD prebuilt tclkit runtimes (2014: Tcl/Tk 8.6.3 and 8.5.17) into tools/ext/.  They are what the tests run on
+# besides the current runtime, and the fallback when tools/build-kit.sh's kits (Tcl/Tk 8.6.16) are not there - the released
+# programs are built on the current ones.
 # Every file is checked against its published SHA1 (tclkits.rkeene.org names each
 # file by its hash), so a corrupted or tampered download is rejected.
 #

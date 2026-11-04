@@ -82,17 +82,18 @@ behaviour, not something tested here):
 ### Updates
 
 *Help > Check for Updates...* asks the GitHub releases API for the newest release (one `GET`; the program name and version
-are the only thing sent) using `curl`, `wget` or - on Windows - PowerShell, because the bundled Tcl has no TLS of its own. A
+are the only thing sent) using `curl`, `wget` or - on Windows - curl.exe or PowerShell (always the copies in the system folder, never one found next to the program), because the bundled Tcl has no TLS of its own. A
 daily check at start-up is on by default and can be switched off in the same menu; it only writes a line in the status bar.
 A stand-alone program in a writable folder can then **replace itself**: it downloads the new file, checks its SHA-256 against the
 release's `SHA256SUMS` (no checksum tool = no automatic install), starts it once with `--selftest` and compares the version it
 reports, and only then swaps it in; the old one stays beside it as `mkstudio.old` (rename it back to roll back). Anything
 wrong at any step changes nothing. **On Windows a running starpack cannot be renamed or replaced** (it keeps its own file open; the
 first CI run of the real self-update test failed with "permission denied" exactly there), so the verified download is staged
-next to the program as `mkstudio.exe.new` and a small helper script installs it the moment MK Studio closes - or closes and
-restarts it if you choose *Close and Restart*. Installed copies (`.deb`, the `.app`, a program in a protected folder) are not touched:
+next to the program as `mkstudio.exe.new` and a small hidden PowerShell helper (started in the background, waiting for as long
+as MK Studio runs) installs it the moment MK Studio closes - or closes and restarts it if you choose *Close and Restart*. Installed copies (`.deb`, the `.app`, a program in a protected folder) are not touched:
 the dialog opens the release page for the new installer. Pre-releases are only offered to someone already running one.
-`tests/test_update.tcl` covers all of it against a fake release feed on disk: version order, JSON, choosing a release,
+Anonymous GitHub API requests are limited to 60 an hour per network address; if that is used up the check says so in plain words.
+`tests/test_update.tcl` covers all of it against a fake release feed on disk (and `tests/test_update_live.tcl` against the real release, on every OS in CI): version order, JSON, choosing a release,
 real download, wrong checksum, truncated download, a new program that does not start, one that reports the wrong version,
 no checksum file, no file for this system, copies that must not replace themselves.
 
@@ -111,21 +112,26 @@ process.
 
 ## Build it yourself
 
-    tools/fetch-runtimes.sh             # download SHA1-verified tclkit runtimes into tools/ext/
-    ./build.sh                          # Linux  -> dist/mkstudio-linux-x86_64
+    tools/fetch-runtimes.sh             # the OLD prebuilt tclkits (2014, SHA1-verified): enough to run the tests and to build
+    ./build.sh                          # Linux  -> dist/mkstudio-linux-x86_64   (on the old runtime unless a current one is in tools/ext/)
     ./build.sh all                      # + Windows (.exe)
     ./dist/mkstudio-linux-x86_64 [file.mk ...]
 
-Binaries are not stored in git. `.github/workflows/build.yml` runs the whole test matrix on **Linux, Windows and two
-macOS runners**, builds the starpacks and uploads them as artifacts (and attaches them to a release when you push a `v*` tag).
-Wrapping needs no `sdx`: `tools/wrap.tcl` appends the application's Metakit payload to a runtime.
+**The released programs are built on a current Tcl/Tk 8.6.16 + Metakit runtime** that CI compiles with
+[KitCreator](https://kitcreator.rkeene.org/) (a pinned revision, zlib 1.3.1; `tools/build-kit.sh`; each runtime is cached
+until that script changes): **Linux** in a glibc 2.28 container (so it runs on RHEL 8+, Debian 10+, Ubuntu 18.10+ and
+newer; it links the system's X11/Xft/fontconfig, as every Tk program does), **Windows** cross-built with mingw-w64 (the
+.exe needs no runtime DLLs - CI checks that), **macOS** natively on each Mac. `MKS_REQUIRE_CURRENT=1 ./build.sh all`
+refuses to fall back to the 2014 runtimes (CI sets it). The 2014 tclkits (Tcl 8.6.3 with zlib 1.2.8, and 8.5.17) remain as
+the second and third runtime the test suites run on, because MK Studio's source stays compatible with Tcl 8.5.
 
-**macOS** has no usable prebuilt tclkit (the 2014 Tk 8.6.3 / 8.5.17 Mac builds crash on current macOS the first time a
-window opens), so CI compiles a current Tcl/Tk 8.6 + Metakit kit with [KitCreator](https://kitcreator.rkeene.org/) on the Mac
-runner (~8 min, cached), runs the tests with it and wraps the starpack with it (`codesign` cannot sign a starpack again - its
-payload follows the Mach-O image - so it keeps the ad-hoc signature the linker gave the runtime, which is what Apple silicon
-checks; no certificate is involved). Download the Mac starpacks from the workflow's artifacts; `./build.sh macos`
-explains how to do the same by hand.
+Binaries are not stored in git. `.github/workflows/build.yml` runs the whole test matrix on **Linux, Windows and two
+macOS runners**, builds the starpacks and uploads them as artifacts (and attaches them to a release when started with a
+release tag). Wrapping needs no `sdx`: `tools/wrap.tcl` appends the application's Metakit payload to a runtime.
+
+On macOS `codesign` cannot sign a starpack again - its payload follows the Mach-O image - so it keeps the ad-hoc signature the
+linker gave the runtime, which is what Apple silicon checks; no certificate is involved. `./build.sh macos` explains how to
+build the Mac starpack by hand.
 
 Run from source (needs a Tk with Mk4tcl, e.g. a tclkit): `tclkit mkstudio.vfs/main.tcl [file.mk ...]`
 
@@ -135,14 +141,14 @@ Every row below is something that was actually run; the CI badge-of-truth is the
 
 | | status |
 |---|---|
-| All suites on **real Metakit** (Mk4tcl 2.4.9.7) | Linux, Tcl **8.6.3** and **8.5.17** - pass |
-| **Windows** (`windows-latest`) | engine, contract, persistence, differential, crash-safety, grid and UI suites pass with the Windows tclkit; the built `.exe` launches and keeps running |
+| All suites on **real Metakit** (Mk4tcl 2.4.9.7) | Linux, on the current **8.6.16** runtime, the 2014 **8.6.3** and **8.5.17** - pass |
+| **Windows** (`windows-latest`) | engine, contract, persistence, differential, crash-safety, durability, update, grid and UI suites pass with the current Windows runtime (8.6.16, cross-built); the built `.exe` launches and keeps running; a running copy is really replaced by the update helper, from a folder with spaces, parentheses and an accented letter in its name |
 | **macOS** (`macos-15-intel` and `macos-latest`/Apple silicon) | the same suites pass with a KitCreator-built Tcl/Tk 8.6.16 (native Aqua); the starpack is wrapped, signed, payload-verified and launches |
 | Real-world file (a tclkit's own boot database: subviews + binary columns) | opens, browses, hex view works |
 | 500,000-row file | see the numbers below |
 | Packaged Linux starpack | launches, opens a database, no errors; `--version` / `--selftest` answer correctly |
 | Installers | `.deb` is installed, run and removed on a Linux runner; the tarball installs for one user; the Windows setup is installed silently, run, upgraded over itself and uninstalled on a Windows runner (Start menu entry, registry entries, files all checked); the macOS `.dmg` is mounted, signature verified, the app run and started as an app |
-| Update path, crash reports, first-commit / checksum / backup | `tests/test_update.tcl` (93 checks incl. a real download from a fake feed), `tests/test_crash.tcl` (45), `tests/test_durability.tcl` (62), the Help menu / damaged-file / update dialogs in `tests/gui_logic.tcl` |
+| Update path, crash reports, first-commit / checksum / backup | `tests/test_update.tcl` (120 checks incl. a real download from a fake feed and a **live check against the real GitHub release** on every OS), `tests/test_crash.tcl` (66), `tests/test_durability.tcl` (100+), the Help menu / damaged-file / update dialogs in `tests/gui_logic.tcl` |
 | HiDPI | verified with Tk scaling 2.0 on Linux; Windows/macOS DPI behaviour depends on the runtime's manifest |
 | Screen readers | **not supported**: Tk has no accessibility API. Keyboard operation, visible focus and a high-contrast theme are provided instead |
 
@@ -227,14 +233,18 @@ at all.** What MK Studio now does (`store.tcl`):
   header's offset. The user is told ("An unfinished commit was undone ...");
 - read-only opens never repair anything (they may see the unfinished state).
 
-Cost: a commit takes about 0.25 s longer on a 30 MB database (the two `sync`s).
+Cost: a commit takes about 0.25 s longer on a 30 MB database on Linux and macOS (the `sync`s), about a second on Windows (see below).
 
 **Further hardening** (`tests/test_durability.tcl`):
 
-- **Windows now forces the data out too**: `FlushFileBuffers` through PowerShell (`FileStream.Flush($true)`; one short PowerShell
-  start per stage, so two per commit). If PowerShell cannot be started this quietly stays
-  best-effort, as before. CI asserts on a real Windows runner that the flush happened. macOS `sync` flushes the operating
-  system's cache but cannot reach the drive's own cache (`F_FULLFSYNC` is not available from Tcl).
+- **Windows forces the data out too**: `FlushFileBuffers` through PowerShell (`FileStream.Flush($true)`). **PowerShell has to be
+  started through `cmd /c` with the script as `-EncodedCommand`**: started straight from the program it does nothing at all (exit
+  status 0, no output, no effect - measured on real runners; a Windows GUI program has no console and Tcl starts console programs
+  without one for it). Release 1.0.0-rc.1 started it the straight way, so **its Windows flush never ran** and every check that
+  only looked at the exit status still passed; `tests/test_durability.tcl` now makes PowerShell write a file and fails if the file
+  does not appear. The price is real: about 0.4 s per PowerShell start, three starts per save, so **a save takes roughly a second
+  longer on Windows**. If PowerShell cannot be started the flush stays best-effort and `syncDisk` says so. macOS `sync` flushes the
+  operating system's cache but cannot reach the drive's own cache (`F_FULLFSYNC` is not available from Tcl).
 - **The first commit of a new database is protected**: the record then says "empty", and a record found at the next open
   makes the file empty again instead of leaving a half-written first save (real kills at every write of a first commit:
   all come out empty or complete, never half).

@@ -1,8 +1,37 @@
-## MK Studio 1.0.0-rc.1 - release candidate
+## MK Studio 1.0.0-rc.2 - release candidate
 
 A workbench for Metakit databases: browse, query (SQL-like), design and edit, as one self-contained program.
 This is a **release candidate**: everything below is tested, but it has not yet had months of use by other people.
-Please try it on copies of databases you care about and report what you find.
+Please try it on copies of databases you care about and report what you find. `docs/QA-CHECKLIST.md` lists the hour of manual
+checks (real power loss, first run on each system) that automation cannot do.
+
+### What changed since 1.0.0-rc.1
+
+- **Windows: the disk flush now really runs.** In rc.1 the program asked PowerShell to force each save to disk, but PowerShell
+  started straight from a Windows GUI program does nothing at all - no error, no effect - so on Windows saves were *not* forced
+  to disk. They are now (PowerShell is started through `cmd /c`; a test proves that a script really executes). A save on
+  Windows takes about a second longer because of it. Linux and macOS were not affected.
+- **A finished save can no longer be undone.** The "undo the unfinished save" record is rewritten to describe the finished file
+  before it is deleted, so a record that cannot be deleted (a virus scanner on Windows) or whose deletion is lost in a power
+  cut can no longer roll back a save you were told succeeded - or empty a brand-new database.
+- **One lock per real file.** Opening a database through a symbolic link and directly now takes the same lock; a lock file that
+  cannot be read counts as held; after a crash or restart a lock whose process id was reused by another program is recognised
+  on Windows and macOS too; *Remove Lock...* in the "Database in use" dialog (with a confirmation) clears a lock you know is dead.
+- **A damaged file's good backup survives** being opened anyway and saved; *Restore Backup* never overwrites an earlier
+  `.damaged` file; backups are complete and on disk before they replace the previous one.
+- **Updater hardening**: private scratch folder (no predictable name in a shared temp folder); on Windows only the system's own
+  `curl`, `certutil` and PowerShell are used (never one planted next to the program); on Linux and macOS the new version replaces
+  the program in one rename (no instant without a program); a package-managed copy (`/usr/bin/mkstudio`) is never replaced;
+  the Windows helper handles folders with spaces, parentheses and accented letters, waits as long as needed and retries; a
+  GitHub rate-limit answer is explained.
+- **Crash reports**: a user name with `(`, `[` or `*` in it no longer breaks the report; many "unexpected end" reports can no
+  longer push out the real crash report; quoted text in error messages (where a value could slip in) and any file path are
+  removed.
+- **Current runtimes everywhere**: Windows and Linux programs now run on Tcl/Tk 8.6.16 with zlib 1.3.1 (they were on the 2014
+  Tcl/Tk 8.6.3 with zlib 1.2.8); the Linux program needs glibc 2.28 or newer.
+- **The update check is tested against the real GitHub release** on Linux, macOS and Windows in CI: real API, real download,
+  real checksum, the real published program started with `--selftest`.
+- **Databases in read-only folders** (no lock, no backup possible) say so when opened.
 
 ### Downloads
 
@@ -50,5 +79,10 @@ There is no code-signing certificate behind them. In practice:
 
 ### Known limits
 
-See the README: Metakit is unmaintained and has no checksums of its own; concurrent writers are prevented by an advisory lock only;
-macOS builds use Tcl/Tk 8.6.16 built in CI, Windows and Linux use the 2014 Tcl/Tk 8.6.3 runtime.
+- Metakit is unmaintained and has no checksums of its own; MK Studio adds them (and a backup) for files up to 512 MB.
+- Concurrent writers are kept apart by an advisory lock only (`docs/CONCURRENCY.md` lists what that does not cover: a hard link
+  to an open database, a process frozen for many seconds at exactly the wrong moment). On macOS-Intel the lock stress test
+  twice saw two processes inside at once under deliberately extreme load; the cause is not established.
+- Power safety is tested with simulated power cuts and real kills, never with a real power cut (`docs/QA-CHECKLIST.md` has the
+  manual test). A disk that lies about having written data cannot be helped.
+- The programs are not signed or notarized (see above). Nobody has used this release for months yet.
