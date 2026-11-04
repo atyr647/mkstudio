@@ -33,7 +33,7 @@ checks (real power loss, first run on each system) that automation cannot do.
   ([atyr647/metakit](https://github.com/atyr647/metakit)) writes "wide" files past 2 GiB; stock Metakit, which these programs contain, sees such a file
   as an empty database - and a save would hide the data. The program now recognises a wide file, says so and touches nothing; it is also ready for the
   fork (reads, edits, repairs an interrupted commit on a wide file, refuses the one edit the fork cannot survive - a single column past 2 GiB). The fork
-  is tested against MK Studio in CI every week, up to a real 2.9 GiB database; building the released programs with it is not decided (a kit with the fork inside does not build yet).
+  is tested against MK Studio in CI every week, up to a real 2.9 GiB database; building the released programs with it is not decided (a Linux kit with the fork inside builds and passes everything; Windows and macOS kits are untried).
 - mkit-sql 0.4.1 (the lock fix, an unreadable lock counts as held, its Windows flush now runs, a licence file).
 
 ### Also new in rc.2 (since rc.1)

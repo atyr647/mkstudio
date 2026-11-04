@@ -68,6 +68,12 @@ if [ -n "${METAKIT_SRC:-}" ]; then
     cp -R "$METAKIT_SRC" mk4tcl/buildsrc/metakit-2.4.9.7
     rm -rf mk4tcl/buildsrc/metakit-2.4.9.7/.git
     find mk4tcl/patches -name 'metakit-2.4.9.7-*.diff' -exec rm -f {} +
+    # KitCreator compiles tcl/mk4tcl.cpp so that its init functions come out C++-mangled (_Z11Mk4tcl_InitP10Tcl_Interp) and the kit's C code
+    # cannot call them ("undefined reference to Mk4tcl_Init"): give them C linkage explicitly.  (The stock source links; why the fork's does not is
+    # not understood - tcl.h's EXTERN should do it.  Found with the metakit-fork workflow; a fix belongs in the fork.)
+    sed -i.bak 's/^EXTERN int \(Mk[A-Za-z0-9_]*\)(/extern "C" int \1(/' mk4tcl/buildsrc/metakit-2.4.9.7/tcl/mk4tcl.cpp
+    rm -f mk4tcl/buildsrc/metakit-2.4.9.7/tcl/mk4tcl.cpp.bak
+    grep -q 'extern "C" int Mk4tcl_Init' mk4tcl/buildsrc/metakit-2.4.9.7/tcl/mk4tcl.cpp || { echo "could not give Mk4tcl_Init C linkage" >&2; exit 1; }
 fi
 
 # Metakit is old C++ and kitsh uses K&R-style C parameter lists: keep the compilers in the dialects they were written for

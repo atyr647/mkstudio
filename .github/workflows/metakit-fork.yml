@@ -63,10 +63,9 @@ jobs:
           sudo modprobe dm-log-writes || true
           sudo -E env "TCLLIBPATH=$TCLLIBPATH" "MKS_MKSYNC_DIR=$MKS_MKSYNC_DIR" tests/blockdev_crash.sh "$(command -v tclsh8.6)" 6 ext4
 
-  # A tclkit built WITH the fork through KitCreator.  Experimental: KitCreator's kitsh did not link the fork's static Mk4tcl on the first try
-  # (undefined Mk4tcl_Init; the build log now shows how kitsh was told about it) - so it reports, and does not fail the workflow.
+  # A tclkit built WITH the fork through KitCreator (tools/build-kit.sh, METAKIT_SRC; it gives the fork's init functions C linkage, which KitCreator's
+  # compile of the fork did not - see there).
   kit-linux:
-    continue-on-error: true
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -76,14 +75,6 @@ jobs:
           repository: atyr647/metakit
           ref: ${{ env.FORK_REF }}
           path: metakit-fork
-      # KitCreator's compile of the fork's tcl/mk4tcl.cpp produced the init function C++-mangled (_Z11Mk4tcl_InitP10Tcl_Interp) and without Mk_Init,
-      # which kitsh (plain C) cannot call.  This step gives the functions C linkage in THIS checkout only, to find out whether that is the whole
-      # problem; the fork itself is not changed (a fix belongs there).
-      - name: Give the init functions of tcl/mk4tcl.cpp C linkage (this checkout only)
-        run: |
-          grep -n '^EXTERN int' metakit-fork/tcl/mk4tcl.cpp
-          sed -i 's/^EXTERN int \(Mk[A-Za-z0-9_]*\)(/extern "C" int \1(/' metakit-fork/tcl/mk4tcl.cpp
-          grep -n 'extern "C" int' metakit-fork/tcl/mk4tcl.cpp
       - name: Build Tcl/Tk 8.6.18 + the fork's Metakit in a glibc 2.28 container
         timeout-minutes: 60
         run: |
@@ -95,7 +86,7 @@ jobs:
             bash tools/build-kit.sh linux /src/kit-out'
           sudo chown -R "$(id -u):$(id -g)" kit-out
           ls -la kit-out
-      - name: What was built for Metakit, and how kitsh was told about it (diagnostics for the failed link)
+      - name: What was built for Metakit, and how kitsh was told about it (diagnostics when the kit does not link)
         if: failure()
         run: |
           ls -lR kit-out/kitcreator/mk4tcl/inst/lib | head -30 || true

@@ -317,7 +317,7 @@ wide file with an explanation (nothing is touched; the read-only and the editing
 interrupted commit, and guards the one limit the fork keeps - a single column (or memo) of 2^31-1 bytes, which Metakit would otherwise answer
 by *ending the program* - by refusing the edit that would pass it (`STORE COLUMNFULL`). Verified (workflow `metakit-fork.yml`, also every
 Monday): the fork's own tests (23,497 checks, including crashes after every single write); all of MK Studio's suites on a Mk4tcl built from
-the fork (`tools/build-metakit-fork.sh`; a tclkit built with it through KitCreator, `METAKIT_SRC=... tools/build-kit.sh`, is still experimental); a real database of
+the fork (`tools/build-metakit-fork.sh`) and on a Linux tclkit built with it through KitCreator (`METAKIT_SRC=... tools/build-kit.sh`); a real database of
 2.9 GiB through `store.tcl` - 30 commits of 100 MiB of blobs crossing 2 GiB, every value read back, a new process opening it, the column
 refused near 2 GiB, processes killed in 6 commits and in 5 commits that cross 2 GiB (each file holds one commit or the other, and later commits
 work: `tests/test_widebig.tcl`); the block-level crash test on a real file system. Not decided: whether the released programs should be built
