@@ -813,10 +813,30 @@ proc ::store::integrityState {tag} { variable integrity ; if {[info exists integ
 namespace eval ::store { variable repaired ; array set repaired {} ; variable backedUp ; array set backedUp {} }
 proc ::store::repairedNote {tag} { variable repaired ; if {[info exists repaired($tag)]} { return $repaired($tag) } ; return "" }
 
+# Is the lock we took still ours?  A lock can be replaced behind our back (two processes that both judged the same abandoned
+# takeover guard stale; a person who removed the lock by hand; a restored backup folder).  Checked just before a commit writes:
+# if somebody else's text is in our lock file the commit is refused - the changes stay in the open database to be rolled back or
+# saved elsewhere - instead of two programs saving into one file.  A lock file that has vanished is taken again (exclusively);
+# one that cannot be read at this moment (a virus scanner holds it) proves nothing and does not stop the save.
+proc ::store::verifyLock {tag} {
+    variable lockOwned
+    if {![info exists lockOwned($tag)]} return
+    lassign $lockOwned($tag) lf mine
+    if {[catch {set h [open $lf r] ; set d [read $h 512] ; close $h}]} {
+        if {[file exists $lf]} return
+        if {![catch {open $lf {WRONLY CREAT EXCL}} h]} { puts -nonewline $h $mine ; close $h ; return }
+        if {[catch {set h [open $lf r] ; set d [read $h 512] ; close $h}]} return
+    }
+    if {$d eq $mine} return
+    set who [string trim $d]
+    return -code error -errorcode [list STORE LOCKLOST $who] \
+        "Another program has taken over this database's lock ($who) since it was opened here, so the changes were NOT saved. They are still in the open database: roll back, or close it and open it again when the other program is done.\n$lf"
+}
 proc ::store::commit {tag} {
     variable dirty ; variable file ; variable backedUp
     set record 0
     if {$dirty($tag) > 0} {
+        verifyLock $tag
         if {![info exists backedUp($tag)]} {
             if {[integrityState $tag] eq "damaged"} { protectBackup $file($tag) ; set backedUp($tag) 0 } else { set backedUp($tag) [backupBeforeCommit $file($tag)] }
         }

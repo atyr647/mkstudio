@@ -118,14 +118,34 @@ and when it wakes up both believe they own the database. `tests/test_lock_crash.
 stalled at exactly those points: limit shortened to 1 s -> overlap; the real limits -> no overlap). The chaos test runs with the
 limits shortened to 1 s, so on a very slow runner it can see this; processes whose acquisition took more than half the shortened
 limit are reported as SLOW and overlaps they take part in are counted as excused, not failed (set `MKS_CHAOS_STRICT=1` to see
-them all). **A second cause, found later and not fully explained.** On macOS-Intel the chaos test reported overlaps twice (CI runs 41666721839-era and
-41704209676) - the second time with *no* process slow enough to excuse it, so the starvation reading above cannot be the whole
-story. What was found by reading the code: on systems without /proc `store::pidAlive` asked `kill -0` and counted every failure
-as "dead", including a `kill` that could not even be started (fork failed, out of resources). A live owner could then lose its
-lock to a second process. Now only "no such process" counts as dead (`store::killProbe`; the same for a Windows `tasklist` that
-cannot run) and the probe is unit-tested with simulated failures. Whether that was the cause of the macOS overlaps is **not
-established**: the chaos processes now log the path each acquisition took (created, written / mutex, checked, deleted ...), so the
-next overlap shows which route it came by. Treat the lock as best-effort mutual exclusion on macOS until that is settled.
+them all). **Measured on CI runners** (`tests/soak_lock_chaos.tcl`, the manual "lock soak" job: eight processes take the lock in a loop while
+random ones are SIGKILLed, and in one setting also frozen for 1.3 s; two processes inside at once is a violation):
+
+| runner | limits | acquisitions | violations |
+|---|---|---|---|
+| Linux | shortened (1 s), real (5 s / 10 s), real + freezes | 10,519 / 20,902 / 16,589 | 0 / 0 / 0 |
+| macOS arm64 | the same three | 2,475 / 3,850 / 3,189 | 0 / 0 / 0 |
+| macOS Intel | shortened | 3,528 | 0 |
+| macOS Intel | real | 6,952 | **1** |
+| macOS Intel | real + freezes | 5,702 | **2** |
+
+So on Linux and Apple silicon no overlap was seen in ~58,000 acquisitions; on the Intel macOS runner (the slowest machine in the
+set: acquisitions there took up to 6 s) three overlaps in ~12,000. In every logged case another process had *taken over the lock
+of a process that was alive and inside* (two or three takeovers within ~300 ms; the victim then found its marker file empty or
+gone). What is established: it needs real contention (eight processes, kills every 120 ms) and a loaded machine, and it is not the
+pid-liveness probe (`killProbe` and `pidAlive` were hardened before and the overlaps still occur). **A reading that fits the logs,
+not proven:** when a process is killed while it holds the takeover guard, the abandoned guard is removed once it is 10 s old by
+every waiter that notices at about the same time - and a waiter that checked the age of the *old* guard can delete, by name, the
+*fresh* guard that another waiter has just created, so two of them are inside the takeover section together, and the second one
+deletes the first one's brand-new lock. (Both implementations delete by name; the protocol cannot be made identity-safe without
+changing the guard's content or name, which must be done in both implementations together.)
+
+**What MK Studio does about it:** just before a commit writes, it checks that the lock file still holds its own text
+(`store::verifyLock`). If somebody else's text is there the commit is refused with the error code `{STORE LOCKLOST text}` - the
+changes stay in the open database - and a lock file that has vanished is taken again, exclusively. Of two processes that overlapped
+through a replaced lock, the one whose lock was overwritten therefore cannot save. This narrows the harm to a few microseconds
+between that check and Metakit's write; it does not make the lock a guarantee. **Treat the lock as protection against accidents
+(two windows, two programs), not as a guarantee against a hostile or badly overloaded machine.**
 
 Raising the real limits makes the window rarer, never zero; closing it needs a lock the operating system itself
 releases when the process dies (`flock`/`LockFileEx`), which Tcl cannot do from a plain file channel.

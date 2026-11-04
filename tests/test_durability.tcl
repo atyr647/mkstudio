@@ -305,6 +305,39 @@ if {$::tcl_platform(platform) ne "windows" && $::tcl_platform(user) ne "root"} {
     file delete -force $dir
 }
 
+# the lock can be replaced behind our back: the commit is refused instead of two programs saving into one file
+set f [tmp dur_lockloss.mk] ; clean $f ; set t [mkdb $f 5] ; store::closeFile $t
+set t [store::openFile $f] ; set mine [string trim [readbin $f.lock]]
+store::appendRow $t.items {id label} [list 50 "not saved"]
+set before [store::crcFile $f]
+set h [open $f.lock w] ; puts -nonewline $h "424242 some-other-machine" ; close $h
+set rc [catch {store::commit $t} msg opts]
+check lock_replaced_commit_refused $rc 1
+check lock_replaced_error_code [lrange [dict get $opts -errorcode] 0 1] {STORE LOCKLOST}
+ok lock_replaced_message_names_the_other [string match "*424242 some-other-machine*" $msg] $msg
+check lock_replaced_file_untouched [store::crcFile $f] $before
+check lock_replaced_changes_still_pending [expr {[store::dirty $t] > 0}] 1
+# our text is back (the other program let go): the same commit goes through
+set h [open $f.lock w] ; puts -nonewline $h $mine ; close $h
+store::commit $t
+check lock_back_commit_works [rows $t] 6
+# the lock file was deleted by somebody: it is taken again, exclusively, and the commit goes through
+store::appendRow $t.items {id label} [list 51 "also kept"]
+file delete $f.lock
+store::commit $t
+check lock_deleted_commit_works [rows $t] 7
+check lock_deleted_lock_retaken [string trim [readbin $f.lock]] $mine
+# deleted and then taken by someone else before we looked: refused
+store::appendRow $t.items {id label} [list 52 "refused"]
+file delete $f.lock ; set h [open $f.lock w] ; puts -nonewline $h "777 another-host" ; close $h
+check lock_taken_by_another_after_deletion [catch {store::commit $t}] 1
+store::rollback $t
+# closing never removes somebody else's lock
+store::closeFile $t
+check close_leaves_a_foreign_lock [string trim [readbin $f.lock]] "777 another-host"
+file delete $f.lock
+clean $f
+
 # ---- found by the code review: a damaged file's good backup survives, and restoring never clobbers an earlier .damaged ------
 set f [tmp dur_bak2.mk] ; set t [mkdb $f 30] ; store::closeFile $t
 set t [store::openFile $f] ; store::setCell $t.items 1 label "session one" ; store::commit $t ; store::closeFile $t

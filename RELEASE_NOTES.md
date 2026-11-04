@@ -7,6 +7,14 @@ checks (real power loss, first run on each system) that automation cannot do.
 
 ### What changed since 1.0.0-rc.1
 
+- **Standard SQL.** The query window now runs [mkit-sql](https://github.com/atyr647/mkit-sql) 0.4.0: joins, CTEs including
+  `WITH RECURSIVE`, window functions, `MERGE`, `LATERAL`, `ROLLUP`/`CUBE`, dates and intervals, `EXPLAIN`, and bounded memory for big
+  results. It runs on MK Studio's own storage layer, so a statement's change is saved, rolled back, locked and checksummed like any
+  edit; the old built-in dialect stays available for the tests (`MKS_ENGINE=mkql`). The engine is part of the program (not
+  downloaded), at a recorded commit that CI checks byte for byte, and mkit-sql's own storage suites run against this program's
+  storage code on every build.
+- **A commit checks its lock first.** If another program has replaced this program's lock file since the database was opened, the
+  save is refused (the changes stay in the open database) instead of two programs saving into one file.
 - **Windows: the disk flush now really runs.** In rc.1 the program asked PowerShell to force each save to disk, but PowerShell
   started straight from a Windows GUI program does nothing at all - no error, no effect - so on Windows saves were *not* forced
   to disk. They are now (PowerShell is started through `cmd /c`; a test proves that a script really executes). A save on
@@ -85,4 +93,8 @@ There is no code-signing certificate behind them. In practice:
   twice saw two processes inside at once under deliberately extreme load; the cause is not established.
 - Power safety is tested with simulated power cuts and real kills, never with a real power cut (`docs/QA-CHECKLIST.md` has the
   manual test). A disk that lies about having written data cannot be helped.
+- Lock stress on CI runners (eight processes, random kills): no overlap in ~58,000 acquisitions on Linux and Apple silicon; on the
+  Intel Mac runner three in ~12,000 (details and the commit-time check that limits the damage: `docs/CONCURRENCY.md`).
 - The programs are not signed or notarized (see above). Nobody has used this release for months yet.
+- mkit-sql's own repository still has the three open items listed in `docs/mkit-sql-integration.md` (a patch is provided); this
+  release does not depend on them.

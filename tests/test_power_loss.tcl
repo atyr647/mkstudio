@@ -39,7 +39,7 @@ proc check {n got want} { global pass fail ; if {$got eq $want} {incr pass} else
 proc ok {n cond {detail ""}} { global pass fail ; if {$cond} {incr pass} else {incr fail ; puts "FAIL $n $detail"} }
 set scale [expr {[info exists ::env(MKS_POWER_STATES)] ? $::env(MKS_POWER_STATES) : 1}]
 set strict [expr {[info exists ::env(MKS_POWER_STRICT)] && $::env(MKS_POWER_STRICT)}]
-expr {srand(20240611)}
+expr {srand([expr {[info exists ::env(MKS_POWER_SEED)] ? $::env(MKS_POWER_SEED) : 20240611}])}
 proc readbin {p} { set h [open $p rb] ; set d [read $h] ; close $h ; return $d }
 proc writebin {p d} { set h [open $p wb] ; puts -nonewline $h $d ; close $h }
 
@@ -158,6 +158,21 @@ proc candidates {a b scale} {
     return [list $out [llength $changed] $n]
 }
 
+# What was different about a candidate that did not come out as the old or the new state (so the next failure explains itself):
+# sizes, and where the candidate differs from the old state inside the old state's length (after the repair they should be equal).
+proc diagCand {dir k} {
+    set a [readbin $dir/A.mk] ; set b [readbin $dir/B.mk] ; set c [readbin $dir/c$k.mk]
+    set n [string length $a] ; set runs {} ; set start -1 ; set prev -2
+    for {set i 0} {$i < $n && $i < [string length $c]} {incr i} {
+        if {[string index $a $i] ne [string index $c $i]} {
+            if {$i != $prev + 1} { if {$start >= 0} { lappend runs "$start-$prev" } ; set start $i }
+            set prev $i
+        }
+    }
+    if {$start >= 0} { lappend runs "$start-$prev" }
+    return "\[candidate [string length $c] bytes, old state $n, new state [string length $b]; differs from the old state at [lrange $runs 0 11]\]"
+}
+
 # ---- classify in a child process (Metakit may crash on a damaged file) ------------------------------------------------
 proc classify {dir fileA fileB files mode} {
     global kit here
@@ -241,7 +256,7 @@ foreach {name script} $scenarios {
                 # state (or the new one if all of it was persisted); without it (`truncate`) an unfinished append
                 # must still be put right.
                 if {$mode eq "record" || $model in {ORDERED SANITY}} {
-                    ok "$name: $mode / $model ($desc) -> $cls" [expr {$cls in {OLD NEW}}] $v
+                    ok "$name: $mode / $model ($desc) -> $cls" [expr {$cls in {OLD NEW}}] "$v [expr {$cls in {OLD NEW} ? {} : [diagCand $dir [expr {$k + 1}]]}]"
                 }
             }
         }
