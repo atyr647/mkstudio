@@ -42,7 +42,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: kitcreator/tclkit-8.6.16
-          key: tclkit-${{ matrix.os }}-8.6.16-aqua-v2
+          key: tclkit-${{ matrix.os }}-8.6.16-aqua-v3
           fail-on-cache-miss: true
       - name: Pick the kit
         run: |
@@ -392,7 +392,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: kitcreator/tclkit-${{ env.TCL_VERSION }}
-          key: tclkit-${{ matrix.os }}-${{ env.TCL_VERSION }}-aqua-v2
+          key: tclkit-${{ matrix.os }}-${{ env.TCL_VERSION }}-aqua-v3
 
       - name: Build a current tclkit (Tcl/Tk + Metakit) with KitCreator
         if: steps.cache.outputs.cache-hit != 'true'
