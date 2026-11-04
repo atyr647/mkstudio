@@ -21,6 +21,7 @@ proc childOut {script args} {
     return [lindex [split $d "\n"] end]
 }
 set childN 0
+proc step {what} { puts "  .. $what" }
 proc slurp {f} { set h [open $f rb] ; set d [read $h] ; close $h ; return $d }
 proc spit {f d} { set h [open $f wb] ; puts -nonewline $h $d ; close $h }
 set dir [tmp mks_wide_[pid]] ; file delete -force $dir ; file mkdir $dir
@@ -77,21 +78,29 @@ if {!$cap} {
     refused $wide
 } else {
     # ---- the 64-bit Metakit: read, change, commit, repair ----
+    step "reading the wide file"
     foreach mode {-readonly {}} {
+        step "opening the wide file ($mode)"
         set tag [store::openFile $wide {*}$mode]
+        step "opened; reading"
         ok "wide file reads ($mode)" [expr {[store::size $tag.t] == 3 && [store::rows $tag.t {name} 1 1] eq {two}}] [store::rows $tag.t {name} 0 9]
         store::closeFile $tag
     }
+    step "opening it for writing, appending a row and changing a cell"
     set tag [store::openFile $wide]
+    step "opened for writing"
     store::appendRow $tag.t {id name} {4 four}
     store::setCell $tag.t 0 name uno
+    step "committing"
     store::commit $tag
+    step "committed; closing"
     store::closeFile $tag
     ok "wide file stays wide after a commit" [store::isWide $wide]
     ok "and ends in a valid wide frame" [store::footerOkAt $wide [file size $wide] 1]
     set tag [store::openFile $wide -readonly]
     ok "the commit is there" [expr {[store::size $tag.t] == 4 && [store::rows $tag.t {name} 0 1] eq {uno}}]
     store::closeFile $tag
+    step "interrupted commit"
     # an interrupted commit: junk after the last good tails + the record that says what to put back
     set good [slurp $wide] ; set info [store::headerInfo $wide]
     spit $wide $good[string repeat J 5000]
@@ -101,6 +110,7 @@ if {!$cap} {
     ok "the repair is reported" [expr {[store::repairedNote $tag] ne ""}]
     ok "and the data is intact" [expr {[store::size $tag.t] == 4}]
     store::closeFile $tag
+    step "junk without a record"
     # junk after the tails and NO record: a wide file is never cut by the header's offset (it keeps none) - nothing is thrown away
     spit $wide $good[string repeat J 100]
     set tag [store::openFile $wide -readonly] ; store::closeFile $tag
@@ -114,12 +124,14 @@ if {!$cap} {
     ok "and says so" [string match "Warning*" [store::repairedNote $tag]] [store::repairedNote $tag]
     store::closeFile $tag
     file delete [store::commitRecord $wide]
+    step "a child told MKS_WIDE=0"
     # a program whose Mk4tcl cannot read wide files (MKS_WIDE=0, simulated in a new process) refuses it
     set out [childOut $here/wide_child.tcl $wide]
     ok "a program told MKS_WIDE=0 refuses the file" [string match "refused STORE WIDEFILE" $out] $out
     ok "and left it alone" [expr {[slurp $wide] eq $good}]
 }
 
+step "the column guard"
 # ---- the column guard, with a small limit (it does not depend on the Metakit that is loaded) ----
 set ::store::wideCap 1                      ;# switch the guard on whatever the library, for this part
 set ::store::maxColumnBytes 20000 ; set ::store::guardSlack 0
