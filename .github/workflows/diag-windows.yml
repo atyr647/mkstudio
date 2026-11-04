@@ -36,5 +36,5 @@ jobs:
         run: |
           KIT="$PWD/kit/tclkit-8.6.18-windows-x86_64.exe"
           rm -f "$RUNNER_TEMP/tw.log" "$RUNNER_TEMP/tw.trace"
-          MKS_TRACE="$(cygpath -w "$RUNNER_TEMP/tw.trace")" MKS_TEST_LOG="$(cygpath -w "$RUNNER_TEMP/tw.log")" EXPECT_WIDE=1 timeout 90 "$KIT" "$(cygpath -w "$PWD/tests/run.tcl")" "$(cygpath -w "$PWD/tests/test_wide.tcl")"; rc=$?
+          MKS_TRACE="$(cygpath -w "$RUNNER_TEMP/tw.trace")" MKS_TEST_LOG="$(cygpath -w "$RUNNER_TEMP/tw.log")" EXPECT_WIDE=1 timeout 90 "$KIT" "$(cygpath -w "$PWD/tests/run.tcl")" "$(cygpath -w "$PWD/tests/test_wide.tcl")" && rc=0 || rc=$?
           echo "=== test_wide: exit $rc"; tail -12 "$RUNNER_TEMP/tw.log" | sed 's/^/    log: /'; echo "--- last store commands:"; tail -25 "$RUNNER_TEMP/tw.trace" | sed 's/^/    /'
