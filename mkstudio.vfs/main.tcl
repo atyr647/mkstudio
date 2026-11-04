@@ -39,7 +39,10 @@ if {[lindex $argv 0] eq "--info"} {
         puts $h "version $::version::current"
         puts $h "tcl [info patchlevel]"
         puts $h "system $::tcl_platform(os) $::tcl_platform(osVersion) $::tcl_platform(machine)"
-        puts $h "metakit [expr {[catch {package present Mk4tcl} v] ? {none} : $v}]"
+        puts $h "metakit [expr {[catch {package present Mk4tcl} v] ? {none} : $v}] (files over 2 GiB: [expr {[::store::wideCapable] ? {yes} : {no}}])"
+        set sql ""
+        catch { set sh [open [file join $::mkstudio_root lib mkitsql SOURCE] r] ; set sl [split [read $sh] \n] ; close $sh ; set sql "[lindex $sl 0] ([string range [lindex [lindex $sl 1] 1] 0 11])" }
+        puts $h "sql $sql"
         puts $h "flush [::store::flushMethod]"
         close $h
     }]

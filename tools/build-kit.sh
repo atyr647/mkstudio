@@ -31,7 +31,7 @@ fetch() {  # url file sha256
     if [ "$got" != "$3" ]; then echo "SHA-256 mismatch for $1: got $got, want $3" >&2; exit 1; fi
 }
 
-mkdir -p "$work"; cd "$work"
+mkdir -p "$work"; cd "$work"; work=$PWD
 rm -rf kitcreator kc.tgz zlib.tgz
 vendored="$here/vendor/kitcreator-${KC_UUID}.tar.gz"
 if [ -f "$vendored" ]; then
@@ -57,13 +57,24 @@ bash build/pre.sh
 # Tcl and Tk: KitCreator knows no checksum for versions newer than 8.6.14 and would download them over plain HTTP unchecked
 "$here/seed-tcl-sources.sh" "$PWD" "$TCL_VERSION"
 
-# Optional: build the kit with ANOTHER Metakit - the fork with 64-bit file positions (https://github.com/atyr647/metakit) - instead of the
-# stock 2.4.9.7 tarball:   METAKIT_SRC=<a checkout of the fork> tools/build-kit.sh linux WORKDIR
+# The Metakit inside the kit is the FORK with 64-bit file positions (https://github.com/atyr647/metakit): a database file is no longer limited to
+# 2 GiB.  An exact copy of it is kept in tools/vendor/ (tools/sync-metakit-fork.sh; METAKIT-FORK names the commit and the SHA-256, which is checked
+# here).  Files below 2 GiB are byte for byte what stock Metakit writes.
+#   METAKIT=stock          build with KitCreator's own Metakit 2.4.9.7 instead (its tarball is downloaded and checked)
+#   METAKIT_SRC=<checkout> build with another checkout of the fork (the weekly metakit-fork workflow tests the fork's newest commit this way)
 # KitCreator builds a source tree it finds in mk4tcl/buildsrc instead of downloading one.  Its patches are for the stock source (they make
 # it build with current compilers and cross-compilers); the fork carries its own fixes, so they are not applied.
+if [ -z "${METAKIT_SRC:-}" ] && [ "${METAKIT:-fork}" = fork ]; then
+    mf_file=$(sed -n 's/^file //p' "$here/vendor/METAKIT-FORK") ; mf_sum=$(sed -n 's/^sha256 //p' "$here/vendor/METAKIT-FORK")
+    [ -f "$here/vendor/$mf_file" ] || { echo "tools/vendor/METAKIT-FORK names $mf_file, which is missing" >&2; exit 1; }
+    if [ "$(sha256 "$here/vendor/$mf_file")" != "$mf_sum" ]; then echo "SHA-256 mismatch for tools/vendor/$mf_file" >&2; exit 1; fi
+    rm -rf "$work/metakit-fork-src" ; mkdir -p "$work/metakit-fork-src"
+    tar xzf "$here/vendor/$mf_file" -C "$work/metakit-fork-src"
+    METAKIT_SRC="$work/metakit-fork-src/metakit-2.4.9.7"
+fi
 if [ -n "${METAKIT_SRC:-}" ]; then
     [ -f "$METAKIT_SRC/unix/configure" ] || { echo "METAKIT_SRC=$METAKIT_SRC is not a Metakit source tree" >&2; exit 1; }
-    echo "building with the Metakit of $METAKIT_SRC ($(git -C "$METAKIT_SRC" rev-parse HEAD 2>/dev/null || echo 'unknown commit'))" >&2
+    echo "building with the Metakit of $METAKIT_SRC ($(git -C "$METAKIT_SRC" rev-parse HEAD 2>/dev/null || sed -n 's/^commit //p' "$here/vendor/METAKIT-FORK"))" >&2
     rm -rf mk4tcl/buildsrc ; mkdir -p mk4tcl/buildsrc
     cp -R "$METAKIT_SRC" mk4tcl/buildsrc/metakit-2.4.9.7
     rm -rf mk4tcl/buildsrc/metakit-2.4.9.7/.git

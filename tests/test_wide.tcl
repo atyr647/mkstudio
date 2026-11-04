@@ -12,6 +12,15 @@ set ::store::durable 0
 set pass 0 ; set fail 0
 proc ok {name cond {info ""}} { global pass fail ; if {$cond} { incr pass } else { incr fail ; puts "FAIL $name $info" } }
 proc check {n got want} { ok $n [expr {$got eq $want}] "got <[string range $got 0 150]> want <$want>" }
+# run a child script that writes its answer to a file (a Windows GUI program has no stdout to read); the last line of the answer, or ""
+proc childOut {script args} {
+    global here
+    set out [tmp mks_childout_[pid]_[incr ::childN].txt] ; file delete $out
+    catch {exec [info nameofexecutable] $script {*}$args $out 2>@1}
+    set d "" ; catch {set h [open $out r] ; set d [string trim [read $h]] ; close $h} ; file delete $out
+    return [lindex [split $d "\n"] end]
+}
+set childN 0
 proc slurp {f} { set h [open $f rb] ; set d [read $h] ; close $h ; return $d }
 proc spit {f d} { set h [open $f wb] ; puts -nonewline $h $d ; close $h }
 set dir [tmp mks_wide_[pid]] ; file delete -force $dir ; file mkdir $dir
@@ -106,7 +115,7 @@ if {!$cap} {
     store::closeFile $tag
     file delete [store::commitRecord $wide]
     # a program whose Mk4tcl cannot read wide files (MKS_WIDE=0, simulated in a new process) refuses it
-    set out [lindex [split [string trim [exec [info nameofexecutable] $here/wide_child.tcl $wide 2>@1]] "\n"] end]
+    set out [childOut $here/wide_child.tcl $wide]
     ok "a program told MKS_WIDE=0 refuses the file" [string match "refused STORE WIDEFILE" $out] $out
     ok "and left it alone" [expr {[slurp $wide] eq $good}]
 }

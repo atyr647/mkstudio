@@ -40,6 +40,13 @@ jobs:
           path: metakit-fork
       - name: Which commit of the fork
         run: git -C metakit-fork log -1 --format='%H %ad %s' --date=short
+      - name: Is the copy kept in tools/vendor/ (the Metakit inside every runtime) this commit?
+        continue-on-error: true
+        run: |
+          if ! tools/sync-metakit-fork.sh --check metakit-fork; then
+            echo "::warning title=the fork has moved::the Metakit inside the runtimes (tools/vendor/METAKIT-FORK) is not the newest commit of the branch under test; run tools/sync-metakit-fork.sh on a checkout of it, and the next CI run builds the runtimes with it"
+            exit 1
+          fi
       - name: Tools
         run: sudo apt-get update && sudo apt-get install -y tcl8.6 tcl8.6-dev tk8.6 g++ make xvfb e2fsprogs
       - name: Build the fork's Mk4tcl, and run the fork's own tests

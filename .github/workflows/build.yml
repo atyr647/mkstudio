@@ -48,7 +48,7 @@ jobs:
         uses: actions/cache/restore@v6
         with:
           path: kitcreator/tclkit-8.6.18
-          key: tclkit-${{ matrix.os }}-8.6.18-aqua-v3
+          key: tclkit-${{ matrix.os }}-8.6.18-aqua-fork-v1
           fail-on-cache-miss: true
       - name: Pick the kit
         run: |
@@ -86,7 +86,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: kit-out/tclkit-8.6.18-linux-x86_64
-          key: kit-linux-${{ hashFiles('tools/build-kit.sh') }}
+          key: kit-linux-${{ hashFiles('tools/build-kit.sh', 'tools/vendor/METAKIT-FORK', 'tools/vendor/metakit-fork-*') }}
       # glibc 2.28 (AlmaLinux 8): the kit then runs on RHEL 8+, Debian 10+, Ubuntu 18.10+ and anything newer
       - name: Build Tcl/Tk 8.6.18 + Metakit in a glibc 2.28 container
         if: steps.cache.outputs.cache-hit != 'true'
@@ -157,7 +157,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: kit-out/tclkit-8.6.18-windows-x86_64.exe
-          key: kit-windows-${{ hashFiles('tools/build-kit.sh') }}
+          key: kit-windows-${{ hashFiles('tools/build-kit.sh', 'tools/vendor/METAKIT-FORK', 'tools/vendor/metakit-fork-*') }}
       - name: Build Tcl/Tk 8.6.18 + Metakit with mingw-w64
         if: steps.cache.outputs.cache-hit != 'true'
         timeout-minutes: 50
@@ -269,11 +269,14 @@ jobs:
             for t in test_durability test_crash test_update; do REAL_MK=1 $kit tests/run.tcl tests/$t.tcl; done
           done
 
-      - name: Files over 2 GiB - the stock Metakit of the runtime must refuse them, never show them as empty (Tcl 8.6 and 8.5)
+      - name: Files over 2 GiB - the current runtime has the 64-bit Metakit and reads them; the 2014 runtimes have the stock one and must refuse them, never show them as empty
         run: |
-          for kit in tools/ext/tclkit-8.6.18-linux-x86_64 tools/ext/tclkit-8.6.3-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+          EXPECT_WIDE=1 REAL_MK=1 tools/ext/tclkit-8.6.18-linux-x86_64 tests/test_wide.tcl
+          for kit in tools/ext/tclkit-8.6.3-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
             echo "=== $kit"; EXPECT_WIDE=0 REAL_MK=1 $kit tests/test_wide.tcl
           done
+      - name: A database file past 2 GiB on the current runtime (about 4.5 GB of disk, a few minutes)
+        run: EXPECT_WIDE=1 REAL_MK=1 tools/ext/tclkit-8.6.18-linux-x86_64 tests/test_widebig.tcl
       - name: Native flush library (mksync) - loads in every runtime, flushes, falls back
         run: |
           for kit in tools/ext/tclkit-8.6.18-linux-x86_64 tools/ext/tclkit-8.6.3-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
@@ -310,6 +313,8 @@ jobs:
           env -u MKS_MKSYNC_DIR ./dist/mkstudio-linux-x86_64 --info "$RUNNER_TEMP/info.txt"
           cat "$RUNNER_TEMP/info.txt"
           grep -q '^flush native (fsync)' "$RUNNER_TEMP/info.txt"
+          grep -q '^metakit .*files over 2 GiB: yes' "$RUNNER_TEMP/info.txt"
+          grep -q '^sql mkit-sql ' "$RUNNER_TEMP/info.txt"
       - name: Launch the Linux starpack
         run: tests/smoke_starpack.sh
       - name: Real self-update - the real starpack replaces a running program (Tcl 8.6 and 8.5)
@@ -373,7 +378,7 @@ jobs:
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
             # forcing data to disk starts PowerShell twice per commit: only the durability test does it for real
             D=0; [ "$t" = test_durability ] && D=1
-            MKS_TEST_STARPACK="$(cygpath -w "$PWD/dist/mkstudio-windows-x86_64.exe")" MKS_TEST_TIMEOUT=480 MKS_DURABLE=$D MKS_EXPECT_FLUSH=1 EXPECT_WIDE=0 MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$(cygpath -w "$log")" timeout 540 "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
+            MKS_TEST_STARPACK="$(cygpath -w "$PWD/dist/mkstudio-windows-x86_64.exe")" MKS_TEST_TIMEOUT=480 MKS_DURABLE=$D MKS_EXPECT_FLUSH=1 EXPECT_WIDE=1 MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$(cygpath -w "$log")" timeout 540 "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
           done
           exit $fail
@@ -398,7 +403,14 @@ jobs:
           rm -f "$RUNNER_TEMP/info.txt"
           ./dist/mkstudio-windows-x86_64.exe --info "$(cygpath -w "$RUNNER_TEMP/info.txt")"
           for i in $(seq 1 30); do [ -s "$RUNNER_TEMP/info.txt" ] && break; sleep 1; done
-          cat "$RUNNER_TEMP/info.txt"; grep -q '^flush native (FlushFileBuffers)' "$RUNNER_TEMP/info.txt"
+          cat "$RUNNER_TEMP/info.txt"; grep -q '^flush native (FlushFileBuffers)' "$RUNNER_TEMP/info.txt"; grep -q '^metakit .*files over 2 GiB: yes' "$RUNNER_TEMP/info.txt"; grep -q '^sql mkit-sql ' "$RUNNER_TEMP/info.txt"
+
+      - name: A database file past 2 GiB on this runtime (the 64-bit Metakit; about 4.5 GB of disk)
+        timeout-minutes: 30
+        run: |
+          log="$RUNNER_TEMP/widebig.log"; rm -f "$log"
+          EXPECT_WIDE=1 MKS_TEST_LOG="$(cygpath -w "$log")" timeout 1700 "$KIT" tests/run.tcl tests/test_widebig.tcl || echo "(exit code $?)"
+          cat "$log"; tail -1 "$log" | grep -q ' 0 failed'
 
       - name: Live update check - the real GitHub release feed, real download, real checksum, real starpack
         timeout-minutes: 12
@@ -458,7 +470,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: kitcreator/tclkit-${{ env.TCL_VERSION }}
-          key: tclkit-${{ matrix.os }}-${{ env.TCL_VERSION }}-aqua-v3
+          key: tclkit-${{ matrix.os }}-${{ env.TCL_VERSION }}-aqua-fork-v1
 
       - name: Build a current tclkit (Tcl/Tk + Metakit) with KitCreator
         if: steps.cache.outputs.cache-hit != 'true'
@@ -493,7 +505,7 @@ jobs:
           fail=0
           for t in test_mksync test_wide test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_durability test_crash test_update test_lock_protocol test_lock_crash test_grid test_engine_wiring gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
-            EXPECT_WIDE=0 MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$log" perl -e 'alarm 300; exec @ARGV' "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
+            EXPECT_WIDE=1 MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$log" perl -e 'alarm 300; exec @ARGV' "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
           done
           exit $fail
@@ -502,6 +514,10 @@ jobs:
         if: always()
         run: |
           for f in "$RUNNER_TEMP"/*.log; do echo "=== $f"; cat "$f"; done
+
+      - name: A database file past 2 GiB on this runtime (the 64-bit Metakit; about 4.5 GB of disk)
+        timeout-minutes: 30
+        run: EXPECT_WIDE=1 perl -e 'alarm 1700; exec @ARGV' "$KIT" tests/run.tcl tests/test_widebig.tcl
 
       - name: Wrap the macOS starpack on this machine with the tested runtime
         run: |
@@ -522,7 +538,7 @@ jobs:
           test "$("./$OUT" --version)" = "$v"
           "./$OUT" --selftest "$RUNNER_TEMP/st.txt"; cat "$RUNNER_TEMP/st.txt"; grep -q "^ok $v mk4tcl yes" "$RUNNER_TEMP/st.txt"
           # the starpack finds and loads its own copy of the flush library (no MKS_MKSYNC_DIR)
-          env -u MKS_MKSYNC_DIR "./$OUT" --info "$RUNNER_TEMP/info.txt"; cat "$RUNNER_TEMP/info.txt"; grep -q '^flush native (F_FULLFSYNC)' "$RUNNER_TEMP/info.txt"
+          env -u MKS_MKSYNC_DIR "./$OUT" --info "$RUNNER_TEMP/info.txt"; cat "$RUNNER_TEMP/info.txt"; grep -q '^flush native (F_FULLFSYNC)' "$RUNNER_TEMP/info.txt"; grep -q '^metakit .*files over 2 GiB: yes' "$RUNNER_TEMP/info.txt"; grep -q '^sql mkit-sql ' "$RUNNER_TEMP/info.txt"
 
       - name: Real self-update - the real starpack replaces a running program
         run: MKS_TEST_STARPACK="$PWD/$OUT" "$KIT" tests/run.tcl tests/test_update.tcl

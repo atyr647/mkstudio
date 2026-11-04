@@ -1,0 +1,6 @@
+Metakit with 64-bit file positions (files over 2 GiB), compiled into every runtime by tools/build-kit.sh
+repository https://github.com/atyr647/metakit
+branch ccr-7001915e-qdjw33
+commit 9ffa269e70bd105d6195840bccb5759ed9a51991
+file metakit-fork-9ffa269e70bd.tar.gz
+sha256 7a5342f54591170459f68a62fb092ec512fc5c80766e8033da88e0409c9310ba

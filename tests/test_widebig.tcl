@@ -10,6 +10,15 @@ set here [file dirname [file normalize [info script]]]
 source $here/util.tcl
 source $here/../mkstudio.vfs/lib/app-mkstudio/store.tcl
 set pass 0 ; set fail 0
+# run a child script that writes its answer to a file (a Windows GUI program has no stdout to read); the last line of the answer, or ""
+proc childOut {script args} {
+    global here
+    set out [tmp mks_childout_[pid]_[incr ::childN].txt] ; file delete $out
+    catch {exec [info nameofexecutable] $script {*}$args $out 2>@1}
+    set d "" ; catch {set h [open $out r] ; set d [string trim [read $h]] ; close $h} ; file delete $out
+    return [lindex [split $d "\n"] end]
+}
+set childN 0
 proc ok {name cond {info ""}} { global pass fail ; if {$cond} { incr pass } else { incr fail ; puts "FAIL $name $info" } }
 if {![store::wideCapable]} { puts "widebig: this Mk4tcl cannot hold files over 2 GiB; skipped" ; exit 0 }
 set f [tmp mks_widebig_[pid].mk] ; file delete $f
@@ -44,9 +53,9 @@ store::setCell $db.t 1499 k 101499
 store::commit $db
 ok "an edit past 2 GiB commits" [expr {[lindex [store::rows $db.t {k} 1499 1] 0] == 101499}]
 store::closeFile $db
-set out [lindex [split [string trim [exec [info nameofexecutable] $here/widebig_count_child.tcl $f 2>@1]] "\n"] end]
+set out [childOut $here/widebig_count_child.tcl $f]
 ok "a new process opens it and counts" [string match "1500 rows 101499" $out] $out
-set out [lindex [split [string trim [exec [info nameofexecutable] $here/wide_child.tcl $f 2>@1]] "\n"] end]
+set out [childOut $here/wide_child.tcl $f]
 ok "MKS_WIDE=0 refuses the file" [string match "refused STORE WIDEFILE" $out] $out
 
 # ---- one column cannot pass 2 GiB: b1 holds about 1.5 GiB, so about 500 more MiB fit ----
