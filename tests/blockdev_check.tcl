@@ -1,6 +1,6 @@
 # blockdev_check.tcl -- what one simulated power cut left behind: open the database the way MK Studio would and say which commit's state it holds.
 #   tclkit tests/blockdev_check.tcl <db-file> <expected-file> <lowest-allowed> <highest-allowed>
-# Exit status 0 and "STATE <k>" (k = 0: no file, or an empty one - nothing was ever saved) when the state is one of the allowed ones; 1 and "FAIL ..." otherwise.
+# Exit status 0 and "STATE <k>" (k = 0: no file, an empty one, or a database with no tables - nothing was ever saved) when the state is one of the allowed ones; 1 and "FAIL ..." otherwise.
 #   lowest  = the last commit that had been ACKNOWLEDGED when the power went (it must still be there)
 #   highest = the last commit that had BEGUN (a commit in flight may or may not have landed; nothing newer can exist)
 package require Mk4tcl
@@ -23,11 +23,17 @@ if {![file exists $db] || [file size $db] == 0} {
     if {[store::repairedNote $t] ne ""} { append note "; repaired: [string map [list \n { }] [store::repairedNote $t]]" }
     set verdict [store::integrityState $t]
     if {$verdict eq "damaged"} { fail "the checksum calls the file damaged after an ordinary power cut ($note)" }
-    if {[catch {digest $t} dg]} { fail "the rows cannot be read: $dg" }
-    store::closeFile $t
-    set state -1
-    for {set k 1} {$k <= $hi} {incr k} { if {[info exists want($k)] && $want($k) eq $dg} { set state $k } }
-    if {$state < 0} { fail "the table is none of the states 1..$hi (digest $dg; $note)" }
+    if {![store::hasView $t items]} {
+        # an interrupted FIRST save was undone: the database is empty again (the commit record said "empty") - state 0, nothing was ever saved
+        store::closeFile $t
+        set state 0
+    } else {
+        if {[catch {digest $t} dg]} { fail "the rows cannot be read: $dg" }
+        store::closeFile $t
+        set state -1
+        for {set k 1} {$k <= $hi} {incr k} { if {[info exists want($k)] && $want($k) eq $dg} { set state $k } }
+        if {$state < 0} { fail "the table is none of the states 1..$hi (digest $dg; $note)" }
+    }
 }
 if {$state < $lo} { fail "an acknowledged commit is lost: the database holds state $state, commit $lo had been acknowledged ($note)" }
 if {$state > $hi} { fail "state $state is newer than any commit that had begun ($hi)" }
