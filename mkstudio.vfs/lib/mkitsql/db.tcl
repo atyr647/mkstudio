@@ -552,6 +552,7 @@ proc ::mkitsql::db::sumWrite {path} {
     set tmp [sumPath $path].tmp
     catch {::file delete $tmp}
     if {[catch { set h [open $tmp {WRONLY CREAT EXCL} 420] ; puts -nonewline $h $line ; close $h ; ::file rename -force $tmp [sumPath $path] }]} { catch {close $h} ; catch {::file delete $tmp} ; return 0 }
+    syncDisk [sumPath $path]                        ;# the new name and its content on the disk before the commit is called done (as MK Studio's store.tcl)
     return 1
 }
 # ok | none (no sum, or not covered) | changed (size or time differ, a commit is unconfirmed, or the difference cannot be told from another

@@ -1,6 +1,6 @@
 # mkit-sql in MK Studio: how it is wired, what was found, what is still different
 
-State described here: MK Studio with **mkit-sql 0.4.1** (`atyr647/mkit-sql` at `fbd729c`) vendored in
+State described here: MK Studio with **mkit-sql 0.4.1** (`atyr647/mkit-sql` at `8f6158b`) vendored in
 `mkstudio.vfs/lib/mkitsql`. Everything below was run, not read off a description.
 
 ## 1. How it is wired
