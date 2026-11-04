@@ -1,0 +1,47 @@
+name: blockdev-crash
+# The block-level crash test: a real file system on a dm-log-writes device, MK Studio committing on it with the durable flushes on, the power
+# "cut" after up to 400 different writes, every resulting disk state mounted and the database opened (tests/blockdev_crash.sh explains it).
+# Separate from the main build: it needs root, loop devices and the dm-log-writes kernel module, and takes a while; it runs when its own files or
+# the storage code change, and on request.
+on:
+  workflow_dispatch:
+    inputs:
+      commits:
+        description: commits the workload makes
+        default: '6'
+  push:
+    branches: [ccr-f017368d-kguqg8]
+    paths:
+      - 'tests/blockdev_*'
+      - '.github/workflows/blockdev.yml'
+      - 'mkstudio.vfs/lib/app-mkstudio/store.tcl'
+      - 'native/**'
+jobs:
+  blockdev:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        fs: [ext4, xfs, btrfs]
+    # ext4 is the one that gates; the others are reported (their results are in the log)
+    continue-on-error: ${{ matrix.fs != 'ext4' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools
+        run: sudo apt-get update && sudo apt-get install -y e2fsprogs xfsprogs btrfs-progs
+      - name: What this kernel offers
+        run: |
+          uname -r
+          sudo modprobe dm-log-writes || true
+          sudo modprobe loop || true
+          sudo dmsetup targets
+          ls /dev/loop-control
+      - name: A tclkit with Metakit (the 2014 8.6.3 one, SHA1-checked) and the native flush library
+        run: |
+          tools/fetch-runtimes.sh linux
+          chmod +x tools/ext/tclkit-8.6.3-linux-x86_64
+          tools/build-native.sh linux "$PWD/native-out"
+          ls -la native-out
+      - name: Block-level crash test on ${{ matrix.fs }}
+        run: sudo -E env "MKS_MKSYNC_DIR=$PWD/native-out" tests/blockdev_crash.sh "$PWD/tools/ext/tclkit-8.6.3-linux-x86_64" "${{ github.event.inputs.commits || '6' }}" ${{ matrix.fs }}
