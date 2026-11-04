@@ -11,3 +11,5 @@ puts COMMITTING ; flush stdout
 store::commit $db
 puts DONE ; flush stdout
 store::closeFile $db
+# a GUI-subsystem Tk runtime would otherwise stay in its event loop after the script, and the parent that is waiting for this process would wait for ever
+exit 0

@@ -7,3 +7,5 @@ source $here/../mkstudio.vfs/lib/app-mkstudio/store.tcl
 lassign $argv f out
 if {[catch {store::openFile $f} m opts]} { set r "refused [lrange [dict get $opts -errorcode] 0 1]" } else { set r "opened" }
 set h [open $out w] ; puts $h $r ; close $h
+# a GUI-subsystem Tk runtime would otherwise stay in its event loop after the script, and the parent that is waiting for this process would wait for ever
+exit 0

@@ -9,11 +9,6 @@ set here [file dirname [file normalize [info script]]]
 source $here/util.tcl
 source $here/../mkstudio.vfs/lib/app-mkstudio/store.tcl
 set ::store::durable 0
-# MKS_TRACE=<file>: every ::store:: command is written to the file as it starts (the last line says where a hang is)
-if {[info exists ::env(MKS_TRACE)]} {
-    proc ::traceHook {cmd op} { set h [open $::env(MKS_TRACE) a] ; puts $h "[clock milliseconds] [string range $cmd 0 160]" ; close $h }
-    foreach c [info commands ::store::*] { trace add execution $c enter ::traceHook }
-}
 set pass 0 ; set fail 0
 proc ok {name cond {info ""}} { global pass fail ; if {$cond} { incr pass } else { incr fail ; puts "FAIL $name $info" } }
 proc check {n got want} { ok $n [expr {$got eq $want}] "got <[string range $got 0 150]> want <$want>" }
