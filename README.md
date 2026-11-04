@@ -25,17 +25,28 @@ included) that you can copy anywhere and run.
 
 More screenshots: [`docs/screenshots/`](docs/screenshots/) (all captured from the real app on real Metakit).
 
-## The query language is pluggable
+## The query language: standard SQL (mkit-sql), behind a pluggable seam
+
+Queries are **standard SQL** run by [mkit-sql](https://github.com/atyr647/mkit-sql) 0.4.0 (joins, CTEs incl. `WITH RECURSIVE`,
+window functions, `MERGE`, `LATERAL`, `ROLLUP/CUBE`, dates and intervals, bounded-memory spilling, `EXPLAIN`; the language is
+documented in its `docs/SQL.md`). It is **vendored** in [`mkstudio.vfs/lib/mkitsql`](mkstudio.vfs/lib/mkitsql) at a known commit
+(named in its `SOURCE` file; `tools/sync-mkitsql.sh` updates the copy and CI checks it byte for byte against that commit), so a
+release is exactly what was tested. Inside MK Studio mkit-sql runs on `store.tcl`: one set of open files, one lock, one commit
+protocol - a change made by a statement is a change in the open database, saved and rolled back with the same buttons.
 
 The UI never parses query text. It talks to one small seam, [`engine.tcl`](mkstudio.vfs/lib/app-mkstudio/engine.tcl),
 which documents the exact contract (`::engine::parseScript`, `::engine::execute`, and the keyword / token /
-cancel variables). `mkql.tcl` is a small built-in dialect so the app is usable on its own; a
-standard-SQL-to-Metakit engine replaces it by redefining those two procs. The data grid and
-designer use `store.tcl` directly and don't depend on the language at all.
+cancel variables); mkit-sql plugs in by redefining those two procs (`mkitsql/engine_studio.tcl`). The data grid and
+designer use `store.tcl` directly and don't depend on the language at all. `mkql.tcl`, the small dialect MK Studio started with,
+stays in the tree as a stand-in and a reference for the tests; start the program with `MKS_ENGINE=mkql` to use it.
 
-    REAL_MK=1 tools/ext/tclkit-8.6.3-linux-x86_64 tests/engine_contract.tcl     # 38 checks against the contract
+    REAL_MK=1 xvfb-run -a tclkit tests/run.tcl tests/test_engine_wiring.tcl     # mkit-sql really is the engine: parse, run, commit, lock
+    REAL_MK=1 tools/ext/tclkit-8.6.3-linux-x86_64 tests/engine_contract.tcl     # the contract itself (the built-in dialect)
 
-Edit the `stmts` array at the top of that test for your dialect and point it at your engine.
+CI additionally runs mkit-sql's own studio-side suites against *this* `store.tcl` (contract, integration, locking, commit
+failure, damaged files, power loss, checksum attestation, review regressions) on the pinned commit - which must pass, and
+on its newest commit - which may fail and is the early warning that the two repositories have drifted apart.
+What was found when the two were put together, and what is still different: [`docs/mkit-sql-integration.md`](docs/mkit-sql-integration.md).
 
 ## License
 
@@ -155,6 +166,8 @@ Every row below is something that was actually run; the CI badge-of-truth is the
 Tests (all in `tests/`):
 
 - `lint.tcl` - no proc shadows a Tcl/Tk command, ASCII-only sources, no 8.6-only commands, no unguarded X11-only keysyms
+- `test_engine_wiring.tcl` - mkit-sql is the engine behind the seam: its version is the vendored one, parse offsets and syntax-error codes
+  reach the editor, a statement's change lands in the store's open database and is committed, rolled back, locked and checksummed there
 - `test_mkql.tcl`, `engine_contract.tcl` - the built-in dialect and the engine contract
 - `test_engine_diff.tcl` - **thousands of random queries** (predicates, expressions, aggregates, grouping, ordering,
   limits) through the optimised executor and through the original simple one (`mkql_reference.tcl`); results must be
@@ -288,8 +301,7 @@ real processes for a free lock and for the same stale lock - half of them mkit-s
 then runs a chaos loop (eight processes, random SIGKILLs, mutual exclusion checked from inside: 0 violations in ~400
 acquisitions per run). Between them they found three real defects, all fixed: several processes could each "take over"
 the same stale lock; a process whose stale lock was deleted by a competitor at the wrong instant carried on *without any
-lock* (this one is also in mkit-sql - see [`docs/mkit-sql-integration.md`](docs/mkit-sql-integration.md) and the 7-line
-patch there); and a zombie (killed, not yet collected) counted as a live owner. mkit-sql implements the same published protocol;
+lock* (this one was in mkit-sql too and is fixed there in 0.4.0 - see [`docs/mkit-sql-integration.md`](docs/mkit-sql-integration.md)); and a zombie (killed, not yet collected) counted as a live owner. mkit-sql implements the same published protocol;
 an attempt of mine to change it unilaterally (`670fc86`) was caught by the interop job and reverted.
 
 The lock only protects cooperating programs - others that open the file ignore it - and relies on `O_EXCL`, which is
@@ -361,8 +373,8 @@ How the speed-ups work, and their limits:
   non-zero divisors, integer-only `%`, argument checks for functions). Anything else takes the plain path. The
   differential test enforces this: the optimised executor returns the same rows, values and types - and fails exactly
   when the simple one fails (it may name a different offending row in the message).
-- **These optimisations belong to the built-in dialect.** If you replace it with your own SQL engine (see below) its speed
-  is yours to design; `store.tcl` offers `select`, `fetch`, `fetchAt`, `column` and the cache for exactly that, and the
+- **These optimisations belong to the built-in dialect (`MKS_ENGINE=mkql`).** mkit-sql has its own planner, pushdown and
+  spilling (see its README for its measured scale); an engine of your own designs its own speed; `store.tcl` offers `select`, `fetch`, `fetchAt`, `column` and the cache for exactly that, and the
   engine seam lets any engine return a streaming `provider` instead of rows. The grid and the data editor don't depend on
   the query language at all.
 
@@ -378,10 +390,11 @@ equality is expressed as a numeric range. `mk::select -sort` is not stable. Each
 
 ```
 mkstudio.vfs/main.tcl                 entry point (starkit)
+mkstudio.vfs/lib/mkitsql/            mkit-sql, the SQL engine (vendored; SOURCE names the commit; tools/sync-mkitsql.sh)
 mkstudio.vfs/lib/app-mkstudio/
     store.tcl     the ONLY file that calls mk::*  (incl. the advisory write lock)
     engine.tcl    the query-language seam (documented contract)
-    mkql.tcl      built-in stand-in dialect: parser, binder, value semantics
+    mkql.tcl      the built-in dialect (stand-in and test reference; MKS_ENGINE=mkql): parser, binder, value semantics
     mkplan.tcl    its fast execution path: pushdown, compiled expressions, streaming aggregates, lazy results
     version.tcl   the version number (one place) and semantic-version comparison
     update.tcl    update check, checksum-verified download, self-replacement (no Tk)

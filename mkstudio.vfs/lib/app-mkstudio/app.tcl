@@ -696,7 +696,7 @@ proc ::app::newSample {} {
     afterDbChange
     ::explorer::expandDb $tag
     setStatus "Sample database '$tag' created: employees (with a skills subview), departments, products, orders (with a lines subview)." ok
-    set text "-- Sample database. Press F5 to run the whole script, or select a statement and press F5.\nSELECT TOP 10 name, title, salary\nFROM employees\nORDER BY salary DESC;\n\nSELECT dept, COUNT(*) AS people, ROUND(AVG(salary), 0) AS avg_salary\nFROM employees\nGROUP BY dept\nORDER BY avg_salary DESC;\n\n-- skills is a subview (a nested table in every row).\n-- Double-click a \u25B8 cell in the grid to open it.\nSELECT id, name, skills FROM employees WHERE skills >= 3;"
+    set text "-- Sample database. Press F5 to run the whole script, or select a statement and press F5.\nSELECT name, title, salary\nFROM employees\nORDER BY salary DESC\nLIMIT 10;\n\nSELECT dept, COUNT(*) AS people, ROUND(AVG(salary), 0) AS avg_salary\nFROM employees\nGROUP BY dept\nORDER BY avg_salary DESC;\n\n-- skills is a subview (a nested table in every row).\n-- Double-click a \u25B8 cell in the grid to open it.\nSELECT id, name, skills FROM employees WHERE skills >= 3;"
     set id [newQuery $text $tag 1]
 }
 
@@ -963,10 +963,10 @@ proc ::app::saveScript {{as 0} {id ""}} {
     set f [docFrame $id]
     set file $A(file,$id)
     if {$as || $file eq ""} {
-        set file [tk_getSaveFile -title "Save script" -defaultextension .mkql \
-            -initialfile [expr {$A(file,$id) ne "" ? [file tail $A(file,$id)] : "query.mkql"}] \
+        set file [tk_getSaveFile -title "Save script" -defaultextension .sql \
+            -initialfile [expr {$A(file,$id) ne "" ? [file tail $A(file,$id)] : "query.sql"}] \
             -initialdir [expr {$cfg(lastDir) ne "" && [file isdirectory $cfg(lastDir)] ? $cfg(lastDir) : [pwd]}] \
-            -filetypes {{{MKQL scripts} {.mkql .sql}} {{All files} *}}]
+            -filetypes {{{SQL scripts} {.sql .mkql}} {{All files} *}}]
         if {$file eq ""} { return 0 }
     }
     if {[catch {
@@ -985,7 +985,7 @@ proc ::app::openScript {} {
     variable A ; variable cfg
     set file [tk_getOpenFile -title "Open script" \
         -initialdir [expr {$cfg(lastDir) ne "" && [file isdirectory $cfg(lastDir)] ? $cfg(lastDir) : [pwd]}] \
-        -filetypes {{{MKQL scripts} {.mkql .sql .txt}} {{All files} *}}]
+        -filetypes {{{SQL scripts} {.sql .mkql .txt}} {{All files} *}}]
     if {$file eq ""} return
     if {[catch {
         set in [open $file r] ; fconfigure $in -encoding utf-8

@@ -250,7 +250,7 @@ proc ::qdoc::execute {id {parseOnly 0}} {
             message {
                 say $id "  \u2714  [dict get $res text]  \u00B7  $ms ms\n\n" ok
                 if {[dict exists $res use]} { setDb $id [dict get $res use] ; set db [dict get $res use] }
-                if {$kind in {insert update delete create drop alter commit rollback}} { set changed 1 }
+                if {$kind in {insert update delete merge create drop alter commit rollback}} { set changed 1 }
             }
         }
     }

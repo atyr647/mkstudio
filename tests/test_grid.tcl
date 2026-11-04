@@ -8,6 +8,8 @@ source $here/util.tcl
 set ::mkstudio_root [file join $here .. mkstudio.vfs]
 if {![info exists ::env(REAL_MK)]} { source $here/mock_mk4tcl.tcl } else { package require Mk4tcl }
 lappend auto_path $::mkstudio_root/lib
+# the grid's streaming-result tests need an engine that hands out a `provider`: the built-in dialect does (mkit-sql returns its rows)
+set ::env(MKS_ENGINE) mkql
 package require app-mkstudio
 set ::env(HOME) [tmp mks_home_grid] ; file mkdir $::env(HOME)
 ::app::main {}

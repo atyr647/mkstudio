@@ -1,87 +1,104 @@
-# mkit-sql and MK Studio: what was checked, what was found
+# mkit-sql in MK Studio: how it is wired, what was found, what is still different
 
-Checked against `atyr647/mkit-sql` at `fa3f77d` (benchmark) and `210c3b7` (protocol, contract, integration) and this repository. Everything below was measured or run, not read off
-a description. The mkit-sql checkout was only read; nothing was changed or pushed there.
+State described here: MK Studio with **mkit-sql 0.4.0** (`atyr647/mkit-sql` at `37847c1`) vendored in
+`mkstudio.vfs/lib/mkitsql`. Everything below was run, not read off a description.
 
-## 1. Do the two still fit? Yes
+## 1. How it is wired
 
-mkit-sql's own `tests/studio_contract.tcl` (38 checks) and `tests/studio_integration.tcl` (16 checks) pass against this
-checkout (Tcl 8.6.3, real Metakit), and so does `tests/locking.tcl` with `MKSTUDIO_DIR` set (75 checks at `210c3b7`). The CI job
-`interop` in `.github/workflows/build.yml` re-runs them on every push (non-blocking, because the other repository can
-change on its own).
+- **The engine is part of the starpack.** `mkstudio.vfs/lib/mkitsql/*.tcl` are copies of the files in mkit-sql's `mkitsql/`;
+  `mkstudio.vfs/lib/mkitsql/SOURCE` names version and commit. `tools/sync-mkitsql.sh <mkit-sql checkout>` updates the copy (and
+  refuses an uncommitted checkout: the copy must always name a real commit); `tools/sync-mkitsql.sh --check <checkout at that
+  commit>` fails on any difference, and CI runs it on every push. Nothing is fetched at build time.
+- **The loader chooses the engine** (`loader.tcl`): mkit-sql plus its `engine_studio.tcl` by default - which redefines
+  `::engine::parseScript` / `::engine::execute` and shares `::engine::cancel`, `maxRows` and `progressHook` with the engine's
+  loops, so the Stop button works inside it. `MKS_ENGINE=mkql` starts the program with the small built-in dialect instead (the
+  tests use it as a stand-in and reference, e.g. the grid's streaming-result tests).
+- **Storage is MK Studio's `store.tcl`.** mkit-sql notices `::store` and uses its `db_studio.tcl` adapter: one set of open
+  files, one lock, one commit protocol. A statement's change is a change in the open database; the toolbar's Commit / Roll Back
+  and SQL's `COMMIT` / `ROLLBACK` are the same mechanism.
+- **UI changes that came with it** (mkit-sql's `integration/mkstudio.patch`): script files default to `.sql`, the explorer
+  refreshes after `MERGE`, the sample script uses `LIMIT`, `store::dropView` empties a view before dropping it (Metakit's
+  `mk::view delete` leaves the rows behind: a table re-created under the same name came back with its old rows), the repairs in
+  `store::repairFile` only cut or restore a file when a valid Metakit footer ends where they are about to cut (a damaged
+  record must never make them throw real data away), and row reads go through a workaround for a list bug in Tcl 8.5 and
+  8.6.3 (rows whose first cell is text starting with `#`; healthy Tcl versions - including the 8.6.16 runtime the programs are
+  built on - skip it).
 
-## 2. Lock protocol: one real defect in both implementations (still in mkit-sql), and a correction of mine
+## 2. Conflicts, and how they were resolved
 
-**A correction first.** `docs/CONCURRENCY.md` at `3853497` defined the protocol as `pid host [role [endpoint]]`, mutex
-`<db>.lock.guard`, abandonment 5 s / 10 s. mkit-sql (now `210c3b7`) implemented exactly that "to the letter". In
-`670fc86` I then changed MK Studio on my own to `pid host start [role [endpoint]]`, `.lock.takeover` and 10 s / 30 s,
-because I had compared against an older mkit-sql checkout. That would have broken the agreement: a lock mkit-sql wrote
-with a role (`pid host server tcp://...`) would have read, on MK Studio's side, as a start time that does not match -
-"pid reused" - and **a live server's lock would have been taken over**. It is reverted: MK Studio follows the published
-protocol again, and reuses mkit-sql's pid-reuse test (a process that started after the lock file was written is not its
-owner), which needs no change to the line format. The CI `interop` job caught the mismatch when it ran against mkit-sql's
-newer code.
+- **The integration patch no longer applied.** It was written against an older `store.tcl`; since then `endCommit` has been
+  rewritten (the commit record is made harmless before it is deleted, a failed delete is reported). `git apply` failed on that
+  context; `git apply --3way` merged all four files cleanly and the result was checked by running the suites below. The patch
+  itself is now history: the changes are in MK Studio's own sources, and mkit-sql's `integration/install-into-mkstudio.sh` has
+  nothing left to do (see 4).
+- **Two commit-record rules, compatible.** After a finished commit MK Studio rewrites the record to describe the finished file,
+  then deletes it; mkit-sql empties a record it cannot delete. Either leaves a record that the other's `repairFile` ignores
+  (an empty or matching record is deleted, never acted on). The record formats are unchanged: `<header-hex16> <size>` or `empty 0`.
+- **`.sum`.** Same format (`<crc32> <size> <mtime>`); mkit-sql additionally re-stamps a sum whose size and time are the same
+  second as the last commit and refuses to open a file whose sum says "damaged" (MK Studio's UI instead offers *Restore Backup*
+  / *Open Anyway* at open time, before any statement runs; mkit-sql only meets the question when *it* opens a file).
+- **Locks.** Identical line format, guard name and limits (`docs/CONCURRENCY.md`, "Conformance"). Both resolve symbolic links,
+  both refuse to follow a lock that is not a plain file. Differences: see 3.
+- **The engine and the optimisations.** The built-in dialect's streaming `provider` results exist only there; mkit-sql returns
+  its rows. The grid handles both, which is why `tests/test_grid.tcl` pins `MKS_ENGINE=mkql` (it is testing the provider path)
+  while `tests/gui_logic.tcl` and `tests/test_engine_wiring.tcl` run on mkit-sql.
 
-**The defect (both implementations).** In `takeLock`, after a failed exclusive create the code treats "the file is not
-there" as "this folder cannot hold a lock" and returns "no lock needed" (mkit-sql: `if {[catch {::file lstat $lf st}]}
-{ return "" }`). When a competitor deletes the stale lock *between* the failed create and that check, the process opens the
-database **without a lock**, alongside the competitor that just took it. Reproduced by racing six processes for a stale
-lock: MK Studio 2 winners in 1 of 40 rounds; mkit-sql 2-3 winners in 3 of 60 rounds at `fa3f77d` and 1 of 60 at
-`210c3b7`. Fix: only a folder that refuses to create files means "run unlocked"; a vanished file means retry. MK Studio is
-fixed with a deterministic regression test (a hook deletes the lock at exactly that moment). The fix for mkit-sql is in
-`docs/mkit-sql-takelock.patch` (6 lines in `mkitsql/db.tcl`, against `210c3b7`): with it 60 stale-lock rounds were
-clean and mkit-sql's own `tests/locking.tcl` still passes (75 checks).
+## 3. What was run against what
 
-Other findings: both implementations treated a *zombie* (killed, not yet collected by its parent) as a live owner on
-Linux (`/proc/<pid>` still exists; MK Studio now checks the state letter - mkit-sql's `pidAlive` should too), and on
-macOS/BSD `kill -0` fails with "not permitted" for a live process of another user (MK Studio treats that as alive).
-`tests/test_lock_crash.tcl` kills a process at every step of acquiring, taking over and releasing and runs a chaos loop;
-it is worth running against mkit-sql's implementation too (replace `lock_crash_child.tcl`'s `store::` calls).
+Against **this** `store.tcl` (current runtime 8.6.16, the 2014 8.6.3 and 8.5.17 kits, Linux; Windows and macOS run the engine
+wiring and UI suites):
 
-## 3. Bulk mutation: two algorithms, same results, MK Studio's is as fast or faster
+| suite (mkit-sql's own, run with `MKIT_STORE` = this store.tcl) | result |
+|---|---|
+| `studio_contract` (38), `studio_integration` (16), `studio_listbug` (5), `studio_repair` (8) | pass |
+| `run` (586 engine tests), `review_regress` (141), `dropview` (34), `insertrows` (24) | pass |
+| `first_commit` (31), `commitfail` / `commitfail_records`, `damage` (70) | pass |
+| `attest` (13: `-verify` as a proof from MK Studio's `.sum`), `locking` (75), `lock_crash` (34) | pass |
+| `power_loss` (515 synthesised after-power-cut states) | pass |
 
-`tests/bench_mutation.tcl` runs identical statements on identical 200,000-row files through both engines (mkit-sql
-through MK Studio's store, as installed) and compares the resulting tables row by row (all identical):
+and MK Studio's `tests/test_engine_wiring.tcl` (29: engine identity and version, parse offsets and syntax-error codes for the
+editor, a statement's change in the store's open database, commit, checksum, lock, rollback, foreign-lock refusal),
+`tests/gui_logic.tcl` (64, on mkit-sql), `tests/test_lock_protocol.tcl` (mixed races with mkit-sql's implementation).
+CI repeats the studio-side suites on every push - on the pinned commit (must pass) and on mkit-sql's newest commit (may fail:
+early warning of drift).
 
-| statement | MK Studio (`store.tcl`) | mkit-sql (bulkMin 20000) | mkit-sql (bulkMin 1000) |
-|---|---|---|---|
-| `DELETE ... WHERE id % 2 = 1` (100,000 rows) | 4.5 s | 6.7 s | 7.5 s |
-| `DELETE ... WHERE id % 50 = 0` (4,000 rows) | 5.9 s | 23.6 s | 11.2 s |
-| `DELETE ... WHERE id > 190000` (contiguous) | 0.6 s | 0.4 s | 0.3 s |
-| `UPDATE ... SET name = name \|\| 'xx'` (all rows) | 6.9 s | 18.4 s | 19.0 s |
-| `UPDATE ... SET name = 'x' WHERE id % 20 = 0` | 6.8 s | 7.0 s | 11.9 s |
-| `UPDATE ... SET val = val + 1` (numbers, in place) | 4.2 s | 5.5 s | 5.4 s |
+## 4. Still different, and what to do in mkit-sql
 
-(One machine, one run each; treat differences under ~30% as noise. mkit-sql's 2.3 s for a half-delete in its README is
-a faster machine, not a different workload.)
+I could not push to `atyr647/mkit-sql` from this session (access was declined), so these are a patch, verified on a scratch copy
+of `37847c1` (`patch -p1 < docs/mkit-sql-protocol-sync.patch`; `syncdisk`, `locking`, `review_regress`, `first_commit`,
+`commitfail` pass afterwards):
 
-What the numbers say:
-- The row-rewrite step is not where mkit-sql loses time: with `bulkMin` at 1000 its 4,000-row delete improves 2x. The
-  break-even for rebuilding on this machine is about 1,000 changes, so `bulkMin = 20000` leaves a 20x range in which it
-  uses the quadratic path. Lowering it is the cheapest win.
-- `UPDATE name = name || 'xx'` stays ~18 s in mkit-sql at either threshold, so its cost is in the update pipeline
-  (spool + sort of the changed rows), not in the rebuild.
-- The two rebuild strategies differ: MK Studio appends the changed *tail* after the last row and removes the old tail with
-  one ranged delete (one copy, original untouched until the final step, cut back on failure); mkit-sql copies the whole
-  table to a scratch table, empties the original and copies back (two copies; scratch kept for recovery on failure). Both
-  are all-or-nothing and tested to produce identical tables.
+1. **A lock file that exists but cannot be read counts as free in mkit-sql** (`lockInfo`: the `open` failure is read as "vanished
+   meanwhile"). Another user's lock under a strict umask is then taken over. MK Studio: held. (The patch distinguishes by looking
+   whether the file is still there.)
+2. **mkit-sql's Windows flush is a no-op when the host is a GUI program** (`syncWindows` starts PowerShell directly). A Windows GUI
+   program has no console, Tcl then starts console programs without one, and PowerShell does nothing at all - exit status 0, no
+   output, no effect (measured on real `windows-latest` runners with the 2014 and the current tclkit). MK Studio had exactly this
+   bug in 1.0.0-rc.1; mkit-sql copied it, and `tests/syncdisk.tcl` only checks the return value, so it passes. Inside MK Studio
+   the integrated engine uses MK Studio's (fixed) flush; mkit-sql *standalone* in a console `tclsh` works, in a wish-based host it
+   does not. The patch starts PowerShell through `cmd /c` with `-EncodedCommand` (which also carries accented file names
+   intact; an environment variable did not) and makes the test require that a script really wrote a file.
+3. **`integration/install-into-mkstudio.sh`** fails (the patch is already applied) against an MK Studio that carries the
+   integration, and so does the CI step "The installer and patch apply to a fresh mkstudio checkout". The patch makes the
+   script say so and exit 0 when `mkstudio.vfs/lib/mkitsql/SOURCE` exists; that CI step can then stay or go.
+4. **mkit-sql's CI job `mkstudio`** checks out MK Studio's *default* branch. Until the work on this branch is merged there, that
+   job tests the older MK Studio. (Nothing was merged or opened as a pull request from here.)
+5. Not needed for correctness, noted: mkit-sql's pid-reuse check is Linux-only (MK Studio: also macOS and Windows) - the
+   stricter-only direction, so a dead process's lock can stay until removed by hand (MK Studio's dialog has *Remove Lock...*).
 
-**Recommendation:** keep one algorithm. In integrated mode mkit-sql already runs on `::store`; delegating
-`deleteRowsSmart` and the string-`UPDATE` write phase to `::store::deleteRows` / `::store::updateRows` (which choose
-in-place or tail rebuild at ~1,000 changes) removes the duplicate, and mkit-sql keeps its richer statement handling
-(spooled/sorted updates, scratch recovery messages) around it. Until then, set `bulkMin` to ~1000.
+## 5. The earlier bulk-mutation comparison
 
-## 4. Adopting the streaming-provider contract
+An earlier version of this file compared `DELETE` / `UPDATE` of 200,000-row tables between MK Studio's own engine and
+mkit-sql at `fa3f77d` (MK Studio's rebuild was as fast or faster; mkit-sql's `bulkMin = 20000` left a wide range on the
+quadratic path). mkit-sql 0.4.0 has changed since (a rebuild strategy for big deletes/updates, the `-glob` pushdown, a faster
+tokenizer); the numbers were not repeated and are dropped. `tests/bench_mutation.tcl` still runs both on identical files in CI
+and compares the resulting tables row by row.
 
-An engine may return `provider <command prefix>` instead of `rows` (documented in `engine.tcl`). Run any engine's
-providers through `tests/provider_contract.tcl`:
+## 6. Updating the vendored copy
 
-    source tests/provider_contract.tcl
-    provider_contract::run "mkit-sql" $factory $mutate $restore
+    git -C ../mkit-sql log -1                       # the commit you mean to take
+    tools/sync-mkitsql.sh ../mkit-sql                # copies, writes SOURCE
+    # run: tests/test_engine_wiring.tcl, tests/gui_logic.tcl, and CI's `interop` job (pinned) on the pushed commit
 
-`factory` returns `{provider expectedRows}` for a query, `mutate` changes the data behind it, `restore` undoes that.
-The suite checks slices, row ids, sorting (stable, every call), and the lifetime rules: stale after a change and then no
-rows, frozen keeps exactly what it had, destroyed providers are safe. It passes for MK Studio's built-in dialect
-(`tests/test_provider_contract.tcl`, 134 checks). Statements that change data should call `::mkql::lzFreezeAll` first (or
-mkit-sql's equivalent), and a result derived from live data must compare `::store::generation` (see
-`docs/CONCURRENCY.md`).
+An engine that is not mkit-sql can use the same seam: `docs` in `engine.tcl` is the contract, `tests/engine_contract.tcl` the
+check, and `tests/provider_contract.tcl` the conformance suite for streaming results.

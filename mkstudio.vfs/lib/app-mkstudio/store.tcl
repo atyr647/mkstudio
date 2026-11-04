@@ -196,6 +196,10 @@ proc ::store::readLock {path} {
 #   state    free | ours | stale | held       ("held": a live (or remote) other process owns it)
 #   pid host role endpoint                     (when there is a lock file)
 proc ::store::lockInfo {path} {
+    # a lock that is not a plain file (a link, a folder, a fifo) is never followed or read - and never ignored: held, by nobody we can name
+    if {![catch {file lstat [lockPath $path] st}] && $st(type) ne "file"} {
+        return [dict create state held pid 0 host unknown role "" endpoint "" text ""]
+    }
     set l [readLock $path]
     if {![file exists [lockPath $path]]} { return [dict create state free] }
     if {$l eq ""} {
@@ -648,6 +652,16 @@ proc ::store::endCommit {path} {
     }
     catch {sumWrite $path}
 }
+# Does a valid 16-byte Metakit footer end exactly at `end` (the state a committed file of that size has)?  The repairs below only
+# cut or restore a file when this holds for the state they restore: a damaged header (an offset that is too small, a record that
+# does not match) must never make them throw real data away.
+proc ::store::footerOkAt {path end} {
+    if {$end < 24 || $end > [file size $path]} { return 0 }
+    if {[catch {set h [open $path rb] ; set head [read $h 2] ; seek $h [expr {$end - 16}] start ; set tail [read $h 16] ; close $h}] || [string length $tail] != 16} { return 0 }
+    set fmt [expr {$head eq "JL" ? "I" : "i"}]
+    binary scan $tail $fmt$fmt$fmt$fmt w0 footPos w2 tocPos
+    return [expr {($w0 & 0xFFFFFFFF) == 0x80000000 && (($w2 >> 24) & 0xFF) == 0x80 && ($footPos & 0xFFFFFFFF) == $end - 16 && ($tocPos & 0xFFFFFFFF) < $end - 16}]
+}
 # Put right an interrupted commit.  Needs the write lock.  Returns "" (nothing to do) or what was done.
 proc ::store::repairFile {path} {
     set rec [commitRecord $path]
@@ -670,6 +684,9 @@ proc ::store::repairFile {path} {
                 file delete $rec                                      ;# the commit never wrote anything
                 return ""
             }
+            if {[file size $path] >= $size && ![footerOkAt $path $size]} {
+                return "Warning: an interrupted commit was found, but the file does not end in a valid footer where it should; nothing was changed."
+            }
             if {[file size $path] >= $size} {
                 set h [open $path r+b]
                 seek $h 0 start ; puts -nonewline $h [binary format H* $hex] ; flush $h
@@ -684,7 +701,7 @@ proc ::store::repairFile {path} {
         }
         file delete $rec
     }
-    if {$info ne "" && [dict get $info size] > [dict get $info offset]} {
+    if {$info ne "" && [dict get $info size] > [dict get $info offset] && [footerOkAt $path [dict get $info offset]]} {
         set h [open $path r+b] ; chan truncate $h [dict get $info offset] ; close $h
         return "The unfinished end of an interrupted commit was discarded."
     }
@@ -893,6 +910,48 @@ proc ::store::layout {path} {
 proc ::store::size   {path} { mk::view size $path }
 
 # -- reading rows ------------------------------------------------------------
+# Tcl 8.5 and 8.6.3 damage the string form of a list whose FIRST element is text starting with '#' that contains
+# two or more of the characters ] and " (stray blanks or bytes after the element, sometimes a different element
+# count).  A multi-property mk::get returns exactly such a list, so on those runtimes a row whose first cell is such text
+# came back damaged.  Detect the bug once and read one property at a time there (a single value is never a list).
+proc ::store::detectListBug {} {
+    foreach s [list "#\]\]x" "#\"\"x" "#\]\"x"] {
+        # a healthy Tcl writes a one-element list holding such text as {text}; the damaged routine adds stray bytes
+        if {[string range [list $s] 0 end] ne "\{$s\}"} { return 1 }
+    }
+    return 0
+}
+namespace eval ::store { variable listBug [::store::detectListBug] }
+# Can this element be written in braces?  (balanced braces, no backslash-newline, no backslash at the end)
+proc ::store::braceable {e} {
+    set n [string length $e] ; set depth 0
+    for {set i 0} {$i < $n} {incr i} {
+        switch -exact -- [string index $e $i] {
+            "\\" { if {$i + 1 >= $n || [string index $e [expr {$i + 1}]] eq "\n"} { return 0 } ; incr i }
+            "\{" { incr depth }
+            "\}" { if {[incr depth -1] < 0} { return 0 } }
+        }
+    }
+    return [expr {$depth == 0}]
+}
+# The string form of a list whose first element starts with '#', written the way a healthy Tcl writes it (first element in
+# braces when possible, else with backslashes) but built here, so the damaged routine is never used.  The result is a plain
+# string that reads back as the same list; any list whose first element does not start with '#' is returned unchanged.
+proc ::store::safeList {l} {
+    set e [lindex $l 0]
+    if {[string index $e 0] ne "#"} { return $l }
+    set head [string range [list x $e] 2 end]
+    set rest [string range [list x {*}[lrange $l 1 end]] 1 end]
+    if {[string index $head 0] eq "\{"} { set cand $head$rest } elseif {[::store::braceable $e]} { set cand "\{$e\}$rest" } else { set cand "\\$head$rest" }
+    if {[catch {expr {[llength $cand] == [llength $l] && [lindex $cand 0] eq $e}} ok] || !$ok} { return [string range [list x {*}$l] 2 end] }
+    return $cand
+}
+proc ::store::getRow {row props} {
+    set r {}
+    foreach p $props { lappend r [mk::get $row $p] }
+    return [::store::safeList $r]
+}
+
 # Fetch `count` rows starting at `first`, returning a list of value-lists in
 # the order of `props` (which must all be scalar properties).
 proc ::store::rows {path props first count} {
@@ -905,7 +964,13 @@ proc ::store::rows {path props first count} {
             lappend out {}
         } elseif {$one} {
             # a single property comes back unwrapped, so wrap it ourselves
-            lappend out [list [mk::get $path!$i [lindex $props 0]]]
+            if {$::store::listBug} {
+                lappend out [::store::safeList [list [mk::get $path!$i [lindex $props 0]]]]
+            } else {
+                lappend out [list [mk::get $path!$i [lindex $props 0]]]
+            }
+        } elseif {$::store::listBug} {
+            lappend out [::store::getRow $path!$i $props]
         } else {
             lappend out [mk::get $path!$i {*}$props]
         }
@@ -923,10 +988,18 @@ proc ::store::fetch {path props first count} {
         0 { for {set i $first} {$i <= $last} {incr i} { lappend out {} } }
         1 {
             set p [lindex $props 0]
-            for {set i $first} {$i <= $last} {incr i} { lappend out [list [mk::get $path!$i $p]] }
+            if {$::store::listBug} {
+                for {set i $first} {$i <= $last} {incr i} { lappend out [::store::safeList [list [mk::get $path!$i $p]]] }
+            } else {
+                for {set i $first} {$i <= $last} {incr i} { lappend out [list [mk::get $path!$i $p]] }
+            }
         }
         default {
-            for {set i $first} {$i <= $last} {incr i} { lappend out [mk::get $path!$i {*}$props] }
+            if {$::store::listBug} {
+                for {set i $first} {$i <= $last} {incr i} { lappend out [::store::getRow $path!$i $props] }
+            } else {
+                for {set i $first} {$i <= $last} {incr i} { lappend out [mk::get $path!$i {*}$props] }
+            }
         }
     }
     return $out
@@ -939,10 +1012,18 @@ proc ::store::fetchAt {path props indices} {
         0 { foreach i $indices { lappend out {} } }
         1 {
             set p [lindex $props 0]
-            foreach i $indices { lappend out [list [mk::get $path!$i $p]] }
+            if {$::store::listBug} {
+                foreach i $indices { lappend out [::store::safeList [list [mk::get $path!$i $p]]] }
+            } else {
+                foreach i $indices { lappend out [list [mk::get $path!$i $p]] }
+            }
         }
         default {
-            foreach i $indices { lappend out [mk::get $path!$i {*}$props] }
+            if {$::store::listBug} {
+                foreach i $indices { lappend out [::store::getRow $path!$i $props] }
+            } else {
+                foreach i $indices { lappend out [mk::get $path!$i {*}$props] }
+            }
         }
     }
     return $out
@@ -1167,6 +1248,11 @@ proc ::store::createView {tag name layout} {
 
 proc ::store::dropView {tag name} {
     if {![hasView $tag $name]} { error "View '$name' does not exist in '$tag'." }
+    # `mk::view delete` leaves the rows behind: a view created again under the same name would
+    # get its old rows back.  Empty it first - and let a failure abort the drop (no catch).
+    mk::view size $tag.$name 0
+    set left [mk::view size $tag.$name]
+    if {$left != 0} { error "Cannot drop '$name': $left rows could not be cleared." }
     mk::view delete $tag.$name
     touch $tag
 }

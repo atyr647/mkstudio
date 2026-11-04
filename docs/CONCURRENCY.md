@@ -68,7 +68,7 @@ Readers must ignore fields they don't know.
      Only a folder that will not let you create files at all (read-only, no permission) means "carry on without a
      lock". (Treating a vanished file as "read-only folder" lets two processes both think they own the database. It was
      found by `tests/test_lock_protocol.tcl` in MK Studio and is also in mkit-sql - patch:
-     `docs/mkit-sql-takelock.patch`.)
+     fixed in MK Studio and, since 0.4.0, in mkit-sql.)
    - **the file exists** - read and classify it:
      - **held** - another live process owns it, or it names another *host* (liveness of a remote process can't be
        checked, so it is always respected). Do not write. Report `pid host role endpoint` to the user.
@@ -95,6 +95,8 @@ component too) before it takes the lock, so `current.mk` (a link) and `real/sale
 for the same file and cannot be told from another file by name: inside one MK Studio process the same device and inode is refused
 ("already open"), but a different process opening a hard link of a database that is open elsewhere takes a different lock file.
 Do not hard-link databases.
+
+**Conformance - what both implementations do, and the differences left** (MK Studio's `store.tcl` and mkit-sql 0.4.0's `db.tcl`): the line format, the guard name and the 5 s / 10 s limits are identical and tested against each other (`tests/test_lock_protocol.tcl`); both resolve symbolic links before naming the lock, both refuse to follow or read a lock that is not a plain file (it counts as held), both re-check the lock inside the guard, both treat a pid that started after the lock file was written as not its owner (MK Studio on Linux, macOS and Windows; mkit-sql on Linux only - stricter systems never take a lock away, so this only makes mkit-sql keep a dead process's lock until it is removed by hand). One difference is a defect of mkit-sql 0.4.0: a lock file that exists but cannot be *read* counts there as free (MK Studio: held); `docs/mkit-sql-protocol-sync.patch` fixes it.
 
 **An unreadable lock is a held lock.** If `<database>.lock` exists but cannot be read (another user's file under a strict umask, a
 permissions problem) the database is treated as held by an owner that cannot be named - never as free.

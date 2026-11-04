@@ -241,6 +241,11 @@ jobs:
           REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.6.16-linux-x86_64 tests/test_grid.tcl
           REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.5.17-linux-x86_64 tests/test_grid.tcl
 
+      - name: mkit-sql wired in as the query language (real Metakit, Tcl 8.6 and 8.5)
+        run: |
+          for kit in tools/ext/tclkit-8.6.16-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+            REAL_MK=1 xvfb-run -a $kit tests/run.tcl tests/test_engine_wiring.tcl
+          done
       - name: UI logic (real Metakit, Tcl 8.6)
         run: REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.6.16-linux-x86_64 tests/gui_logic.tcl
       - name: UI logic (real Metakit, Tcl 8.5)
@@ -306,7 +311,7 @@ jobs:
         timeout-minutes: 25
         run: |
           fail=0
-          for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_durability test_crash test_update test_lock_protocol test_lock_crash test_grid gui_logic; do
+          for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_durability test_crash test_update test_lock_protocol test_lock_crash test_grid test_engine_wiring gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
             # forcing data to disk starts PowerShell twice per commit: only the durability test does it for real
             D=0; [ "$t" = test_durability ] && D=1
@@ -443,7 +448,7 @@ jobs:
         timeout-minutes: 15
         run: |
           fail=0
-          for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_durability test_crash test_update test_lock_protocol test_lock_crash test_grid gui_logic; do
+          for t in test_mkql engine_contract persist test_engine_semantics test_provider_lifecycle test_provider_contract test_engine_diff test_crash_safety test_power_loss test_durability test_crash test_update test_lock_protocol test_lock_crash test_grid test_engine_wiring gui_logic; do
             log="$RUNNER_TEMP/$t.log"; rm -f "$log"
             MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views MKS_TEST_LOG="$log" perl -e 'alarm 300; exec @ARGV' "$KIT" tests/run.tcl "tests/$t.tcl" || echo "(exit code $?)"
             if ! tail -1 "$log" 2>/dev/null | grep -q ' 0 failed'; then fail=1; fi
@@ -536,34 +541,64 @@ jobs:
   # window and will use the streaming-provider contract.  These checks run its own contract/integration tests
   # against THIS checkout, race its lock implementation against ours, and compare bulk-mutation speed.  They
   # report but do not block a release (the other repository can change on its own).
+  # mkit-sql (standard SQL) is MK Studio's query language and is VENDORED in mkstudio.vfs/lib/mkitsql at a known commit
+  # (tools/sync-mkitsql.sh).  `pinned` checks that copy, byte for byte, against that commit and runs mkit-sql's own studio-side
+  # suites (contract, integration, locking, commit/damage/power-loss/checksum, review regressions) against THIS store.tcl.
+  # `upstream` does the same against mkit-sql's newest commit and may fail: it is the early warning that the two repositories
+  # have drifted apart (then sync the copy, or fix the side that moved).
   interop:
-    needs: linux
+    needs: [linux, kit-linux]
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    continue-on-error: true
+    timeout-minutes: 45
+    continue-on-error: ${{ matrix.which == 'upstream' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        which: [pinned, upstream]
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: kit-linux
+          path: tools/ext
+      - name: Which mkit-sql commit
+        id: src
+        run: |
+          if [ "${{ matrix.which }}" = pinned ]; then echo "commit=$(sed -n 's/^commit //p' mkstudio.vfs/lib/mkitsql/SOURCE)" >> "$GITHUB_OUTPUT"; else echo "commit=" >> "$GITHUB_OUTPUT"; fi
       - uses: actions/checkout@v4
         with:
           repository: atyr647/mkit-sql
+          ref: ${{ steps.src.outputs.commit }}      # empty = the repository's default branch
           path: mkit-sql
       - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb && chmod +x tools/ext/tclkit-8.6.16-linux-x86_64
       - name: Fetch tclkit runtimes
         run: tools/fetch-runtimes.sh
+      - name: The vendored engine is byte for byte the pinned mkit-sql commit
+        if: matrix.which == 'pinned'
+        run: tools/sync-mkitsql.sh --check mkit-sql
       - name: Lock protocol - mixed races and crash points with mkit-sql's implementation
-        run: MKITSQL_DIR="$PWD/mkit-sql" REAL_MK=1 MKS_RACE_ROUNDS=3 tools/ext/tclkit-8.6.3-linux-x86_64 tests/run.tcl tests/test_lock_protocol.tcl
-      - name: mkit-sql's own lock tests, interoperating with this store.tcl
-        working-directory: mkit-sql
-        run: MKSTUDIO_DIR="$GITHUB_WORKSPACE" MKIT_MK4TCL=builtin "$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.3-linux-x86_64" tests/locking.tcl
-      - name: mkit-sql's MK Studio contract and integration tests, against this checkout
+        run: |
+          for kit in tools/ext/tclkit-8.6.16-linux-x86_64 tools/ext/tclkit-8.6.3-linux-x86_64; do
+            MKITSQL_DIR="$PWD/mkit-sql" REAL_MK=1 MKS_RACE_ROUNDS=3 $kit tests/run.tcl tests/test_lock_protocol.tcl
+          done
+      - name: mkit-sql's studio-side suites, against this store.tcl (current runtime and the 2014 one)
         working-directory: mkit-sql
         run: |
-          KIT="$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.3-linux-x86_64"
-          MKSTUDIO_DIR="$GITHUB_WORKSPACE" MKIT_MK4TCL=builtin "$KIT" tests/studio_contract.tcl
-          MKSTUDIO_DIR="$GITHUB_WORKSPACE" MKIT_MK4TCL=builtin xvfb-run -a "$KIT" tests/studio_integration.tcl
+          export MKSTUDIO_DIR="$GITHUB_WORKSPACE" MKIT_MK4TCL=builtin
+          export MKIT_STORE="$GITHUB_WORKSPACE/mkstudio.vfs/lib/app-mkstudio/store.tcl"
+          for kit in "$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.16-linux-x86_64" "$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.3-linux-x86_64"; do
+            echo "=== $kit"
+            for t in studio_contract studio_listbug studio_repair attest locking lock_crash first_commit commitfail commitfail_records damage review_regress dropview insertrows run; do
+              echo "--- $t"; "$kit" tests/$t.tcl
+            done
+            echo "--- studio_integration"; xvfb-run -a "$kit" tests/studio_integration.tcl
+          done
+      - name: mkit-sql's power-loss suite, against this store.tcl
+        working-directory: mkit-sql
+        run: MKSTUDIO_DIR="$GITHUB_WORKSPACE" MKIT_MK4TCL=builtin MKIT_STORE="$GITHUB_WORKSPACE/mkstudio.vfs/lib/app-mkstudio/store.tcl" "$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.16-linux-x86_64" tests/power_loss.tcl
       - name: Bulk mutation, MK Studio vs mkit-sql (identical workloads, results must be identical)
-        run: MKITSQL_DIR="$PWD/mkit-sql" REAL_MK=1 tools/ext/tclkit-8.6.3-linux-x86_64 tests/bench_mutation.tcl 100000
+        run: MKITSQL_DIR="$PWD/mkit-sql" REAL_MK=1 tools/ext/tclkit-8.6.16-linux-x86_64 tests/bench_mutation.tcl 100000
 
   # ---------------------------------------------------------------- installers that can be built anywhere
   package:
@@ -660,7 +695,7 @@ jobs:
           echo "installer: install, upgrade, run, uninstall all fine"
 
   release:
-    needs: [linux, windows, macos, package, windows-installer]
+    needs: [linux, windows, macos, package, windows-installer, interop]
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     runs-on: ubuntu-latest
     env:
