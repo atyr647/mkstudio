@@ -21,7 +21,7 @@ proc childOut {script args} {
     return [lindex [split $d "\n"] end]
 }
 set childN 0
-proc step {what} { puts "  .. $what" }
+proc step {what} { puts "  .. $what" ; flush stdout }
 proc slurp {f} { set h [open $f rb] ; set d [read $h] ; close $h ; return $d }
 proc spit {f d} { set h [open $f wb] ; puts -nonewline $h $d ; close $h }
 set dir [tmp mks_wide_[pid]] ; file delete -force $dir ; file mkdir $dir
@@ -136,8 +136,11 @@ step "the column guard"
 set ::store::wideCap 1                      ;# switch the guard on whatever the library, for this part
 set ::store::maxColumnBytes 20000 ; set ::store::guardSlack 0
 set g $dir/guard.mk
+step "guard: creating the file"
 set db [store::openFile $g -create]
+step "guard: creating the table"
 store::createView $db t {k:I s:S b:B}
+step "guard: appending rows until refused"
 set blob [string repeat x 999]
 set n 0 ; set code ""
 for {set i 0} {$i < 40} {incr i} {
@@ -148,20 +151,26 @@ ok "a column past its limit is refused with COLUMNFULL" [expr {[lrange $code 0 1
 ok "the refusal comes near the limit" [expr {$n >= 19 && $n <= 20}] $n
 ok "the refused row was not added" [expr {[store::size $db.t] == $n}]
 ok "the message names the column" [string match "*Column s*" $m] $m
+step "guard: setCell"
 set rc [catch {store::setCell $db.t 0 s [string repeat y 999]} m2 opts2]
 ok "setCell is checked" [expr {$rc && [lrange [dict get $opts2 -errorcode] 0 1] eq {STORE COLUMNFULL}}] $m2
 ok "other columns are unaffected" [expr {![catch {store::setCell $db.t 0 b small}]}]
+step "guard: updateRows"
 set rc [catch {store::updateRows $db.t [dict create 0 [list s [string repeat z 999]]]} m3 opts3]
 ok "updateRows is checked" [expr {$rc && [lrange [dict get $opts3 -errorcode] 0 1] eq {STORE COLUMNFULL}}] $m3
+step "guard: commit"
 store::commit $db
 ok "still refused after a commit" [catch {store::appendRow $db.t {k s} [list 99 $blob]}]
+step "guard: rollback"
 store::rollback $db
+step "guard: closing"
 store::closeFile $db
 set ::store::maxColumnBytes 2147483647 ; set ::store::guardSlack 4194304
 set ::store::wideCap $cap
 # the guard costs nothing when the library is a stock one
 if {!$cap} { ok "no guard bookkeeping with a stock Mk4tcl" [expr {[array size ::store::guardBase] == 0}] [array names ::store::guardBase] }
 
+step "deleting the folder"
 file delete -force $dir
-puts "wide: $pass passed, $fail failed"
+puts "wide: $pass passed, $fail failed" ; flush stdout
 exit [expr {$fail ? 1 : 0}]
