@@ -1,0 +1,76 @@
+name: probe
+# Throwaway measurements that decide whether some open items are worth doing at all.  Started by hand; not part of the product.
+on:
+  workflow_dispatch:
+jobs:
+  kit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: kit-out/tclkit-8.6.16-windows-x86_64.exe
+          key: kit-windows-${{ hashFiles('tools/build-kit.sh') }}
+          fail-on-cache-miss: true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: probe-kit
+          path: kit-out/tclkit-8.6.16-windows-x86_64.exe
+
+  # Is real crash-consistency testing (device-mapper write logs, power cut at any write) possible on a hosted runner at all?
+  linux-devicemapper:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          uname -r; id -u; sudo -n true && echo "sudo: yes"
+          sudo modprobe dm_log_writes 2>&1 | tail -2; sudo modprobe dm_flakey 2>&1 | tail -2; sudo modprobe dm_snapshot 2>&1 | tail -1
+          echo "--- loaded dm modules"; lsmod | grep -E '^dm_' || true
+          echo "--- dmsetup targets"; sudo dmsetup targets 2>&1 | head -20 || true
+          echo "--- loop devices"; sudo losetup -f 2>&1; ls /dev/loop* 2>/dev/null | head -3; ls /dev/mapper 2>&1 | head
+          echo "--- try: a loop device with a dm-flakey mapping and a filesystem on it"
+          set -x
+          truncate -s 64M /tmp/img && L=$(sudo losetup --show -f /tmp/img) && echo "loop=$L"
+          S=$(sudo blockdev --getsz "$L")
+          sudo dmsetup create probe-flakey --table "0 $S flakey $L 0 3600 0" && echo "flakey mapping created"
+          sudo mkfs.ext4 -q /dev/mapper/probe-flakey && sudo mkdir -p /mnt/probe && sudo mount /dev/mapper/probe-flakey /mnt/probe && echo "mounted" && df -h /mnt/probe | tail -1
+          sudo dmsetup create probe-log --table "0 $S log-writes $L $L" 2>&1 | tail -2 || true
+          sudo umount /mnt/probe 2>/dev/null; sudo dmsetup remove probe-flakey probe-log 2>/dev/null; sudo losetup -d "$L" 2>/dev/null
+          echo "--- tools"; which replay-log xfs_io fsx 2>&1 | head; apt-cache policy xfstests 2>/dev/null | head -3
+
+  # Can one long-lived PowerShell serve all the flushes of a session, and how fast is it?  (Windows saves take ~1 s longer today.)
+  windows-flush-helper:
+    needs: kit
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: probe-kit
+          path: kit-out
+      - run: |
+          log="$RUNNER_TEMP/probe.log"; rm -f "$log"
+          MKS_TEST_LOG="$(cygpath -w "$log")" timeout 240 kit-out/tclkit-8.6.16-windows-x86_64.exe tests/run.tcl tests/probe_win_flush.tcl || true
+          cat "$log"
+
+  # How often does the power-loss suite fail on the Macs, and what is different when it does?  (One failure in about eight runs so far.)
+  macos-power-soak:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: kitcreator/tclkit-8.6.16
+          key: tclkit-${{ matrix.os }}-8.6.16-aqua-v2
+          fail-on-cache-miss: true
+      - run: |
+          KIT="$GITHUB_WORKSPACE/kitcreator/tclkit-8.6.16"; chmod +x "$KIT"; export KIT
+          tests/probe_power_soak.sh 1 14 two_views
+          tests/probe_power_soak.sh 20 24 edit_one_cell,add_column,two_views
