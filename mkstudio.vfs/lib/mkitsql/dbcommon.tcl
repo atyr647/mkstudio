@@ -38,6 +38,7 @@ proc ::mkitsql::db::rebuildColumn {path oldName newName newType} {
     restructure $path [concat $base [list $Nw]]
 }
 proc ::mkitsql::db::copyColumn {path from to type} {
+    variable wideCap
     set n [size $path]
     for {set i 0} {$i < $n} {incr i} {
         set v [mk::get $path!$i $from]
@@ -45,7 +46,8 @@ proc ::mkitsql::db::copyColumn {path from to type} {
             I - L { if {![string is integer -strict $v]} { set v [expr {[string is double -strict $v] ? entier($v) : 0}] } }
             F - D { if {![string is double -strict $v]} { set v 0 } }
         }
-        mk::set $path!$i $to $v
+        if {$wideCap eq "1"} { guardWrite $path [list $to] [list $v] }
+        if {[catch {mk::set $path!$i $to $v} err opts]} { sizeFault $path $err $opts }
     }
 }
 
@@ -292,62 +294,148 @@ proc ::mkitsql::db::nearLimit {tag {fraction 0.9}} {
 }
 
 # ---- the column guard (the 64-bit Metakit only) ------------------------------------------------------------------------------------
-# One column of a view (all its values together) is limited to 2^31-1 bytes whatever the size of the file, and Metakit ENDS THE PROGRAM
-# when an edit grows a column past it (there is no way to report an error from the middle of an edit).  With the 2 GiB file limit gone
-# nothing else would stop a big table first, so before a row is appended or a cell changed the column is checked.  A column is never
-# larger than the file plus what has been written since the last commit, so the check costs nothing until that sum nears the limit; then
-# the size of the column is counted once (fixed-width types: rows x width; text and blobs: a pass over the column) and kept up to date
-# for the rest of the session (deletes are not subtracted: the count only errs on the safe side).
+# What fills a column (limit 2^31-1 bytes), from the Metakit source (format.cpp): every value of a text or blob property lives in ONE shared
+# column, except that a COMMIT moves each value of more than 10,000 bytes (and, in tables of very many rows, smaller ones) out into a column of
+# its own, which has the limit alone.  So the shared column holds
+#     everything written since the last commit (whatever the size)   +   the committed values that are small (at most 10,000 bytes).
+# A blob column can therefore hold many times 2 GiB as long as it is committed now and then (tests/widebig.tcl writes 2.1 GiB into one);
+# the guard counts exactly that and no more:
+#   guardPc   per column: bytes written since the last commit        guardPb   the part of them in values over 10,000 bytes (gone at the commit)
+#   guardIn   per column: the committed small values, found by one pass over the column the first time it matters, kept up to date after
+# A column is never larger than the file plus what has been written since the last commit, so none of this is looked at until that sum nears
+# the limit (one counter per file is all that a normal import pays).  The per-column counters are only kept ("tracking") once a transaction has
+# written more than 1/16 of the limit, or once a column has been counted; the bytes written before that are known only as a total, which
+# bounds every column (guardTrack($tag) is that total, -1 while not tracking).  Deletes are not subtracted: the count errs on the safe side.
 namespace eval ::mkitsql::db {
-    variable guardBase ; variable guardPend ; variable guardCol ; variable guardSlack 4194304
-    array set guardBase {} ; array set guardPend {} ; array set guardCol {}
+    variable guardBase ; variable guardPend ; variable guardTrack ; variable guardSlack 4194304 ; variable guardSmall 10000
+    variable guardPc ; variable guardPb ; variable guardIn ; variable guardTy
+    array set guardBase {} ; array set guardPend {} ; array set guardTrack {} ; array set guardPc {} ; array set guardPb {} ; array set guardIn {} ; array set guardTy {}
 }
-# the handle `tag` was opened, committed, rolled back or restructured: size of the file now, nothing pending
+# the handle `tag` was opened, committed, rolled back or restructured: the size of the file now, nothing pending
 proc ::mkitsql::db::guardReset {tag {forget 0}} {
-    variable guardBase ; variable guardPend ; variable guardCol
+    variable guardBase ; variable guardPend ; variable guardTrack ; variable guardPc ; variable guardPb ; variable guardIn ; variable guardTy
     if {![wideCapable]} return
     set p [expr {[catch {path $tag} x] ? "" : $x}]
     set guardBase($tag) [expr {$p ne "" && [::file exists $p] ? [::file size $p] : 0}]
     set guardPend($tag) 0
-    if {$forget} { array unset guardCol [list $tag *] }
+    if {!$forget && [info exists guardTrack($tag)] && $guardTrack($tag) == 0} {
+        # committed, and every write since the last commit was counted per column: the small ones stay in their column, the big ones went to
+        # columns of their own
+        foreach k [array names guardIn $tag.*] {
+            set small [expr {[info exists guardPc($k)] ? $guardPc($k) : 0}]
+            if {[info exists guardPb($k)]} { incr small -$guardPb($k) }
+            incr guardIn($k) $small
+        }
+    } else {
+        array unset guardIn $tag.*                       ;# opened, rolled back, restructured, or not counted exactly: counted again when it matters
+    }
+    if {$forget} { array unset guardTy $tag.* }
+    array unset guardPc $tag.* ; array unset guardPb $tag.*
+    set guardTrack($tag) [expr {[llength [array names guardIn $tag.*]] ? 0 : -1}]      ;# columns that are kept up to date are tracked from the start
 }
 proc ::mkitsql::db::guardForget {tag} {
-    variable guardBase ; variable guardPend ; variable guardCol
-    unset -nocomplain guardBase($tag) guardPend($tag)
-    array unset guardCol [list $tag *]
+    variable guardBase ; variable guardPend ; variable guardTrack ; variable guardPc ; variable guardPb ; variable guardIn ; variable guardTy
+    unset -nocomplain guardBase($tag) guardPend($tag) guardTrack($tag)
+    array unset guardPc $tag.* ; array unset guardPb $tag.* ; array unset guardIn $tag.* ; array unset guardTy $tag.*
 }
-# `path` is tag.view; `props` the columns about to receive `values`
+# `path` is tag.view (or tag.view!row.sub...); `props` the columns about to receive `values`.  Raises MKIT COLUMNFULL, with nothing counted, when a
+# value would not fit; otherwise counts what is written.
 proc ::mkitsql::db::guardWrite {path props values} {
-    variable guardBase ; variable guardPend ; variable guardCol ; variable maxColumnBytes ; variable guardSlack
+    variable guardBase ; variable guardPend ; variable guardTrack ; variable maxColumnBytes ; variable guardSlack
     set tag [lindex [split $path .] 0]
     if {![info exists guardBase($tag)]} { guardReset $tag }
     set add 0
     foreach v $values { incr add [expr {[string bytelength $v] + 1}] }
-    incr guardPend($tag) $add
-    if {$guardBase($tag) + $guardPend($tag) + $guardSlack < $maxColumnBytes} return
-    if {[string first ! $path] >= 0} return                   ;# a subview of one row: its columns are small by construction
-    foreach p $props v $values { guardColumn $path $tag $p [expr {[string bytelength $v] + 1}] }
+    set sum [expr {$guardPend($tag) + $add}]
+    if {$guardTrack($tag) < 0 && $sum < $maxColumnBytes / 16 && $guardBase($tag) + $sum + $guardSlack < $maxColumnBytes} {
+        set guardPend($tag) $sum                                ;# the usual case: that is all there is to do
+        return
+    }
+    guardWriteSlow $path $tag $props $values $add
 }
-proc ::mkitsql::db::guardColumn {path tag prop add} {
-    variable guardCol ; variable maxColumnBytes ; variable guardSlack
-    set key [list $tag $path $prop]
-    if {![info exists guardCol($key)]} {
+proc ::mkitsql::db::guardWriteSlow {path tag props values add} {
+    variable guardBase ; variable guardPend ; variable guardTrack ; variable guardPc ; variable guardPb
+    variable maxColumnBytes ; variable guardSlack ; variable guardSmall
+    set lens {}
+    foreach v $values { lappend lens [expr {[string bytelength $v] + 1}] }
+    set sub [expr {[string first ! $path] >= 0}]                ;# a subview of one row: its columns are small by construction
+    if {$guardTrack($tag) < 0 && $guardPend($tag) + $add >= $maxColumnBytes / 16} { set guardTrack($tag) $guardPend($tag) }
+    if {!$sub && $guardBase($tag) + $guardPend($tag) + $add + $guardSlack >= $maxColumnBytes} {
+        foreach p $props n $lens { guardCheck $path $tag $p $n }
+    }
+    incr guardPend($tag) $add
+    if {$sub || $guardTrack($tag) < 0} return
+    foreach p $props n $lens {
+        incr guardPc($path,$p) $n
+        if {$n > $guardSmall + 1} { incr guardPb($path,$p) $n }
+    }
+}
+# would `n` more bytes in column `prop` of `path` still fit?
+proc ::mkitsql::db::guardCheck {path tag prop n} {
+    variable guardPend ; variable guardTrack ; variable guardPc ; variable guardPb ; variable guardIn ; variable guardTy
+    variable maxColumnBytes ; variable guardSlack ; variable guardSmall
+    set key $path,$prop
+    if {![info exists guardTy($key)]} {
         set type S
         foreach c [layout $path] { if {[lindex $c 0] eq $prop} { set type [lindex $c 1] } }
-        set rows [mk::view size $path]
-        switch -- $type {
-            I - F { set total [expr {$rows * 4}] }
-            L - D { set total [expr {$rows * 8}] }
-            default { set total 0 ; for {set i 0} {$i < $rows} {incr i} { incr total [expr {[string bytelength [mk::get $path!$i $prop]] + 1}] } }
+        set guardTy($key) $type
+    }
+    set type $guardTy($key)
+    set rows [mk::view size $path]
+    # what has been written since the last commit and may be in this column: counted per column, or - before tracking began - all of it
+    if {$guardTrack($tag) >= 0} {
+        set pend [expr {$guardTrack($tag) + ([info exists guardPc($key)] ? $guardPc($key) : 0)}]
+    } else {
+        set pend $guardPend($tag)
+    }
+    set why ""
+    if {$type in {I F}} { set used [expr {($rows + 1) * 4}] ; set why "$rows rows of 4 bytes" } \
+    elseif {$type in {L D}} { set used [expr {($rows + 1) * 8}] ; set why "$rows rows of 8 bytes" } \
+    else {
+        set inl [expr {$rows * ($guardSmall + 1)}]                    ;# no more than this can be small values that are already in the column ...
+        if {$inl + $pend + $n + $guardSlack >= $maxColumnBytes} {     ;# ... and only when that might matter are they counted
+            if {![info exists guardIn($key)]} {
+                set total 0
+                for {set i 0} {$i < $rows} {incr i} {
+                    set len [string bytelength [mk::get $path!$i $prop]]
+                    if {$len <= $guardSmall} { incr total [expr {$len + 1}] }
+                }
+                if {$guardTrack($tag) == 0} {
+                    # (counted per column from the start of the transaction) the pass also saw the small values written since the last commit,
+                    # which `pend` counts as well
+                    set small [expr {[info exists guardPc($key)] ? $guardPc($key) : 0}]
+                    if {[info exists guardPb($key)]} { incr small -$guardPb($key) }
+                    set total [expr {max(0, $total - $small)}]
+                } elseif {$guardTrack($tag) < 0 && $guardPend($tag) == 0} {
+                    set guardTrack($tag) 0                            ;# nothing written yet: from here on every write is counted per column
+                }
+                set guardIn($key) $total
+            }
+            set inl $guardIn($key)
         }
-        set guardCol($key) [list $total $type]
+        set used [expr {$inl + $pend + $n}]
+        set why "$inl bytes of small values that stay in it, $pend written since the last save"
     }
-    lassign $guardCol($key) total type
-    if {$type in {I F}} { set add 4 } elseif {$type in {L D}} { set add 8 }
-    if {$total + $add + $guardSlack > $maxColumnBytes} {
-        return -code error -errorcode [list MKIT COLUMNFULL $path $prop] "Column $prop of [lindex [split $path .] 1] would grow past the limit of one Metakit column (2 GiB less one byte; $total bytes are used): a database FILE can be larger, one column cannot. Split the table (by year, say) or keep large values outside the database."
+    if {$used + $guardSlack > $maxColumnBytes} {
+        set view [lindex [split $path .] 1]
+        return -code error -errorcode [list MKIT COLUMNFULL $path $prop] "Column $prop of $view would grow past the limit of one Metakit column (2 GiB less one byte): it would hold about $used bytes ($why).\n\nMetakit moves each value of more than 10,000 bytes into a place of its own when the database is saved, so SAVE (commit) now and try again. If the column is full of small values, split the table (by year, say) or keep large values outside the database. A database FILE can be larger than 2 GiB, one column of small values cannot."
     }
-    set guardCol($key) [list [expr {$total + $add}] $type]
+}
+# The Metakit with 64-bit file positions answers an edit that would take ONE column past 2^31-1 bytes with an error (Mk4tcl: "a column would
+# grow to N bytes, more than the limit ...") instead of ending the program (before its "size errors", commit 2e2e482, it ended the program).
+# That edit was not made, but what it was part of may have been half done, so Metakit marks the storage: it can be looked at and rolled back, and
+# every commit fails until it is.  The guard above stops the edits it knows about before they get that far.  `taint` remembers the mark so that a
+# commit is refused at once (no commit record, no checksum removed) and rollback clears it.
+namespace eval ::mkitsql::db { variable taint ; array set taint {} }
+proc ::mkitsql::db::sizeFault {path err opts} {
+    if {![string match "a column would grow to *" $err]} { return -options $opts $err }
+    set tag [lindex [split $path .!] 0]
+    markTaint $tag                                       ;# (each back end keeps the mark where its own commit looks)
+    set view [lindex [split [lindex [split $path !] 0] .] 1]
+    return -code error -errorcode [list MKIT COLUMNFULL $path ""] "An edit in '$tag' would make one column of '$view' larger than Metakit can hold (2 GiB less one byte). The edit was refused.\n\nAnything this statement had already changed is still pending, so the database cannot be saved now: ROLLBACK returns to the last saved state. A database FILE can be larger than 2 GiB, one column cannot: split the table (by year, say) or keep large values outside the database."
+}
+proc ::mkitsql::db::taintedError {tag} {
+    return -code error -errorcode [list MKIT TAINTED] "'$tag' cannot be committed: an edit was refused because one column would have grown past the limit of a Metakit column (2 GiB less one byte), and what was changed before it cannot be told apart from what was not.\n\nROLLBACK discards the uncommitted changes and returns to the last committed state."
 }
 
 # ---- the checksum file (<file>.sum, MK Studio's format), read safely: shared by both storage layers ------------------------------------

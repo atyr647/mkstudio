@@ -1,8 +1,10 @@
 # A database file past 2 GiB, through MK Studio's store, on the Metakit with 64-bit file positions (https://github.com/atyr647/metakit).
-# Needs about 4.5 GB of free disk and a few minutes; skipped (exit 0) with a Mk4tcl that cannot hold such a file.
+# Needs about 5 GB of free disk, 2 GB of memory and a few minutes; skipped (exit 0) with a Mk4tcl that cannot hold such a file.
 #   TCLLIBPATH=<dir with Mk4tcl/pkgIndex.tcl> tclsh tests/test_widebig.tcl
 # What it shows: commits cross 2 GiB (the first wide commit rewrites the header; every later one appends its tails), the file stays readable and
-# writable, every value is still the one written, one COLUMN still cannot pass 2 GiB and is refused cleanly (Metakit would end the program), a
+# writable, every value is still the one written, ONE blob column holds more than 2 GiB (Metakit moves each big value out of the shared column
+# when it is committed), about 2 GiB of values written without a commit in one column are refused cleanly (by the column guard first; with the guard
+# off Metakit's own error is turned into the same refusal and the storage can then only be rolled back), a
 # process killed in the middle of a commit leaves a file that opens as one commit or the other (the commit record puts it right), and a program
 # whose Mk4tcl cannot read wide files refuses it.
 package require Mk4tcl
@@ -58,23 +60,60 @@ ok "a new process opens it and counts" [string match "1500 rows 101499" $out] $o
 set out [childOut $here/wide_child.tcl $f]
 ok "MKS_WIDE=0 refuses the file" [string match "refused STORE WIDEFILE" $out] $out
 
-# ---- one column cannot pass 2 GiB: b1 holds about 1.5 GiB, so about 500 more MiB fit ----
+# ---- ONE blob column holds more than 2 GiB: at every commit Metakit moves each big value into a column of its own, so only what was written
+# ---- since the last commit has to fit into the shared column.  b1 has 1500 MiB; 600 more, committed every 50 rows, take it past 2^31 bytes.
 set db [store::openFile $f]
 set store::durable 0
-set added 0 ; set code ""
-for {set i 0} {$i < 900} {incr i} {
-    if {[catch {store::appendRow $db.t {k b1} [list [expr {200000 + $i}] [format %08d [expr {200000 + $i}]]$pad]} m opts]} { set code [dict get $opts -errorcode] ; break }
-    incr added
-    if {$added % 50 == 0} { store::commit $db }
+set refused 0 ; set code ""
+for {set i 0} {$i < 600} {incr i} {
+    if {[catch {store::appendRow $db.t {k b1} [list [expr {200000 + $i}] [format %08d [expr {200000 + $i}]]$pad]} m opts]} { incr refused ; set code [dict get $opts -errorcode] ; break }
+    if {($i + 1) % 50 == 0} { store::commit $db }
 }
-ok "the column was refused before Metakit could end the program (COLUMNFULL after $added MiB)" [expr {[lrange $code 0 1] eq {STORE COLUMNFULL}}] $code
-ok "the refusal is near 2 GiB" [expr {$added > 400 && $added < 560}] $added
-ok "the other column is fine" [expr {![catch {store::appendRow $db.t {k b2} [list 1 small]}]}]
 store::commit $db
+ok "one blob column takes more than 2 GiB when it is committed now and then (refused after $i MiB: $code)" [expr {!$refused}] $code
+set rows [store::size $db.t]
+ok "its rows are all there ($rows)" [expr {$rows == 2100 + 0}] $rows
+set b1bytes [expr {($rows - 0) * 1048576}]
+ok "b1 holds more than 2^31 bytes ($b1bytes)" [expr {$b1bytes > 2147483647}]
+set bad 0
+foreach i {0 700 1499 1500 1501 1799 2099} {
+    set v [mk::get $db.t!$i b1] ; set want [expr {$i < 1500 ? $i : 200000 + $i - 1500}]
+    if {[string range $v 0 7] ne [format %08d $want] || [string length $v] != 1048576} { incr bad ; puts "row $i: [string range $v 0 7] [string length $v]" }
+}
+ok "rows on both sides of the 2 GiB mark are intact" [expr {$bad == 0}] $bad
+
+# ---- what has NOT been committed all lives in the shared column, so about 2 GiB of uncommitted values in one column are refused (by the guard,
+# ---- before anything is changed); the other columns are not affected
+set pending 0 ; set code ""
+for {set i 0} {$i < 2100} {incr i} {
+    if {[catch {store::appendRow $db.t {k b3} [list [expr {400000 + $i}] [format %08d [expr {400000 + $i}]]$pad]} m opts]} { set code [dict get $opts -errorcode] ; break }
+    incr pending
+}
+ok "the column guard refuses about 2 GiB of uncommitted values in one column (COLUMNFULL after $pending MiB)" [expr {[lrange $code 0 1] eq {STORE COLUMNFULL}}] $code
+ok "...near 2 GiB ($pending MiB)" [expr {$pending > 2030 && $pending < 2048}] $pending
+ok "...with a message that says to save" [string match "*SAVE (commit)*" $m] [string range $m 0 200]
+ok "the other column is fine" [expr {![catch {store::appendRow $db.t {k b2} [list 1 small]}]}]
+# the real error: with the guard switched off Metakit itself refuses the edit that would pass the limit (since 2e2e482 with an error, not by
+# ending the program); the storage can then only be rolled back
+set saveSlack $::store::guardSlack ; set ::store::guardSlack -2000000000
+set mkcode "" ; set mkmsg "" ; set more 0
+for {set i 0} {$i < 12} {incr i} {
+    if {[catch {store::appendRow $db.t {k b3} [list [expr {500000 + $i}] [format %08d [expr {500000 + $i}]]$pad]} mkmsg opts]} { set mkcode [dict get $opts -errorcode] ; break }
+    incr more
+}
+set ::store::guardSlack $saveSlack
+ok "Metakit's own refusal (after $more more MiB) is a COLUMNFULL error" [expr {[lrange $mkcode 0 1] eq {STORE COLUMNFULL}}] "$mkcode / [string range $mkmsg 0 80]"
+ok "...and the program is still alive to say so" 1
+set rc [catch {store::commit $db} m opts]
+ok "a commit is refused until the changes are rolled back" [expr {$rc && [dict get $opts -errorcode] eq {STORE TAINTED}}] "$rc $m"
+ok "the file was not touched by that commit" [expr {![file exists $f.commit]}]
+store::rollback $db
+ok "after Roll Back the table is as it was committed" [expr {[store::size $db.t] == $rows}] "[store::size $db.t] vs $rows"
+ok "...and a commit with new rows works again" [expr {![catch {store::appendRow $db.t {k b2} [list 2 again]}] && ![catch {store::commit $db} m]}] $m
 set rows [store::size $db.t]
 store::closeFile $db
 set db [store::openFile $f -readonly]
-ok "after the refusal the file reopens with every row" [expr {[store::size $db.t] == $rows}] "[store::size $db.t] vs $rows"
+ok "after all that the file reopens with every row" [expr {[store::size $db.t] == $rows}] "[store::size $db.t] vs $rows"
 store::closeFile $db
 
 # ---- a process killed in the middle of a commit (Unix only) ----
@@ -114,7 +153,7 @@ if {$::tcl_platform(platform) eq "unix"} {
     set store::durable 0
     set n 0
     while {[file size $base] < 1.89 * $GiB} {
-        for {set j 0} {$j < 50} {incr j} { store::appendRow $db.t [list k [lindex {b1 b2 b3} [expr {$n % 3}]]] [list $n "[format %08d $n]$pad"] ; incr n }   ;# (spread: one column cannot pass 2 GiB)
+        for {set j 0} {$j < 50} {incr j} { store::appendRow $db.t [list k [lindex {b1 b2 b3} [expr {$n % 3}]]] [list $n "[format %08d $n]$pad"] ; incr n }   
         store::commit $db
     }
     store::closeFile $db

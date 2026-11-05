@@ -106,6 +106,8 @@ proc ::mkitsql::db::repairedNote {tag} { if {[llength [info commands ::store::re
 proc ::mkitsql::db::closeFile {tag} { variable level ; variable state ; unset -nocomplain level($tag) state($tag) ; ::store::closeFile $tag ; ::mkitsql::typeForget $tag ; ::mkitsql::db::guardForget $tag }
 proc ::mkitsql::db::commit {tag} {
     if {[catch {::store::commit $tag} err opts]} {
+        # refused before anything was written (an edit that would have passed Metakit's column limit was refused): nothing to put right, ROLLBACK is the way on
+        if {[lrange [dict get $opts -errorcode] 0 1] eq {STORE TAINTED}} { return -code error -errorcode [list MKIT TAINTED] $err }
         # a failed commit (a full disk, Metakit's 2 GiB limit): put the file right if this store can, discard the pending changes, and
         # say what happened - the handle must not be used on to a file Metakit may have left half written
         set path [::store::path $tag] ; set note ""
@@ -124,6 +126,8 @@ proc ::mkitsql::db::commit {tag} {
         return -code error -errorcode [list MKIT COMMITFAILED $size] "The commit failed ($err) - most likely the size limit of a Metakit file (2 GiB; a Mk4tcl built for big files has no such limit) or a full disk. The database file was put back to its last committed state where possible and the changes made since then were discarded (as ROLLBACK does). $note"
     }
 }
+# a column that would pass Metakit's limit: the store (which commits and rolls back here) keeps the mark
+proc ::mkitsql::db::markTaint {tag} { set ::store::taint($tag) 1 }
 proc ::mkitsql::db::rollback {tag} { ::store::rollback $tag ; guardReset $tag 1 }
 proc ::mkitsql::db::layout {path} { ::store::layout $path }
 proc ::mkitsql::db::size {path} { ::store::size $path }

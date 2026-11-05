@@ -6,7 +6,8 @@ name: metakit-fork
 #   * a database file past 2 GiB is made, edited, killed in the middle of commits (also the one that crosses 2 GiB) and reopened (tests/test_widebig.tcl),
 #   * the block-level crash test (a real file system, the power cut after every write) runs on it,
 #   * a Linux tclkit is built WITH it (tools/build-kit.sh, METAKIT_SRC) and the same suites run on that.
-# The shipped programs still use the stock Metakit; this shows what switching would (not) break.  Runs on request, every Monday, and when MK Studio's
+# The shipped programs carry the vendored copy of this fork (tools/vendor/METAKIT-FORK); this shows what its NEWEST commit would (not) break and warns when the
+# copy has fallen behind.  Runs on request, every Monday, and when MK Studio's
 # storage code or these files change.
 on:
   workflow_dispatch:
@@ -63,7 +64,7 @@ jobs:
             REAL_MK=1 EXPECT_WIDE=1 MKS_FUZZ=400 MKS_CRASH_TRIALS=8 MKS_RACE_ROUNDS=3 MKS_CHAOS_SECONDS=4 MKS_POWER_SCENARIOS=edit_one_cell,add_column,two_views xvfb-run -a tclsh8.6 tests/run.tcl "tests/$t.tcl" || { echo "FAILED: $t"; fail=1; }
           done
           exit $fail
-      - name: A database file past 2 GiB (about 4.5 GB of disk, a few minutes)
+      - name: A database file past 2 GiB (about 5 GB of disk and 2 GB of memory, a few minutes)
         run: EXPECT_WIDE=1 REAL_MK=1 tclsh8.6 tests/test_widebig.tcl
       - name: The block-level crash test on the fork (ext4)
         run: |

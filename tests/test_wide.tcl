@@ -160,7 +160,10 @@ set rc [catch {store::updateRows $db.t [dict create 0 [list s [string repeat z 9
 ok "updateRows is checked" [expr {$rc && [lrange [dict get $opts3 -errorcode] 0 1] eq {STORE COLUMNFULL}}] $m3
 step "guard: commit"
 store::commit $db
-ok "still refused after a commit" [catch {store::appendRow $db.t {k s} [list 99 $blob]}]
+# what was committed still counts: the 19-20 small values are in the column, so at most a row or two more fit
+set more 0 ; set cc ""
+for {set i 0} {$i < 5} {incr i} { if {[catch {store::appendRow $db.t {k s} [list 99 $blob]} m5 o5]} { set cc [dict get $o5 -errorcode] ; break } ; incr more }
+ok "still refused after a commit (after $more more rows)" [expr {[lrange $cc 0 1] eq {STORE COLUMNFULL} && $more <= 2}] "$cc / $more"
 step "guard: rollback"
 store::rollback $db
 step "guard: closing"
@@ -169,6 +172,50 @@ set ::store::maxColumnBytes 2147483647 ; set ::store::guardSlack 4194304
 set ::store::wideCap $cap
 # the guard costs nothing when the library is a stock one
 if {!$cap} { ok "no guard bookkeeping with a stock Mk4tcl" [expr {[array size ::store::guardBase] == 0}] [array names ::store::guardBase] }
+
+# ---- the error the fork gives for a column past its limit (its "size errors", 2e2e482): translated, the storage can only be rolled back ----
+# (a stand-in for mk::row / mk::set that fails the way Mk4tcl does, so this part runs with any Mk4tcl; tests/test_widebig.tcl gets the real error from the real library)
+step "the size error of the fork"
+set sizeMsg "a column would grow to 2147483700 bytes, more than the limit of 2147483647 bytes for a column: nothing can be committed until mk::file rollback has discarded the changes made since the last commit"
+set g2 $dir/fault.mk
+set db [store::openFile $g2 -create]
+store::createView $db t {k:I s:S}
+store::appendRow $db.t {k s} {1 one}
+store::commit $db
+set before [slurp $g2]
+store::appendRow $db.t {k s} {2 two}                 ;# a pending change made before the refused one
+set sizeOps {}
+foreach {what call} [list appendRow [list store::appendRow $db.t {k s} {3 three}] setCell [list store::setCell $db.t 0 s x] updateRows [list store::updateRows $db.t [dict create 0 {s y}]]] {
+    # the stand-in fails once, for the command that the store proc runs
+    if {$what eq "appendRow"} { rename ::mk::row ::mk::row_real ; proc ::mk::row args "error {$sizeMsg}" } else { rename ::mk::set ::mk::set_real ; proc ::mk::set args "error {$sizeMsg}" }
+    set rc [catch $call m opts]
+    if {$what eq "appendRow"} { rename ::mk::row {} ; rename ::mk::row_real ::mk::row } else { rename ::mk::set {} ; rename ::mk::set_real ::mk::set }
+    ok "$what: the size error is a COLUMNFULL error" [expr {$rc && [lrange [dict get $opts -errorcode] 0 1] eq {STORE COLUMNFULL}}] "$rc $m"
+    ok "$what: the message says what to do" [string match "*Roll Back*" $m] $m
+    ok "$what: the message does not talk of Mk4tcl commands" [expr {![string match "*mk::file*" $m]}] $m
+    set rc [catch {store::commit $db} m2 opts2]
+    ok "$what: a commit is refused at once (STORE TAINTED)" [expr {$rc && [dict get $opts2 -errorcode] eq {STORE TAINTED}}] "$rc $m2"
+    ok "$what: ... and says Roll Back" [string match "*Roll Back*" $m2] $m2
+    ok "$what: ... without touching the file, writing a commit record or removing the checksum" [expr {[slurp $g2] eq $before && ![file exists $g2.commit]}]
+}
+# an error that is not a size error comes through unchanged and taints nothing
+store::rollback $db
+rename ::mk::set ::mk::set_real ; proc ::mk::set args {error "some other failure"}
+set rc [catch {store::setCell $db.t 0 s x} m opts]
+rename ::mk::set {} ; rename ::mk::set_real ::mk::set
+ok "another error is passed on as it is" [expr {$rc && $m eq "some other failure" && [dict get $opts -errorcode] eq "NONE"}] "$m / [dict get $opts -errorcode]"
+store::appendRow $db.t {k s} {2 two}
+ok "...and does not stop a commit" [expr {![catch {store::commit $db} m]}] $m
+# a rollback lifts the mark
+rename ::mk::row ::mk::row_real ; proc ::mk::row args "error {$sizeMsg}"
+catch {store::appendRow $db.t {k s} {9 nine}}
+rename ::mk::row {} ; rename ::mk::row_real ::mk::row
+ok "tainted again" [catch {store::commit $db}]
+store::rollback $db
+ok "after Roll Back the file saves again" [expr {![catch {store::appendRow $db.t {k s} {3 three}} m] && ![catch {store::commit $db} m2]}] "$m $m2"
+ok "...with exactly the rows that were committed" [expr {[store::size $db.t] == 3}] [store::size $db.t]
+store::closeFile $db
+file delete $g2 $g2.commit $g2.sum $g2.lock $g2.bak
 
 step "deleting the folder"
 file delete -force $dir

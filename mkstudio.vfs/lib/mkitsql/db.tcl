@@ -386,12 +386,14 @@ proc ::mkitsql::db::closeFile {tag} {
     catch {mk::file close $tag}
     set i [lsearch -exact $tags $tag]
     if {$i >= 0} { set tags [lreplace $tags $i $i] }
-    unset -nocomplain file($tag) ro($tag) dirty($tag) ::mkitsql::db::repaired($tag) ::mkitsql::db::integrity($tag) ::mkitsql::db::level($tag)
+    unset -nocomplain file($tag) ro($tag) dirty($tag) ::mkitsql::db::repaired($tag) ::mkitsql::db::integrity($tag) ::mkitsql::db::level($tag) ::mkitsql::db::taint($tag)
     ::mkitsql::typeForget $tag                       ;# what Metakit remembers about column types dies with the open file
     guardForget $tag
 }
+proc ::mkitsql::db::markTaint {tag} { variable taint ; set taint($tag) 1 }
 proc ::mkitsql::db::commit {tag} {
-    variable dirty ; variable file
+    variable dirty ; variable file ; variable taint
+    if {[info exists taint($tag)]} { taintedError $tag }
     set record 0
     if {$dirty($tag) > 0} { set record [beginCommit $file($tag)] }
     if {[catch {mk::file commit $tag} err]} {
@@ -669,7 +671,7 @@ proc ::mkitsql::db::repairedNote {tag} { variable repaired ; if {[info exists re
 
 # Discard uncommitted work (newer Mk4tcl has `mk::file rollback`; otherwise reopen, which is safe with -nocommit).
 proc ::mkitsql::db::rollback {tag} {
-    variable dirty ; variable file ; variable ro
+    variable dirty ; variable file ; variable ro ; variable taint
     if {[catch {mk::file rollback $tag}]} {
         set opts {-nocommit}
         if {$ro($tag)} { lappend opts -readonly }
@@ -677,6 +679,7 @@ proc ::mkitsql::db::rollback {tag} {
         mk::file open $tag $file($tag) {*}$opts
     }
     set dirty($tag) 0
+    unset -nocomplain taint($tag)
     guardReset $tag 1
 }
 
@@ -773,14 +776,14 @@ proc ::mkitsql::db::appendRow {path props values} {
     if {$wideCap eq "1"} { guardWrite $path $props $values }
     set args {}
     foreach p $props v $values { lappend args $p $v }
-    set cur [mk::row append $path {*}$args]
+    if {[catch {mk::row append $path {*}$args} cur opts]} { sizeFault $path $cur $opts }
     touchPath $path
     return [lindex [split $cur !] end]
 }
 proc ::mkitsql::db::setCell {path idx prop value} {
     variable wideCap
     if {$wideCap eq "1"} { guardWrite $path [list $prop] [list $value] }
-    mk::set $path!$idx $prop $value
+    if {[catch {mk::set $path!$idx $prop $value} err opts]} { sizeFault $path $err $opts }
     touchPath $path
 }
 # highest index first, so the rest stay valid

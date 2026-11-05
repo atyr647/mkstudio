@@ -28,7 +28,7 @@ More screenshots: [`docs/screenshots/`](docs/screenshots/) (all captured from th
 
 ## The query language: standard SQL (mkit-sql), behind a pluggable seam
 
-Queries are **standard SQL** run by [mkit-sql](https://github.com/atyr647/mkit-sql) 0.4.1 (joins, CTEs incl. `WITH RECURSIVE`,
+Queries are **standard SQL** run by [mkit-sql](https://github.com/atyr647/mkit-sql) 0.4.2 (joins, CTEs incl. `WITH RECURSIVE`,
 window functions, `MERGE`, `LATERAL`, `ROLLUP/CUBE`, dates and intervals, bounded-memory spilling, `EXPLAIN`; the language is
 documented in its `docs/SQL.md`). It is **vendored** in [`mkstudio.vfs/lib/mkitsql`](mkstudio.vfs/lib/mkitsql) at a known commit
 (named in its `SOURCE` file; `tools/sync-mkitsql.sh` updates the copy and CI checks it byte for byte against that commit), so a
@@ -317,13 +317,19 @@ instead of the Metakit that KitCreator brings (`METAKIT=stock tools/build-kit.sh
 program has (`metakit 2.4.9.7 (files over 2 GiB: yes)`). A stock Metakit shown a wide file sees an **empty** database (and a commit would hide the
 data), so MK Studio still **refuses** a wide file when its own Metakit cannot read one (nothing is touched; the read-only and the editing open alike):
 that is what an older program, or one run on another Metakit, does. `store.tcl` probes the loaded library with a small wide file it builds
-itself, understands the wide frame in the repair of an interrupted commit, and guards the one limit the fork keeps - a single column (or memo) of
-2^31-1 bytes, which Metakit would otherwise answer by *ending the program* - by refusing the edit that would pass it (`STORE COLUMNFULL`).
-Verified in CI on every push, on **Linux, Windows and both Macs, with the starpack's own runtime**: every suite, and a real database of
-2.9 GiB through `store.tcl` - 30 commits of 100 MiB of blobs crossing 2 GiB, every value read back, a new process opening it, the column
-refused near 2 GiB, processes killed in 6 commits and in 5 commits that cross 2 GiB (each file holds one commit or the other, and later commits
-work: `tests/test_widebig.tcl`) - plus, every Monday (`metakit-fork.yml`), the fork's own tests (23,497 checks, including crashes after every
-single write) at the fork's newest commit, and the block-level crash test on a real file system. One workaround lives in this repository: the
+itself and understands the wide frame in the repair of an interrupted commit.
+
+*The column limit.* The file can be larger than 2 GiB; what is still limited to 2^31-1 bytes is the one **shared column** in which Metakit keeps the
+values of a text or blob property. Read from Metakit's source and checked on a real database: each commit moves every value of more than 10,000 bytes (in tables of
+very many rows, smaller ones too) out into a column of its own, so a blob column can hold many times 2 GiB as long as it is saved now and then - the tests put
+2.1 GiB into one. What the shared column does hold is everything written *since the last commit* plus the committed small values; an edit that would pass the
+limit is refused with a message that says to save (`STORE COLUMNFULL`), before anything is changed, and Metakit's own refusal (the fork since `2e2e482` raises an error
+where it used to end the program) is turned into the same message: the program then keeps the mark that the changes can only be rolled back, and refuses to save
+(`STORE TAINTED`) until **Roll Back**. Verified in CI on every push, on **Linux, Windows and both Macs, with the starpack's own runtime**: every suite, and a real database of
+2.9 GiB through `store.tcl` - 30 commits of 100 MiB of blobs crossing 2 GiB, every value read back, a new process opening it, one blob column taken past 2 GiB, 2 GiB of
+unsaved values in one column refused and Metakit's real refusal turned into the same message, processes killed in 6 commits and in 5 commits that cross 2 GiB (each file holds
+one commit or the other, and later commits work: `tests/test_widebig.tcl`) - plus, every Monday (`metakit-fork.yml`), the fork's own tests (23,636 checks, including crashes after every
+single write, a fuzz of random changes against a model, and damaged datafiles) at the fork's newest commit, and the block-level crash test on a real file system. One workaround lives in this repository: the
 fork's `tcl/mk4tcl.cpp` gives `Mk4tcl_Init` C++ linkage under KitCreator, and `build-kit.sh` makes it `extern "C"` (it belongs in the fork).
 
 **Limits - please read.** The result is "the last confirmed commit, or the one before it, never a mixture", *given* the

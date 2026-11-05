@@ -1,6 +1,6 @@
 # mkit-sql in MK Studio: how it is wired, what was found, what is still different
 
-State described here: MK Studio with **mkit-sql 0.4.1** (`atyr647/mkit-sql` at `c6e2c78`) vendored in
+State described here: MK Studio with **mkit-sql 0.4.2** (`atyr647/mkit-sql` at `13983e0`) vendored in
 `mkstudio.vfs/lib/mkitsql`. Everything below was run, not read off a description.
 
 ## 1. How it is wired
@@ -65,8 +65,8 @@ early warning of drift).
 
 ## 4. What was different, what was done in mkit-sql, what still is
 
-Everything that used to be a patch is now in mkit-sql itself (0.4.1, pushed to `atyr647/mkit-sql`, branch `ccr-f017368d-kguqg8`; it
-descends from the default branch, so it merges without a conflict) and vendored here:
+Everything that used to be a patch is now in mkit-sql itself (0.4.1; 0.4.2 corrects its column guard; pushed to `atyr647/mkit-sql`, branch `ccr-f017368d-kguqg8`; it
+descends from the default branch, so it merged without a conflict: the default branch `ccr-3d2b8703-pzg7dc` was fast-forwarded to `13983e0` on 2026-11-05) and vendored here:
 
 1. **A lock file that exists but cannot be read counted as free** (`lockInfo`: the `open` failure was read as "vanished meanwhile").
    Another user's lock under a strict umask was then taken over. Now held, as in MK Studio.

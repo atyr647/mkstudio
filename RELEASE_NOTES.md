@@ -32,15 +32,21 @@ checks (real power loss, first run on each system) that automation cannot do.
 - **Databases over 2 GiB.** The programs now contain the Metakit fork with 64-bit file positions
   ([atyr647/metakit](https://github.com/atyr647/metakit), an exact copy is kept in `tools/vendor/` and compiled into the Linux, Windows and macOS
   runtimes): a file is no longer limited to 2 GiB. Below 2 GiB the files are byte for byte the ones stock Metakit writes. CI creates a real
-  2.9 GiB database on each system through MK Studio (commits crossing 2 GiB, every value read back, processes killed mid-commit). One limit remains,
-  a single column of 2^31-1 bytes; an edit that would pass it is refused with a message instead of ending the program. A "wide" file (past 2 GiB) opened by
-  a program with a stock Metakit - an older MK Studio, another tool - would look empty and a save would hide the data; this version recognises
+  2.9 GiB database on each system through MK Studio (commits crossing 2 GiB, every value read back, processes killed mid-commit). A "wide" file (past 2 GiB)
+  opened by a program with a stock Metakit - an older MK Studio, another tool - would look empty and a save would hide the data; this version recognises
   such a file when its own Metakit cannot read it, says so and touches nothing. `mkstudio --info FILE` tells which Metakit a program has.
-- mkit-sql 0.4.1 (the lock fix, an unreadable lock counts as held, its Windows flush now runs, a licence file).
+- **What is still limited, and what is not.** A blob or text column can hold far more than 2 GiB - Metakit moves every value of more than 10,000 bytes out of the
+  shared column when the database is saved (a real test puts 2.1 GiB into one column). The shared column itself, which holds what was written since the last
+  save plus the small values, is limited to 2^31-1 bytes: an edit that would pass it is refused with a message that says to save, nothing is changed, and if Metakit
+  refuses an edit first (the fork now raises an error instead of ending the program) the database can only be rolled back - the program says so and offers **Roll Back**.
+  This also corrects the first version of the guard, which counted all the values of a column and refused at 2 GiB.
+- **The Metakit fork's own fixes since** (all in the bundled copy): size errors that can be recovered from, two Mk4tcl bugs (a property type kept for a view that
+  was gone; `mk::file aside` not detaching views), damaged datafiles no longer crash it (checked as they are read), more than one interrupted commit in the same file.
+- mkit-sql 0.4.2 (the lock fix, an unreadable lock counts as held, its Windows flush now runs, a licence file, the corrected column guard).
 
 ### Also new in rc.2 (since rc.1)
 
-- **Standard SQL.** The query window now runs [mkit-sql](https://github.com/atyr647/mkit-sql) 0.4.1: joins, CTEs including
+- **Standard SQL.** The query window now runs [mkit-sql](https://github.com/atyr647/mkit-sql) 0.4.2: joins, CTEs including
   `WITH RECURSIVE`, window functions, `MERGE`, `LATERAL`, `ROLLUP`/`CUBE`, dates and intervals, `EXPLAIN`, and bounded memory for big
   results. It runs on MK Studio's own storage layer, so a statement's change is saved, rolled back, locked and checksummed like any
   edit; the old built-in dialect stays available for the tests (`MKS_ENGINE=mkql`). The engine is part of the program (not

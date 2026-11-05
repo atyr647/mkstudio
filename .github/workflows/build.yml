@@ -276,7 +276,7 @@ jobs:
           for kit in tools/ext/tclkit-8.6.3-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
             echo "=== $kit"; EXPECT_WIDE=0 REAL_MK=1 $kit tests/test_wide.tcl
           done
-      - name: A database file past 2 GiB on the current runtime (about 4.5 GB of disk, a few minutes)
+      - name: A database file past 2 GiB on the current runtime (about 5 GB of disk and 2 GB of memory, a few minutes)
         run: EXPECT_WIDE=1 REAL_MK=1 tools/ext/tclkit-8.6.18-linux-x86_64 tests/test_widebig.tcl
       - name: Native flush library (mksync) - loads in every runtime, flushes, falls back
         run: |
@@ -406,7 +406,7 @@ jobs:
           for i in $(seq 1 30); do [ -s "$RUNNER_TEMP/info.txt" ] && break; sleep 1; done
           cat "$RUNNER_TEMP/info.txt"; grep -q '^flush native (FlushFileBuffers)' "$RUNNER_TEMP/info.txt"; grep -q '^metakit .*files over 2 GiB: yes' "$RUNNER_TEMP/info.txt"; grep -q '^sql mkit-sql ' "$RUNNER_TEMP/info.txt"
 
-      - name: A database file past 2 GiB on this runtime (the 64-bit Metakit; about 4.5 GB of disk)
+      - name: A database file past 2 GiB on this runtime (the 64-bit Metakit; about 5 GB of disk and 2 GB of memory)
         timeout-minutes: 30
         run: |
           log="$RUNNER_TEMP/widebig.log"; rm -f "$log"
@@ -516,7 +516,7 @@ jobs:
         run: |
           for f in "$RUNNER_TEMP"/*.log; do echo "=== $f"; cat "$f"; done
 
-      - name: A database file past 2 GiB on this runtime (the 64-bit Metakit; about 4.5 GB of disk)
+      - name: A database file past 2 GiB on this runtime (the 64-bit Metakit; about 5 GB of disk and 2 GB of memory)
         timeout-minutes: 30
         run: EXPECT_WIDE=1 perl -e 'alarm 1700; exec @ARGV' "$KIT" tests/run.tcl tests/test_widebig.tcl
 
