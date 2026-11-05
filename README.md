@@ -330,7 +330,8 @@ where it used to end the program) is turned into the same message: the program t
 unsaved values in one column refused and Metakit's real refusal turned into the same message, processes killed in 6 commits and in 5 commits that cross 2 GiB (each file holds
 one commit or the other, and later commits work: `tests/test_widebig.tcl`) - plus, every Monday (`metakit-fork.yml`), the fork's own tests (23,636 checks, including crashes after every
 single write, a fuzz of random changes against a model, and damaged datafiles) at the fork's newest commit, and the block-level crash test on a real file system. One workaround lives in this repository: the
-fork's `tcl/mk4tcl.cpp` gives `Mk4tcl_Init` C++ linkage under KitCreator, and `build-kit.sh` makes it `extern "C"` (it belongs in the fork).
+fork's `tcl/mk4tcl.cpp` gives `Mk4tcl_Init` C++ linkage under KitCreator, and `build-kit.sh` makes it `extern "C"`; the fix itself is on the fork's branch
+`mkstudio-c-linkage` (commit `e678a21`), and the workaround goes when that is in the branch the copy is taken from.
 
 **Limits - please read.** The result is "the last confirmed commit, or the one before it, never a mixture", *given* the
 model: pages reach the disk in any order, an 8-byte write is atomic (it lies in one sector), and `sync` really forces data

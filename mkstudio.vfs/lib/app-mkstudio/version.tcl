@@ -2,7 +2,7 @@
 #
 # A release is built from the git tag vX.Y.Z[-pre]; CI refuses to publish when the tag and this file disagree.
 namespace eval ::version {
-    variable current 1.0.0-rc.2
+    variable current 1.0.0-rc.3
     variable repo    atyr647/mkstudio
 }
 

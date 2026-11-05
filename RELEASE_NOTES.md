@@ -131,12 +131,13 @@ There is no code-signing certificate behind them. In practice:
   built-in dialect, which streams results of any size and caches sorts. `MKS_ENGINE=mkql` starts the program with that dialect;
   the README has the measured table.
 - Concurrent writers are kept apart by an advisory lock only (`docs/CONCURRENCY.md` lists what that does not cover: a hard link
-  to an open database, a process frozen for many seconds at exactly the wrong moment). On macOS-Intel the lock stress test
-  twice saw two processes inside at once under deliberately extreme load; the cause is not established.
+  to an open database, a process frozen for many seconds at exactly the wrong moment).
 - Power safety is tested with simulated power cuts and real kills, never with a real power cut (`docs/QA-CHECKLIST.md` has the
   manual test). A disk that lies about having written data cannot be helped.
-- Lock stress on CI runners (eight processes, random kills): no overlap in ~58,000 acquisitions on Linux and Apple silicon; on the
-  Intel Mac runner three in ~12,000 (details and the commit-time check that limits the damage: `docs/CONCURRENCY.md`).
+- Lock stress on CI runners (eight processes, random kills): rc.2 saw three overlaps in ~12,000 acquisitions on the Intel Mac runner; they were
+  the takeover race fixed in this release, which a test now reproduces on demand, and the stress runs since show none (`docs/CONCURRENCY.md` has the details
+  and the commit-time check that limits the damage if one ever happens).
+- Databases over 2 GiB are tested with a 2.9 GiB database on each system, not with terabytes, and the Metakit that holds them is a one-person fork of an
+  unmaintained library: the bundled copy is pinned and checked, and a weekly CI run tests the fork's newest commit against this program.
 - The programs are not signed or notarized (see above). Nobody has used this release for months yet.
-- mkit-sql's own repository still has the three open items listed in `docs/mkit-sql-integration.md` (a patch is provided); this
-  release does not depend on them.
+- mkit-sql's open items are closed: what used to be a patch is in mkit-sql itself (0.4.2), and this program carries that exact copy.

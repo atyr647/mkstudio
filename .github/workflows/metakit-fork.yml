@@ -15,6 +15,9 @@ on:
       ref:
         description: 'branch, tag or commit of atyr647/metakit to test'
         default: 'ccr-7001915e-qdjw33'
+      no_linkage_patch:
+        description: 'build the kit WITHOUT build-kit.sh giving the init functions C linkage (proves a fork that has the fix itself)'
+        default: 'false'
   schedule:
     - cron: '17 5 * * 1'
   push:
@@ -87,7 +90,7 @@ jobs:
         timeout-minutes: 60
         run: |
           mkdir -p kit-out
-          docker run --rm -v "$PWD":/src -w /src -e METAKIT_SRC=/src/metakit-fork quay.io/pypa/manylinux_2_28_x86_64 bash -c '
+          docker run --rm -v "$PWD":/src -w /src -e METAKIT_SRC=/src/metakit-fork -e KIT_NO_LINKAGE_PATCH=${{ github.event.inputs.no_linkage_patch == 'true' && '1' || '0' }} quay.io/pypa/manylinux_2_28_x86_64 bash -c '
             set -e
             yum install -y tcl autoconf automake libX11-devel libXft-devel fontconfig-devel freetype-devel libXext-devel libXrender-devel libXScrnSaver-devel
             git config --global --add safe.directory /src/metakit-fork
