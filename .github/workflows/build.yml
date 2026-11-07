@@ -203,6 +203,47 @@ jobs:
             kit-out/tclkit-8.6.18-windows-x86_64.exe
             kit-out/mksync-windows-x86_64.dll
 
+  # ---------------------------------------------------------------- Ribbon's kitfmt: is the vendored copy the pinned one?
+  # mkstudio.vfs/lib/kitfmt (and tests/kits) are copied from atyr647/ribbon at the commit SOURCE names (tools/sync-kitfmt.sh).
+  # Ribbon is a PRIVATE repository: this public workflow can read it only with a read-only token in the secret RIBBON_READ_TOKEN
+  # (a fine-grained token with Contents: read on atyr647/ribbon).  So the check has two halves:
+  #   - always, without Ribbon: every vendored file has the git blob id and SHA-256 that SOURCE recorded when it was copied
+  #     (a hand edit, a lost file, an extra file or a version that does not match fails here);
+  #   - with the token: those ids are the pinned commit's files in Ribbon itself, and a warning when Ribbon's kitfmt has moved on.
+  # Without the token the Ribbon half is skipped with a visible warning, never reported as a pass.
+  kitfmt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      RIBBON_READ_TOKEN: ${{ secrets.RIBBON_READ_TOKEN }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: The vendored kitfmt has the hashes it was pinned with (no Ribbon needed)
+        run: tools/sync-kitfmt.sh --verify
+      - name: Check out Ribbon (read-only, needs the secret RIBBON_READ_TOKEN)
+        id: ribbon
+        if: env.RIBBON_READ_TOKEN != ''
+        continue-on-error: true
+        uses: actions/checkout@v7
+        with:
+          repository: atyr647/ribbon
+          token: ${{ secrets.RIBBON_READ_TOKEN }}
+          path: ribbon
+          fetch-depth: 0              # the pinned commit need not be the newest one
+          sparse-checkout: kit/kitfmt
+      - name: Ribbon could not be read - the comparison with Ribbon itself is SKIPPED
+        if: steps.ribbon.outcome != 'success'
+        run: echo "::warning title=kitfmt not compared with Ribbon::atyr647/ribbon is private and not readable by this workflow, so only the recorded hashes were checked. Add a read-only token as the secret RIBBON_READ_TOKEN to compare the vendored kitfmt with Ribbon's pinned commit."
+      - name: The vendored kitfmt is byte for byte the pinned Ribbon commit
+        if: steps.ribbon.outcome == 'success'
+        run: tools/sync-kitfmt.sh --check ribbon
+      - name: Ribbon's newest kitfmt (early warning - re-sync when it has moved on)
+        if: steps.ribbon.outcome == 'success'
+        run: |
+          rc=0; tools/sync-kitfmt.sh --upstream ribbon || rc=$?
+          [ $rc -eq 2 ] && echo "::warning title=kitfmt has moved on in Ribbon::re-sync with tools/sync-kitfmt.sh"
+          [ $rc -le 2 ]
+
   # ---------------------------------------------------------------- Linux: test + build every starpack
   linux:
     needs: [kit-linux, kit-windows]
@@ -646,6 +687,12 @@ jobs:
       - name: The vendored engine is byte for byte the pinned mkit-sql commit
         if: matrix.which == 'pinned'
         run: tools/sync-mkitsql.sh --check mkit-sql
+      - name: mkit-sql's kit.* tests use the kitfmt this program carries (both pins name their files' hashes)
+        run: |
+          [ -f mkit-sql/tests/vendor/kitfmt/SOURCE ] || { echo "::notice title=no kitfmt pin in mkit-sql::this mkit-sql commit has no tests/vendor/kitfmt (older than its kit.* tables)"; exit 0; }
+          rc=0; tools/sync-kitfmt.sh --compare mkit-sql/tests/vendor/kitfmt/SOURCE || rc=$?
+          [ $rc -eq 2 ] && echo "::warning title=two kitfmt pins::MK Studio carries another kitfmt commit than mkit-sql tests against: sync one of them"
+          [ $rc -le 2 ]
       - name: Lock protocol - mixed races and crash points with mkit-sql's implementation
         run: |
           for kit in tools/ext/tclkit-8.6.18-linux-x86_64 tools/ext/tclkit-8.6.3-linux-x86_64; do
@@ -779,7 +826,7 @@ jobs:
           echo "installer: install, upgrade, run, uninstall all fine"
 
   release:
-    needs: [linux, windows, macos, package, windows-installer, interop]
+    needs: [kitfmt, linux, windows, macos, package, windows-installer, interop]
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
     runs-on: ubuntu-latest
     env:

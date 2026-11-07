@@ -1,3 +1,11 @@
 kitfmt 1.0.0
 commit 49fd4b0d7f7d9a21799ca58c16f2d3057db1c6dd
 repository https://github.com/atyr647/ribbon (kit/kitfmt)
+# file <git blob id at that commit> <SHA-256> <path in ribbon> <path here>   (tools/sync-kitfmt.sh --verify checks them)
+file 7aa4643b669e3fb93d824ddabd6f54a052730004 06500cd593f0b38cd5515d89dfbe88cc8400ef9857db8273dbffa0db7557a6fb kit/kitfmt/kitfmt.tcl mkstudio.vfs/lib/kitfmt/kitfmt.tcl
+file 80985b7e278624cfae7c1bd6ab6f94df754a9148 5ecb0e978fc1cd3d375cd1c970a071cd1e93b07653da29885859bc428a2e728e kit/kitfmt/sha256.tcl mkstudio.vfs/lib/kitfmt/sha256.tcl
+file 1eeb88ab5fea8bfc3f3bd9e5cdd8c3a4bb0825ba aa83e2405eb45668c9e5130ec8b34b3dd2460a1a4cb7b6465e19a52bfe98a3af kit/kitfmt/pkgIndex.tcl mkstudio.vfs/lib/kitfmt/pkgIndex.tcl
+file c5c1d75297ed9d1b3e48c3ebc5c42cd0db935ced fa5936cf6ebfee86f2b7a75bcf3b5fe3286fa106f0379e11d8f3a06f1139e3ed kit/kitfmt/tests/golden/app.kit tests/kits/app.kit
+file 890606170c853d8247f47ed8d193c1a32dee0f6a a305c0823e46274ee4e9563c4226671c4f0597b5af471ca55cfa43df154fac68 kit/kitfmt/tests/golden/app-header.kit tests/kits/app-header.kit
+file 8834268ccc3c4edc5aebe5931bbf86d508c35617 dbde73b9ca696eb6ced393f0d1d125e91c3cc8c2fb36a7f5ac1b29acce412280 kit/kitfmt/tests/golden/system.kit tests/kits/system.kit
+file c9a152d423bb9d7a756e63927ddbc05a5fd3d6fb da00379a9805c54660829237ab832363be60caf34c514e898d64cb9e143bbbbc kit/kitfmt/tests/golden/bad-chunk.kit tests/kits/bad-chunk.kit
