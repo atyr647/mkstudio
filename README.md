@@ -21,7 +21,8 @@ included) that you can copy anywhere and run.
   Kits are opened read-only and nothing is written next to them. The same kit is queryable as `kit.*` tables in SQL
 - **Add Column** - one click from the data editor, or in the **Designer** with rename, retype and drop (a renamed column keeps its position)
 - **Query windows** - standard SQL (mkit-sql: joins, CTEs, window functions, `MERGE`, ...), syntax highlighting, completion, Find,
-  multiple result tabs, cancel, error underlining. A result is limited to 100,000 rows in memory (the window says when it was cut);
+  multiple result tabs, cancel, error underlining. A bytes value in a result is shown from its size and first 10 bytes, which
+  are all that is read (selecting a 1 GB value does not load it). A result is limited to 100,000 rows in memory (the window says when it was cut);
   the built-in dialect (`MKS_ENGINE=mkql`) streams results of any size instead - see *Performance and limits*
 - **Commit / Roll Back** - files are opened `-nocommit`: nothing reaches disk until you commit
 - **Safety** - refuses files that aren't Metakit databases; Metakit data after a header (a starkit, a starpack, a kit) is found
@@ -35,7 +36,7 @@ More screenshots: [`docs/screenshots/`](docs/screenshots/) (all captured from th
 
 ## The query language: standard SQL (mkit-sql), behind a pluggable seam
 
-Queries are **standard SQL** run by [mkit-sql](https://github.com/atyr647/mkit-sql) 0.4.2 (joins, CTEs incl. `WITH RECURSIVE`,
+Queries are **standard SQL** run by [mkit-sql](https://github.com/atyr647/mkit-sql) 0.6.0 (joins, CTEs incl. `WITH RECURSIVE`,
 window functions, `MERGE`, `LATERAL`, `ROLLUP/CUBE`, dates and intervals, bounded-memory spilling, `EXPLAIN`; the language is
 documented in its `docs/SQL.md`). It is **vendored** in [`mkstudio.vfs/lib/mkitsql`](mkstudio.vfs/lib/mkitsql) at a known commit
 (named in its `SOURCE` file; `tools/sync-mkitsql.sh` updates the copy and CI checks it byte for byte against that commit), so a
@@ -44,7 +45,8 @@ protocol - a change made by a statement is a change in the open database, saved 
 
 The UI never parses query text. It talks to one small seam, [`engine.tcl`](mkstudio.vfs/lib/app-mkstudio/engine.tcl),
 which documents the exact contract (`::engine::parseScript`, `::engine::execute`, and the keyword / token /
-cancel variables); mkit-sql plugs in by redefining those two procs (`mkitsql/engine_studio.tcl`). The data grid and
+cancel variables, and `::engine::blobRef`: a bytes cell of a result may be a *reference* holding the size and the first
+`::engine::blobPreview` bytes instead of the value); mkit-sql plugs in by redefining those procs (`mkitsql/engine_studio.tcl`). The data grid and
 designer use `store.tcl` directly and don't depend on the language at all. `mkql.tcl`, the small dialect MK Studio started with,
 stays in the tree as a stand-in and a reference for the tests; start the program with `MKS_ENGINE=mkql` to use it.
 
@@ -193,7 +195,7 @@ Tests (all in `tests/`):
 - `test_provider_lifecycle.tcl`, `provider_contract.tcl` + `test_provider_contract.tcl` - the lifetime of streaming results
   and the cache (edits, restructuring, Roll Back, close/reopen, two databases, destroyed results; byte budget, LRU,
   multi-database eviction), and an engine-independent conformance suite any engine's providers can be run through
-- `persist.tcl`, `test_crash_safety.tcl`, `test_power_loss.tcl`, `test_lock_protocol.tcl`, `test_lock_crash.tcl` - persistence,
+- `persist.tcl` (also: a file that is not Metakit is refused before anything is written next to it), `test_crash_safety.tcl`, `test_power_loss.tcl`, `test_lock_protocol.tcl`, `test_lock_crash.tcl` - persistence,
   crash safety, power loss (synthesised and real-kill states, three ways of opening them), the write-lock protocol (incl. racing against mkit-sql's own implementation) and the lock under crashes (next section)
 - `test_mksync.tcl` - the native flush library: it loads through the same `pkgIndex.tcl` the starpack carries (into Tcl 8.5, 8.6.3 and the
   current runtime), flushes files and folders, skips a missing path, handles names with spaces, accents, CJK and brackets, a path beyond 260
@@ -212,7 +214,8 @@ Tests (all in `tests/`):
 - `test_grid.tcl` - the virtualised grid driven with real mouse and key events (100,000 rows in memory, a Metakit view,
   selection ranges, keyboard, sorting, the sort cache, editing in a scrolled grid, streaming results incl. staleness and
   freezing, empty results)
-- `gui_logic.tcl` - the UI logic incl. every popup menu and undo
+- `gui_logic.tcl` - the UI logic incl. every popup menu and undo, and the damaged-file dialogs (Restore Backup, Open Anyway); on real
+  Metakit and on the stand-in
 - `test_kit.tcl` - Ribbon kits: Metakit data after a header is recognised (a starkit, a kit) while text, a file with fake tails
   and a truncated kit stay refused; bytes cells and export read sizes and ranges, never the whole value (reads counted); the Kit tab
   on Ribbon's golden kits (tree, previews, manifest, verify in a child process incl. a damaged kit and Cancel, extraction, a system
@@ -220,7 +223,9 @@ Tests (all in `tests/`):
 - `verify_payload.tcl`, `smoke_starpack.sh`, and `shoot.tcl` for screenshots
 - what no test can do is in [`docs/QA-CHECKLIST.md`](docs/QA-CHECKLIST.md): the hour of manual checks before a release; what is still open, and whether it is worth doing: [`docs/OPEN-ITEMS.md`](docs/OPEN-ITEMS.md)
 
-A pure-Tcl `mk::` stand-in (`mock_mk4tcl.tcl`) lets most of the suite also run without Metakit; it is test-only.
+A pure-Tcl `mk::` stand-in (`mock_mk4tcl.tcl`) lets most of the suite also run without Metakit; it is test-only. Its files are a text
+dump without Metakit's header and tails, so the commit record and the repair of an interrupted commit (which work on that frame) are
+not exercised on it; the checksum and the backup are.
 
 ## Crash safety and locking
 
@@ -482,7 +487,8 @@ equality is expressed as a numeric range. `mk::select -sort` is not stable. Each
 mkstudio.vfs/main.tcl                 entry point (starkit)
 mkstudio.vfs/lib/mkitsql/            mkit-sql, the SQL engine (vendored; SOURCE names the commit; tools/sync-mkitsql.sh)
 mkstudio.vfs/lib/kitfmt/             kitfmt, Ribbon's reference reader for .kit files (vendored from atyr647/ribbon kit/kitfmt;
-                                     SOURCE names the commit; tools/sync-kitfmt.sh, which also copies its golden kits to tests/kits)
+                                     SOURCE names the commit and every copied file's git blob id and SHA-256; tools/sync-kitfmt.sh,
+                                     which also copies its golden kits to tests/kits; --verify checks the copies without Ribbon)
 mkstudio.vfs/lib/app-mkstudio/
     store.tcl     the ONLY file that calls mk::*  (incl. the advisory write lock)
     engine.tcl    the query-language seam (documented contract)

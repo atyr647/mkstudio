@@ -5,7 +5,7 @@
   beside its raw views: the manifest and seal, the file tree with sizes, codecs and chunk counts, previews (text, PNG/GIF, hex),
   **Verify** - every chunk, the image, the header and the root hash, in a separate process so that damaged data cannot take MK Studio
   down, with progress and Cancel - **Extract** (a file, a folder, everything), and a system kit's embedded image. It uses kitfmt,
-  Ribbon's reference reader, vendored at a pinned commit (`tools/sync-kitfmt.sh`). Signatures are shown as *unchecked*: Ribbon has
+  Ribbon's reference reader, vendored at a pinned commit whose files' hashes every build checks (`tools/sync-kitfmt.sh`). Signatures are shown as *unchecked*: Ribbon has
   no key infrastructure yet (trusted minisign keys can be given in `MKS_KIT_KEYS`).
 - **Metakit data after a header is found the way Metakit finds it, from the end of the file.** A starkit, starpack or kit used to
   be accepted only because Metakit happened to see views in it; one with an empty store was refused, and the safety checks
@@ -15,7 +15,16 @@
 - **Big bytes values are no longer loaded to be shown.** The grid shows a bytes cell from its size and first 10 bytes, the bytes
   viewer reads the 4 KiB it shows, Export streams the value in 1 MiB steps, and the column guard measures values by their size.
   (A 953 MB value used to take 29 s and a gigabyte of memory to show "<953... bytes>".)
-- **mkit-sql 0.5.0**: virtual tables, the `kit.*` tables, big blobs read only when a statement needs them, and a sort-merge join fix.
+- **Selecting big bytes values in a query no longer loads them.** A query result shows a bytes cell from its size and first 10
+  bytes, and now only those are read: `SELECT * FROM t` over a table of 1 GB values is as quick as over small ones (mkit-sql hands
+  the longer values out by reference; anything that compares or computes with them, and `CREATE TABLE ... AS SELECT` / `INSERT ...
+  SELECT`, still uses the whole value).
+- **Opening a file that is not a Metakit database leaves nothing behind.** It was refused, but a checksum file `<file>.sum` had
+  already been written next to it; the file is now checked before anything is written (lock, checksum, repair).
+- **The checksum is renewed by every save**, also of a file whose Metakit header could not be read: such a save used to leave the
+  previous checksum in place, which could later call the file damaged.
+- **mkit-sql 0.6.0**: virtual tables, the `kit.*` tables, big blobs read only when a statement needs them and handed out by
+  reference, a sort-merge join fix, and the same checksum fix.
 
 ## MK Studio 1.0.0-rc.3 - release candidate
 
