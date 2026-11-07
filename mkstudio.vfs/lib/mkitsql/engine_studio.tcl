@@ -27,3 +27,10 @@ set ::engine::tokenRe $::mkitsql::tokenRe
 
 proc ::engine::parseScript {text} { ::mkitsql::parseScript $text }
 proc ::engine::execute {handle defaultDb} { ::mkitsql::execStatement $handle $defaultDb }
+
+# Big bytes by reference.  A MK Studio whose engine.tcl declares ::engine::blobPreview shows a bytes cell of a result as its size and
+# that many first bytes, and asks ::engine::blobRef for references: a stored blob that a query selects as it is and that is longer
+# then comes back as a reference (::mkitsql::blobLimit), so selecting a 1 GB value does not load it.  An older MK Studio (no
+# blobPreview) gets whole values, as before.
+proc ::engine::blobRef {value} { ::mkitsql::blobRef $value }
+if {[info exists ::engine::blobPreview]} { ::mkitsql::blobLimit $::engine::blobPreview }

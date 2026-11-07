@@ -45,7 +45,13 @@ proc ::mkitsql::db::tags {} { variable tags ; return $tags }
 proc ::mkitsql::db::path {tag}     { variable file ; return $file($tag) }
 proc ::mkitsql::db::readonly {tag} { variable ro   ; return $ro($tag) }
 proc ::mkitsql::db::dirty {tag}    { variable dirty ; return $dirty($tag) }
-proc ::mkitsql::db::touch {tag}    { variable dirty ; incr dirty($tag) }
+proc ::mkitsql::db::touch {tag}    { variable dirty ; incr dirty($tag) ; touchGen $tag }
+# A number that changes whenever the data of an open file may have changed (every write, a rollback, a reopen) and is never
+# reused, also not by a file opened later under the same tag: a blob reference (::mkitsql::blobRef) remembers it and is refused
+# once it differs.  "" for a tag that is not open.
+namespace eval ::mkitsql::db { variable gen ; array set gen {} ; variable genSeq 0 }
+proc ::mkitsql::db::touchGen {tag} { variable gen ; variable genSeq ; set gen($tag) [incr genSeq] }
+proc ::mkitsql::db::generation {tag} { variable gen ; if {[info exists gen($tag)]} { return $gen($tag) } ; return "" }
 proc ::mkitsql::db::touchPath {path} { touch [lindex [split $path .!] 0] }
 
 # ---- advisory write lock ----------------------------------------------------------------------
@@ -371,6 +377,7 @@ proc ::mkitsql::db::openFile {path args} {
     set integrity($tag) $verdict ; set level($tag) $vlevel
     if {$repairNote ne ""} { variable repaired ; set repaired($tag) $repairNote }
     set file($tag) $path ; set ro($tag) $readonly ; set dirty($tag) 0
+    touchGen $tag
     wideCapable ; guardReset $tag 1                   ;# the library is probed here, never in the middle of a statement
     if {$readonly} {
         if {$holder ne ""} { set lockedBy($tag) $holder }
@@ -386,7 +393,7 @@ proc ::mkitsql::db::closeFile {tag} {
     catch {mk::file close $tag}
     set i [lsearch -exact $tags $tag]
     if {$i >= 0} { set tags [lreplace $tags $i $i] }
-    unset -nocomplain file($tag) ro($tag) dirty($tag) ::mkitsql::db::repaired($tag) ::mkitsql::db::integrity($tag) ::mkitsql::db::level($tag) ::mkitsql::db::taint($tag)
+    unset -nocomplain file($tag) ro($tag) dirty($tag) ::mkitsql::db::gen($tag) ::mkitsql::db::repaired($tag) ::mkitsql::db::integrity($tag) ::mkitsql::db::level($tag) ::mkitsql::db::taint($tag)
     ::mkitsql::typeForget $tag                       ;# what Metakit remembers about column types dies with the open file
     guardForget $tag
 }
@@ -394,8 +401,8 @@ proc ::mkitsql::db::markTaint {tag} { variable taint ; set taint($tag) 1 }
 proc ::mkitsql::db::commit {tag} {
     variable dirty ; variable file ; variable taint
     if {[info exists taint($tag)]} { taintedError $tag }
-    set record 0
-    if {$dirty($tag) > 0} { set record [beginCommit $file($tag)] }
+    set record 0 ; set began 0
+    if {$dirty($tag) > 0} { set record [beginCommit $file($tag)] ; set began 1 }
     if {[catch {mk::file commit $tag} err]} {
         if {!$record} { return -code error $err }
         lassign [commitFailed $tag $err] code msg
@@ -403,7 +410,9 @@ proc ::mkitsql::db::commit {tag} {
     }
     set dirty($tag) 0
     guardReset $tag
-    if {$record} { endCommit $file($tag) ; catch {sumWrite $file($tag)} }
+    if {$record} { endCommit $file($tag) }
+    # the checksum of the finished file, also when no record could describe it (beginCommit removed the old one either way)
+    if {$began} { catch {sumWrite $file($tag)} }
 }
 # Metakit stores a file's size in ONE 32-bit word and stops at 2 GiB: a commit that would cross it fails ("I/O error during
 # commit"), and - measured on real Metakit - may first have appended part of its data and even written the new header, leaving a
@@ -427,6 +436,7 @@ proc ::mkitsql::db::commitFailed {tag err} {
     set dirty($tag) 0
     ::mkitsql::typeForget $tag
     guardReset $tag 1
+    touchGen $tag
     set size [expr {[::file exists $path] ? [::file size $path] : 0}]
     set cause "a full disk or a write error"
     if {![wideCapable] && $size > $maxFileBytes / 2} { set cause "the size limit of a Metakit file ($maxFileBytes bytes = 2 GiB; this file is $size bytes) or a full disk" }
@@ -528,6 +538,10 @@ proc ::mkitsql::db::beginCommit {path} {
     } elseif {![::file exists $path] || [::file size $path] == 0} {
         set line "empty 0"
     } else {
+        # no record can describe this file (no Metakit header at offset 0), but the old sum must not outlive the commit either:
+        # next to a newer file of the same size and modification second it would call that file damaged (commit writes a new one)
+        catch {::file delete [sumPath $path]}
+        syncDisk $path
         return 0
     }
     set rec [commitRecord $path]
@@ -681,6 +695,7 @@ proc ::mkitsql::db::rollback {tag} {
     set dirty($tag) 0
     unset -nocomplain taint($tag)
     guardReset $tag 1
+    touchGen $tag
 }
 
 # Close and reopen the file (same tag, same lock): resets Metakit's memory of column types.  Only with nothing pending.
@@ -693,6 +708,7 @@ proc ::mkitsql::db::reopen {tag} {
     mk::file open $tag $file($tag) {*}$opts
     ::mkitsql::typeForget $tag
     guardReset $tag 1
+    touchGen $tag
 }
 # Before a view gets a layout: remember what it has now, and refuse (or reopen first) if the new layout would change the
 # type of a column that has already existed under that name (see dbcheck.tcl).

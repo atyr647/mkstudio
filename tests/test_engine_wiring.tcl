@@ -73,6 +73,35 @@ check rollback_restores [::store::size $tag.departments] 6
 # MERGE counts as a change for the UI (the patch in docs.tcl) - the kind list names it
 set src [read [set h [open $::mkstudio_root/lib/app-mkstudio/docs.tcl r]]] ; close $h
 ok ui_refreshes_after_merge [string match "*insert update delete merge create drop alter commit rollback*" $src]
+# big bytes in a query result: a value longer than the grid shows comes back as a reference (its size and first bytes); the
+# value is not read, and the grid shows it exactly as it shows the value itself
+check blob_preview_is_what_the_grid_shows $::engine::blobPreview 10
+check engine_hands_out_references [::mkitsql::blobLimit] 10
+::store::createView $tag pics {{name S {}} {data B {}}}
+set bigval [string repeat [binary format c* {0 1 2 3 254 255 65 66}] 131072]
+::store::appendRow $tag.pics {name data} [list small [binary format c* {1 2 3}]]
+::store::appendRow $tag.pics {name data} [list big $bigval]
+set ::bigReads 0
+rename ::mk::get ::mk::get_real
+proc ::mk::get {cursor args} {
+    if {[lindex $args 0] ne "-size" && [lsearch -exact $args data] >= 0 && [::mk::get_real $cursor -size data] > 100} { incr ::bigReads }
+    return [::mk::get_real $cursor {*}$args]
+}
+set r [run1 "SELECT name, data FROM $tag.pics ORDER BY name" $tag]
+rename ::mk::get {} ; rename ::mk::get_real ::mk::get
+check blob_column_type [dict get $r types] {S B}
+set ref [::engine::blobRef [lindex [dict get $r rows] 0 1]]
+check blob_big_is_a_reference [list [dict get $ref size] [dict get $ref head]] [list [string length $bigval] [string range $bigval 0 9]]
+check blob_small_is_the_value [list [::engine::blobRef [lindex [dict get $r rows] 1 1]] [lindex [dict get $r rows] 1 1]] [list "" [binary format c* {1 2 3}]]
+if {[llength [info commands ::mk::channel]]} { check blob_big_value_not_read $::bigReads 0 }
+check blob_reference_reads_the_value [expr {[::mkitsql::blobRead [lindex [dict get $r rows] 0 1]] eq $bigval}] 1
+check blob_label_from_reference [::grid::summariseBytes [dict get $r rows] [dict get $r types]] \
+    [list [list big "<1048576 bytes>  00 01 02 03 fe ff 41 42 00 01 ..."] [list small "<3 bytes>  01 02 03"]]
+# a statement that stores what it selects copies the value itself, never a reference
+run1 "CREATE TABLE $tag.pics2 AS SELECT name, data FROM $tag.pics" $tag
+check blob_copied_whole [expr {[::store::cell $tag.pics2 1 data] eq $bigval}] 1
+run1 "ROLLBACK" $tag
+
 # a damaged-file / second-process view: the engine refuses writes to a file someone else holds
 ::store::closeFile $tag
 set h [open $f.lock w] ; puts -nonewline $h "424242 some-other-machine" ; close $h

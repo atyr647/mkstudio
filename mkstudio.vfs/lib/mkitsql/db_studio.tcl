@@ -16,6 +16,12 @@ proc ::mkitsql::db::path {tag} { ::store::path $tag }
 proc ::mkitsql::db::readonly {tag} { ::store::readonly $tag }
 proc ::mkitsql::db::dirty {tag} { ::store::dirty $tag }
 proc ::mkitsql::db::touch {tag} { ::store::touch $tag }
+# changes with every change of the open file's data (MK Studio's store counts them; "" with a store.tcl that does not)
+proc ::mkitsql::db::generation {tag} {
+    if {[llength [info commands ::store::generation]] == 0} { return "" }
+    set g [::store::generation $tag]
+    expr {$g eq "-1" ? "" : $g}
+}
 proc ::mkitsql::db::openFile {path args} {
     set unchecked [expr {"-unchecked" in $args}] ; set verify [expr {"-verify" in $args}]
     set fargs {}

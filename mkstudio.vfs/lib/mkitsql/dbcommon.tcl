@@ -52,29 +52,68 @@ proc ::mkitsql::db::copyColumn {path from to type} {
 }
 
 # ---- reading rows (shared by both back ends) ------------------------------------------------------------
-# One cell.  A property name with U+FDD4 in it is a part of a blob (bind.tcl, blobPart):  b<U+FDD4>size  is its length from
-# mk::get -size, and  b<U+FDD4>range<U+FDD4>start<U+FDD4>len  is SUBSTR(b, start, len) read through mk::channel.  Neither fetches
-# the whole value.
+# One cell.  A property name with U+FDD4 in it is a part of a blob (bind.tcl, blobPart and lazyBlobItems):  b<U+FDD4>size  is its
+# length from mk::get -size,  b<U+FDD4>range<U+FDD4>start<U+FDD4>len  is SUBSTR(b, start, len) read through mk::channel, and
+# b<U+FDD4>ref<U+FDD4>limit  is the value when it has at most `limit` bytes, else a blob reference (blobRefMake).  None of them
+# fetches a big value whole.
 proc ::mkitsql::db::cell {r p} {
     set k [string first "\uFDD4" $p]
     if {$k < 0} { return [mk::get $r $p] }
     set base [string range $p 0 [expr {$k - 1}]]
     set spec [split [string range $p [expr {$k + 1}] end] "\uFDD4"]
     set size [mk::get $r -size $base]
-    if {[lindex $spec 0] eq "size"} { return $size }
+    switch -- [lindex $spec 0] {
+        size { return $size }
+        ref {
+            set limit [lindex $spec 1]
+            if {$size <= $limit} { return [mk::get $r $base] }
+            return [blobRefMake $r $base $size [readRange $r $base 0 $limit]]
+        }
+    }
     lassign $spec _ start len
     set to [expr {min($start + $len - 1, $size)}]
     if {$to < $start} { return "" }
-    if {[llength [info commands ::mk::channel]] == 0} { return [string range [mk::get $r $base] [expr {$start - 1}] [expr {$to - 1}]] }
-    set ch [mk::channel $r $base r]
+    return [readRange $r $base [expr {$start - 1}] [expr {$to - $start + 1}]]
+}
+# `count` bytes from byte `offset` (0-based) of a blob or text cell, through mk::channel (the stand-in has none: there the value is
+# fetched and cut, with the same result)
+proc ::mkitsql::db::readRange {r p offset count} {
+    if {$count <= 0} { return "" }
+    if {[llength [info commands ::mk::channel]] == 0} { return [string range [mk::get $r $p] $offset [expr {$offset + $count - 1}]] }
+    set ch [mk::channel $r $p r]
     set rc [catch {
         fconfigure $ch -translation binary
-        seek $ch [expr {$start - 1}]
-        set v [read $ch [expr {$to - $start + 1}]]
+        seek $ch $offset
+        set v [read $ch $count]
     } err opts]
     close $ch
     if {$rc} { return -options $opts $err }
     return $v
+}
+# all of a blob or text cell into a channel, 1 MiB at a time (one mk::channel; the stand-in fetches the value)
+proc ::mkitsql::db::copyCell {r p out} {
+    if {[llength [info commands ::mk::channel]] == 0} { puts -nonewline $out [mk::get $r $p] ; return }
+    set ch [mk::channel $r $p r]
+    set rc [catch { fconfigure $ch -translation binary ; while {1} { set d [read $ch 1048576] ; if {$d eq ""} break ; puts -nonewline $out $d } } err opts]
+    close $ch
+    if {$rc} { return -options $opts $err }
+}
+# ---- blob references (::mkitsql::blobLimit; the public commands are in mkitsql.tcl) --------------------------------------------
+# A reference stands in a result for a stored blob that is bigger than the limit: U+FDD1 followed by the list
+#     mkitsql-blob <path> <row> <column> <size> <generation> <head>
+# (head = the first `limit` bytes).  A blob value is bytes (every character below U+0100), so no value can look like one.
+proc ::mkitsql::db::blobRefMake {r prop size head} {
+    set k [string last ! $r]
+    set path [string range $r 0 [expr {$k - 1}]]
+    set tag [lindex [split $path .!] 0]
+    return "\uFDD1[list mkitsql-blob $path [string range $r [expr {$k + 1}] end] $prop $size [generation $tag] $head]"
+}
+# "" unless v is a reference; else {db path row column size generation head}
+proc ::mkitsql::db::blobRefParse {v} {
+    if {[string index $v 0] ne "\uFDD1" || [catch {llength [string range $v 1 end]} n] || $n != 7} { return "" }
+    lassign [string range $v 1 end] word path row prop size gen head
+    if {$word ne "mkitsql-blob" || ![string is wideinteger -strict $row] || ![string is wideinteger -strict $size]} { return "" }
+    return [dict create db [lindex [split $path .!] 0] path $path row $row column $prop size $size generation $gen head $head]
 }
 # rows in the order of `props`, reading only what is needed: parts of blobs (above), and nothing at the positions in `skip`
 # (blobs a scan reads later, for the rows its filter lets through: those cells are "" here)

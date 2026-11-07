@@ -35,6 +35,7 @@ proc ::mkitsql::resetStatement {} {
     array unset derivedBq ; array set derivedBq {} ; array unset plans ; array unset subCache ; array unset planCorr ; array unset needed ; array unset planMemo ; array unset memo
     array set plans {} ; array set subCache {} ; array set planCorr {} ; array set needed {} ; array set planMemo {} ; array set memo {} ; set memoCount 0 ; set memoUsed 0 ; set volatileSeen 0
     set scopes {} ; set ctes {} ; set refLog {} ; set fromSoFar {}
+    variable lazyTop ; set lazyTop -1
 }
 
 # Tcl's own arithmetic errors, in the words of the engine ("" = not one of them)
@@ -219,8 +220,12 @@ proc ::mkitsql::plural {n word} { return "$n $word[expr {$n == 1 ? {} : {s}}]" }
 #  SELECT
 # ============================================================================
 proc ::mkitsql::execSelect {q} {
-    variable maxRows ; variable nullText ; variable plans ; variable N ; variable S
-    set bq [bindQuery $q]
+    variable maxRows ; variable nullText ; variable plans ; variable N ; variable S ; variable blobLimit ; variable lazyTop
+    # big blobs selected as they are come back as references (::mkitsql::blobLimit; lazyBlobItems in bind.tcl)
+    if {$blobLimit >= 0 && [dict get [dict get $q body] type] eq "select"} { set lazyTop $blobLimit }
+    set rc [catch {bindQuery $q} bq opts]
+    set lazyTop -1
+    if {$rc} { return -options $opts $bq }
     set id [compileQuery $bq {}]
     set p $plans($id)
     set kind [dict get $p kind]

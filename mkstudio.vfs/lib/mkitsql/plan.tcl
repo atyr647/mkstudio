@@ -152,10 +152,13 @@ proc ::mkitsql::sourceLayout {s} {
             foreach c [dict get $s cols] {
                 lassign $c n t l isSub
                 if {$l eq "B"} {
-                    # parts of a blob read without the blob (see blobPart in bind.tcl): b<U+FDD4>size, b<U+FDD4>range<U+FDD4>..
+                    # parts of a blob read without the blob (see blobPart in bind.tcl): b<U+FDD4>size, b<U+FDD4>range<U+FDD4>..; and
+                    # b<U+FDD4>ref<U+FDD4>limit (lazyBlobItems), read like a blob after the filter, for the rows that pass (late reads)
                     set ln [string tolower $n]
                     foreach p [lsort $pseudo] {
-                        if {[string equal -length [expr {[string length $ln] + 1}] $p "$ln\uFDD4"]} { lappend props $n[string range $p [string length $ln] end] }
+                        if {![string equal -length [expr {[string length $ln] + 1}] $p "$ln\uFDD4"]} continue
+                        if {[string equal -length [expr {[string length $ln] + 5}] $p "$ln\uFDD4ref\uFDD4"]} { lappend bcols [llength $props] }
+                        lappend props $n[string range $p [string length $ln] end]
                     }
                 }
                 if {![info exists needed($id,[string tolower $n])]} continue

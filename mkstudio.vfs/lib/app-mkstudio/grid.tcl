@@ -319,8 +319,14 @@ proc ::grid::cmpKeyed {a b} { ::grid::compare [lindex $a 1] [lindex $b 1] }
 # ============================================================================
 #  Loading
 # ============================================================================
-# Binary columns never go into a cell as raw bytes: show size plus a short hex preview.
-proc ::grid::bytesLabel {v} { bytesLabelOf [string length $v] [string range $v 0 9] }
+# Binary columns never go into a cell as raw bytes: show size plus a short hex preview.  A query result may hold a big value as
+# a reference (::engine::blobRef: its size and first bytes; the value itself was never read).
+proc ::grid::bytesLabel {v} {
+    if {[llength [info commands ::engine::blobRef]] && [set ref [::engine::blobRef $v]] ne ""} {
+        return [bytesLabelOf [dict get $ref size] [dict get $ref head]]
+    }
+    bytesLabelOf [string length $v] [string range $v 0 9]
+}
 # the same from the size and the first (up to 10) bytes, which is all a cell needs
 proc ::grid::bytesLabelOf {n head} {
     if {$n == 0} { return "" }

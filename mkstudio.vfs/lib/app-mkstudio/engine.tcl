@@ -50,6 +50,13 @@
 #                `put` is accepted and may be ignored.  A provider reading live data MUST report
 #                `stale` once the data changed (use ::store::generation) - see docs/CONCURRENCY.md.
 #
+#              - OPTIONAL  big bytes by reference: a B cell the UI only summarises (it shows the size and
+#                the first ::engine::blobPreview bytes) may hold, for a longer value, a REFERENCE instead of the
+#                bytes, so that selecting a 1 GB value does not load it.  The UI asks
+#                    ::engine::blobRef value     -> "" for an ordinary value, else a dict with at least
+#                                                   size (bytes) and head (the first blobPreview bytes)
+#                An engine that never hands out references leaves blobRef as it is below.
+#
 #         {kind message  text "..."  ?affected N?  ?use dbTag?}
 #              - `use` switches the query window's database
 #
@@ -66,6 +73,7 @@
 #                         line comment | block comment | 'string' | "identifier" |
 #                         number | word | operator | stray character
 #   ::engine::maxRows     soft cap on un-sorted result sets
+#   ::engine::blobPreview bytes of a B cell the result grid shows (an engine may hand longer values by reference)
 #   ::engine::progressHook  script the engine must run every few hundred rows of
 #                         any long loop (it keeps the UI alive)
 #   ::engine::cancel      the UI sets this to 1 when the user presses Stop; the
@@ -79,9 +87,11 @@ namespace eval ::engine {
     variable types {STRING TEXT INT INTEGER LONG BIGINT FLOAT REAL DOUBLE BYTES BLOB}
     variable tokenRe {}
     variable maxRows 100000
+    variable blobPreview 10
     variable progressHook {}
     variable cancel 0
 }
 
 proc ::engine::parseScript {text} { ::mkql::parseScript $text }
 proc ::engine::execute {handle defaultDb} { ::mkql::execStatement $handle $defaultDb }
+proc ::engine::blobRef {value} { return "" }

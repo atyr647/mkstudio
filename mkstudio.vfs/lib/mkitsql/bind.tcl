@@ -1230,12 +1230,72 @@ proc ::mkitsql::replaceAggs {node} {
 # `order` (parser terms) is bound together with the select so ORDER BY can use
 # output aliases and pre-projection expressions.
 proc ::mkitsql::bindSelect {sel order} {
-    variable scopes ; variable fromSoFar ; variable refLog
+    variable scopes ; variable fromSoFar ; variable refLog ; variable lazyTop
+    # the first SELECT bound for a SELECT statement is its outermost one (execSelect sets lazyTop; FROM, subqueries and CTEs come later)
+    set lazy $lazyTop ; set lazyTop -1
     set savedFrom $fromSoFar
     set fromSoFar {}
     set rc [catch {bindSelectInner $sel $order} res opts]
     set fromSoFar $savedFrom
+    if {!$rc && $lazy >= 0} { set res [lazyBlobItems $res $lazy] }
     return -options $opts $res
+}
+
+# ---- blobs handed out by reference (::mkitsql::blobLimit) -------------------------------------------------------------
+# In the outermost SELECT of a SELECT statement, with a limit set: a blob column of a table of its own FROM clause that is
+# selected AS IT IS - a bare select item that nothing else in the statement looks at (no condition, join, ORDER BY, other
+# item or subquery mentions it), in a SELECT without DISTINCT, GROUP BY or aggregates - is not read with the row.  It binds to
+# the pseudo column  b<U+FDD4>ref<U+FDD4>limit, which the storage layer answers with the value when it has at most `limit` bytes
+# and otherwise with a reference (db::cell): its size and first `limit` bytes, from which ::mkitsql::blobRead / blobCopy read
+# the rest.  Everything that compares or computes with a blob (and every other statement: INSERT ... SELECT, CREATE TABLE AS,
+# UPDATE, MERGE, a UNION) reads it whole, as before.
+namespace eval ::mkitsql { variable lazyTop -1 }
+proc ::mkitsql::lazyBlobItems {bs limit} {
+    variable needed
+    if {[dict get $bs distinct] || [dict get $bs isAgg]} { return $bs }
+    set items [dict get $bs items]
+    set cands {} ; set i 0
+    foreach b $items l [dict get $bs outLetters] {
+        if {$l eq "B" && [llength $b] == 5 && [lindex $b 0] eq "ref" && [lindex $b 1] == 0 && [string first "\uFDD4" [lindex $b 3]] < 0} {
+            set s [findSrc [dict get $bs srcs] [lindex $b 2]]
+            if {$s ne "" && [dict get $s kind] in {table lateral}} { lappend cands $i }
+        }
+        incr i
+    }
+    if {![llength $cands]} { return $bs }
+    # every reference anywhere else in the statement (also inside subqueries, whatever their level: conservative)
+    set used [dict create]
+    set i 0
+    foreach b $items { if {[lsearch -exact $cands $i] < 0} { refKeys $b used } ; incr i }
+    foreach part {where having group from} { refKeys [dict get $bs $part] used }
+    set sorted {}
+    foreach o [dict get $bs order] {
+        if {[lindex $o 0 0] eq "outcol"} { lappend sorted [lindex $o 0 1] } else { refKeys [lindex $o 0] used }
+    }
+    # an item ORDER BY sorts on needs its value, and so does every other item of the same column then
+    foreach i $cands {
+        set b [lindex $items $i]
+        if {[lsearch -exact $sorted $i] >= 0} { dict set used [lindex $b 2],[string tolower [lindex $b 3]] 1 }
+    }
+    foreach i $cands {
+        set b [lindex $items $i]
+        lassign $b _ _ sid cname type
+        set key $sid,[string tolower $cname]
+        if {[dict exists $used $key]} continue
+        set pseudo "$cname\uFDD4ref\uFDD4$limit"
+        unset -nocomplain needed($key)
+        noteRef 0 $sid $pseudo
+        lset items $i [list ref 0 $sid $pseudo $type]
+    }
+    dict set bs items $items
+    return $bs
+}
+# every column reference {ref level sid name type} in a bound tree, as "sid,name" keys of the dict in usedVar
+proc ::mkitsql::refKeys {node usedVar} {
+    upvar 1 $usedVar used
+    if {[catch {llength $node} n] || $n < 2 || [lindex $node 0] eq "lit"} return
+    if {[lindex $node 0] eq "ref" && $n == 5} { dict set used [lindex $node 2],[string tolower [lindex $node 3]] 1 ; return }
+    foreach x $node { refKeys $x used }
 }
 
 proc ::mkitsql::bindSelectInner {sel order} {
