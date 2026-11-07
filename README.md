@@ -12,13 +12,20 @@ included) that you can copy anywhere and run.
 - **Edit Rows** - spreadsheet-style editing with type validation; **every row is there** (a 500,000-row view opens in
   ~0.1 s and scrolls instantly - no paging), sort by any column, **undo / redo** (edits, added rows, deleted rows including
   their subview contents), double-click a `> N rows` cell to open a subview
-- **Bytes columns** - size and hex preview in the grid; a hex viewer with export, replace-from-file and clear
+- **Bytes columns** - size and hex preview in the grid; a hex viewer with export, replace-from-file and clear. Only the size and
+  the bytes on screen are read (a 1 GB value costs nothing to show), and export streams
+- **Ribbon kits** (`.kit`) - a **Kit** tab next to the raw views: the manifest (identity, needs, permission requests, entry points,
+  effects, seal and signer), the file tree with sizes, codecs and chunk counts, a preview of text, PNG/GIF images and other bytes,
+  **Verify** (every chunk, the image, the header and the root hash against the seal, in a separate process, with progress and
+  Cancel), **Extract** a file, a folder or everything, and a system kit's embedded image (filesystem, offset, dm-verity root).
+  Kits are opened read-only and nothing is written next to them. The same kit is queryable as `kit.*` tables in SQL
 - **Add Column** - one click from the data editor, or in the **Designer** with rename, retype and drop (a renamed column keeps its position)
 - **Query windows** - standard SQL (mkit-sql: joins, CTEs, window functions, `MERGE`, ...), syntax highlighting, completion, Find,
   multiple result tabs, cancel, error underlining. A result is limited to 100,000 rows in memory (the window says when it was cut);
   the built-in dialect (`MKS_ENGINE=mkql`) streams results of any size instead - see *Performance and limits*
 - **Commit / Roll Back** - files are opened `-nocommit`: nothing reaches disk until you commit
-- **Safety** - refuses files that aren't Metakit databases; read-only databases disable every write control;
+- **Safety** - refuses files that aren't Metakit databases; Metakit data after a header (a starkit, a starpack, a kit) is found
+  from the end of the file, as Metakit itself finds it, and opened read-only; read-only databases disable every write control;
   a second MK Studio asking to edit a database that is already open for editing is offered a read-only view instead
   (see *Crash safety and locking*)
 - Dark, light and high-contrast themes; scales with display DPI; full keyboard operation (`F1` lists shortcuts)
@@ -206,6 +213,10 @@ Tests (all in `tests/`):
   selection ranges, keyboard, sorting, the sort cache, editing in a scrolled grid, streaming results incl. staleness and
   freezing, empty results)
 - `gui_logic.tcl` - the UI logic incl. every popup menu and undo
+- `test_kit.tcl` - Ribbon kits: Metakit data after a header is recognised (a starkit, a kit) while text, a file with fake tails
+  and a truncated kit stay refused; bytes cells and export read sizes and ranges, never the whole value (reads counted); the Kit tab
+  on Ribbon's golden kits (tree, previews, manifest, verify in a child process incl. a damaged kit and Cancel, extraction, a system
+  kit's image page, `kit.*` SQL), and nothing is written next to a kit
 - `verify_payload.tcl`, `smoke_starpack.sh`, and `shoot.tcl` for screenshots
 - what no test can do is in [`docs/QA-CHECKLIST.md`](docs/QA-CHECKLIST.md): the hour of manual checks before a release; what is still open, and whether it is worth doing: [`docs/OPEN-ITEMS.md`](docs/OPEN-ITEMS.md)
 
@@ -470,6 +481,8 @@ equality is expressed as a numeric range. `mk::select -sort` is not stable. Each
 ```
 mkstudio.vfs/main.tcl                 entry point (starkit)
 mkstudio.vfs/lib/mkitsql/            mkit-sql, the SQL engine (vendored; SOURCE names the commit; tools/sync-mkitsql.sh)
+mkstudio.vfs/lib/kitfmt/             kitfmt, Ribbon's reference reader for .kit files (vendored from atyr647/ribbon kit/kitfmt;
+                                     SOURCE names the commit; tools/sync-kitfmt.sh, which also copies its golden kits to tests/kits)
 mkstudio.vfs/lib/app-mkstudio/
     store.tcl     the ONLY file that calls mk::*  (incl. the advisory write lock)
     engine.tcl    the query-language seam (documented contract)
@@ -478,6 +491,7 @@ mkstudio.vfs/lib/app-mkstudio/
     version.tcl   the version number (one place) and semantic-version comparison
     update.tcl    update check, checksum-verified download, self-replacement (no Tk)
     crash.tcl     error handler, crash reports, unexpected-end detection
+    kit.tcl       the Kit tab (on kitfmt); kitverify.tcl  the separate process it verifies in (mkstudio --kitverify KIT)
     theme icons menus widgets grid editor explorer docs app
 packaging/     NSIS installer, .deb/.tar.gz, macOS .app/.dmg, icons (tools/make-icons.py draws them)
 tests/         the suites above; tools/  runtime build (build-kit.sh, fetch-runtimes.sh), wrap.tcl, sync-mkitsql.sh, make-icons.py

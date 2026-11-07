@@ -13,6 +13,8 @@ A MK Studio "starpack" is a Tcl runtime (a "tclkit") with MK Studio's own files 
                         Jean-Claude Wippler).
   tclvfs, itcl, tcllib-style helpers
                         the same Tcl/BSD-style licenses as Tcl itself (as built into the tclkit).
+  kitfmt                MIT license.                    https://github.com/atyr647/ribbon (kit/kitfmt, LICENSE at the top of that repository)
+                        Ribbon's reader for .kit files, behind the Kit tab (mkstudio.vfs/lib/kitfmt; SOURCE names the commit).
   zlib                  zlib license.                   https://zlib.net/zlib_license.html
                         1.3.1 in the runtimes built in CI (the 2014 test-only tclkits carry 1.2.8)
   tclkit runtime        built by the KitCreator project (Roy Keene) - https://kitcreator.rkeene.org/ . All three

@@ -1,3 +1,22 @@
+## Next release (not released yet): Ribbon kits
+
+- **A Kit tab for Ribbon's `.kit` files.** A kit is a Metakit starkit with a signed seal in front of its store, its files in hashed
+  deflate chunks and, for a system kit, an embedded filesystem image (atyr647/ribbon `docs/KIT-FORMAT.md`). Opening one shows,
+  beside its raw views: the manifest and seal, the file tree with sizes, codecs and chunk counts, previews (text, PNG/GIF, hex),
+  **Verify** - every chunk, the image, the header and the root hash, in a separate process so that damaged data cannot take MK Studio
+  down, with progress and Cancel - **Extract** (a file, a folder, everything), and a system kit's embedded image. It uses kitfmt,
+  Ribbon's reference reader, vendored at a pinned commit (`tools/sync-kitfmt.sh`). Signatures are shown as *unchecked*: Ribbon has
+  no key infrastructure yet (trusted minisign keys can be given in `MKS_KIT_KEYS`).
+- **Metakit data after a header is found the way Metakit finds it, from the end of the file.** A starkit, starpack or kit used to
+  be accepted only because Metakit happened to see views in it; one with an empty store was refused, and the safety checks
+  (wide-file refusal, repair of an interrupted commit, checksum) looked for the Metakit header at offset 0. Such files are now
+  recognised by their tails and header, and opened read-only. Files that are not Metakit are refused as before - also a file whose
+  last bytes look like Metakit tails but point at no Metakit header, and a truncated kit.
+- **Big bytes values are no longer loaded to be shown.** The grid shows a bytes cell from its size and first 10 bytes, the bytes
+  viewer reads the 4 KiB it shows, Export streams the value in 1 MiB steps, and the column guard measures values by their size.
+  (A 953 MB value used to take 29 s and a gigabyte of memory to show "<953... bytes>".)
+- **mkit-sql 0.5.0**: virtual tables, the `kit.*` tables, big blobs read only when a statement needs them, and a sort-merge join fix.
+
 ## MK Studio 1.0.0-rc.3 - release candidate
 
 A workbench for Metakit databases: browse, query (SQL-like), design and edit, as one self-contained program.
