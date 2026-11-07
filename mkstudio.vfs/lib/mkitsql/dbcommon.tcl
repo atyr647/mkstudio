@@ -52,12 +52,58 @@ proc ::mkitsql::db::copyColumn {path from to type} {
 }
 
 # ---- reading rows (shared by both back ends) ------------------------------------------------------------
+# One cell.  A property name with U+FDD4 in it is a part of a blob (bind.tcl, blobPart):  b<U+FDD4>size  is its length from
+# mk::get -size, and  b<U+FDD4>range<U+FDD4>start<U+FDD4>len  is SUBSTR(b, start, len) read through mk::channel.  Neither fetches
+# the whole value.
+proc ::mkitsql::db::cell {r p} {
+    set k [string first "\uFDD4" $p]
+    if {$k < 0} { return [mk::get $r $p] }
+    set base [string range $p 0 [expr {$k - 1}]]
+    set spec [split [string range $p [expr {$k + 1}] end] "\uFDD4"]
+    set size [mk::get $r -size $base]
+    if {[lindex $spec 0] eq "size"} { return $size }
+    lassign $spec _ start len
+    set to [expr {min($start + $len - 1, $size)}]
+    if {$to < $start} { return "" }
+    if {[llength [info commands ::mk::channel]] == 0} { return [string range [mk::get $r $base] [expr {$start - 1}] [expr {$to - 1}]] }
+    set ch [mk::channel $r $base r]
+    set rc [catch {
+        fconfigure $ch -translation binary
+        seek $ch [expr {$start - 1}]
+        set v [read $ch [expr {$to - $start + 1}]]
+    } err opts]
+    close $ch
+    if {$rc} { return -options $opts $err }
+    return $v
+}
+# rows in the order of `props`, reading only what is needed: parts of blobs (above), and nothing at the positions in `skip`
+# (blobs a scan reads later, for the rows its filter lets through: those cells are "" here)
+proc ::mkitsql::db::rowsSlow {path props indices skip} {
+    set out {}
+    set np [llength $props]
+    foreach i $indices {
+        set r $path!$i ; set row {} ; set k 0
+        foreach p $props {
+            if {[lsearch -exact $skip $k] >= 0} { lappend row "" } else { lappend row [cell $r $p] }
+            incr k
+        }
+        if {$np && [string index [lindex $row 0] 0] eq "#"} { set row [::mkitsql::rt::sk $row] }
+        lappend out $row
+    }
+    return $out
+}
+proc ::mkitsql::db::slowProps {props skip} { expr {[llength $skip] || [string first "\uFDD4" $props] >= 0} }
+
 # `count` rows from `first`, as lists of values in the order of `props` (scalar properties only).
-proc ::mkitsql::db::rows {path props first count} {
+proc ::mkitsql::db::rows {path props first count {skip {}}} {
     set out {}
     set n [mk::view size $path]
     set last [expr {min($n, $first + $count) - 1}]
     set np [llength $props]
+    if {[slowProps $props $skip]} {
+        set idx {} ; for {set i $first} {$i <= $last} {incr i} { lappend idx $i }
+        return [rowsSlow $path $props $idx $skip]
+    }
     if {$::mkitsql::listBug} {
         # Tcl 8.5 / 8.6.3 damage the string form of a list whose first element is '#...' text with two or more ] or ", and
         # that is the list a multi-property mk::get returns: read one property at a time (see ::mkitsql::rt::sk)
@@ -111,7 +157,8 @@ proc ::mkitsql::db::rows {path props first count} {
 
 
 # the given rows (indices) in the order of `props`, like `rows`
-proc ::mkitsql::db::rowsAt {path props indices} {
+proc ::mkitsql::db::rowsAt {path props indices {skip {}}} {
+    if {[slowProps $props $skip]} { return [rowsSlow $path $props $indices $skip] }
     set out {}
     set np [llength $props]
     if {$np == 0} { foreach i $indices { lappend out {} } ; return $out }
@@ -397,7 +444,7 @@ proc ::mkitsql::db::guardCheck {path tag prop n} {
             if {![info exists guardIn($key)]} {
                 set total 0
                 for {set i 0} {$i < $rows} {incr i} {
-                    set len [string bytelength [mk::get $path!$i $prop]]
+                    set len [mk::get $path!$i -size $prop]           ;# the size alone: a value is never fetched to be measured
                     if {$len <= $guardSmall} { incr total [expr {$len + 1}] }
                 }
                 if {$guardTrack($tag) == 0} {

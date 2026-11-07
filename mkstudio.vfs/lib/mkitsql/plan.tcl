@@ -144,14 +144,24 @@ proc ::mkitsql::compileQuery {bq outerMaps} {
 proc ::mkitsql::sourceLayout {s} {
     variable needed ; variable curCol
     set id [dict get $s id]
-    set names {} ; set props {} ; set subs {} ; set dcols {}
+    set names {} ; set props {} ; set subs {} ; set dcols {} ; set bcols {}
     switch -- [dict get $s kind] {
         table - lateral {
+            set pseudo {}
+            foreach k [array names needed $id,*] { if {[string first "\uFDD4" $k] > 0} { lappend pseudo [string range $k [string length $id,] end] } }
             foreach c [dict get $s cols] {
                 lassign $c n t l isSub
+                if {$l eq "B"} {
+                    # parts of a blob read without the blob (see blobPart in bind.tcl): b<U+FDD4>size, b<U+FDD4>range<U+FDD4>..
+                    set ln [string tolower $n]
+                    foreach p [lsort $pseudo] {
+                        if {[string equal -length [expr {[string length $ln] + 1}] $p "$ln\uFDD4"]} { lappend props $n[string range $p [string length $ln] end] }
+                    }
+                }
                 if {![info exists needed($id,[string tolower $n])]} continue
                 if {$isSub} { lappend subs $n } else {
                     if {$l in {F D}} { lappend dcols [llength $props] }     ;# floating-point columns: -0.0 is read as 0.0
+                    if {$l eq "B"} { lappend bcols [llength $props] }       ;# blobs: may be read after the filter (late reads, scanPlain)
                     lappend props $n
                 }
             }
@@ -163,7 +173,7 @@ proc ::mkitsql::sourceLayout {s} {
             foreach c [dict get $s cols] { lappend names [string tolower [lindex $c 0]] }
         }
     }
-    return [dict create names $names props $props subs $subs dcols $dcols]
+    return [dict create names $names props $props subs $subs dcols $dcols bcols $bcols]
 }
 
 # ---- SELECT ----------------------------------------------------------------
@@ -573,6 +583,28 @@ proc ::mkitsql::pushOne {cols id ref op k} {
     return {}
 }
 
+# Positions (in the scan's props) of the blob columns that none of the scan's own conditions mentions: reading them can wait
+# until a row has passed the filter (`late` in a scan node).  Every reference anywhere in the conditions counts, also inside
+# subqueries, so a blob the filter can see is always read first.
+proc ::mkitsql::lateBlobs {lay bcols id conds} {
+    set used [dict create]
+    foreach c $conds { refNames $c $id used }
+    set out {}
+    foreach k $bcols {
+        if {![dict exists $used [string tolower [lindex [dict get $lay props] $k]]]} { lappend out $k }
+    }
+    return $out
+}
+proc ::mkitsql::refNames {node id usedVar} {
+    upvar 1 $usedVar used
+    if {[catch {llength $node} n] || $n < 2 || [lindex $node 0] eq "lit"} return
+    if {[lindex $node 0] eq "ref" && $n == 5} {
+        if {[lindex $node 2] eq $id} { dict set used [string tolower [lindex $node 3]] 1 }
+        return
+    }
+    foreach x $node { refNames $x $id used }
+}
+
 proc ::mkitsql::cfLeaf {s pushable stVar {latmap {}}} {
     upvar 1 $stVar st
     variable curCol ; variable derivedBq
@@ -582,8 +614,11 @@ proc ::mkitsql::cfLeaf {s pushable stVar {latmap {}}} {
     foreach n [dict get $lay names] { dict set map $id,$n $i ; incr i }
     set width $i
     set filter "" ; set lookup {} ; set sfilter "" ; set dfilter "" ; set push {}
+    set late [dict get $lay bcols]
     if {$pushable} {
         set own [takePool st [list $id]]
+        # blobs the filter does not look at are read only for the rows it lets through
+        if {[llength $late]} { set late [lateBlobs $lay $late $id $own] }
         if {[dict get $s kind] eq "table"} {
             # `inner = <expression of an enclosing query>` becomes a hash lookup, built once per statement
             variable lookupSeq
@@ -621,7 +656,7 @@ proc ::mkitsql::cfLeaf {s pushable stVar {latmap {}}} {
         table {
             variable scanSeq
             set plan [dict create kind scan path [dict get $s path] props [dict get $lay props] dcols [dict get $lay dcols] \
-                subs [dict get $lay subs] filter $filter sfilter $sfilter dfilter $dfilter lookup $lookup push $push sid [incr scanSeq]]
+                subs [dict get $lay subs] filter $filter sfilter $sfilter dfilter $dfilter lookup $lookup push $push sid [incr scanSeq] late $late]
         }
         lateral {
             if {[dict exists $s plevel]} {
@@ -650,7 +685,7 @@ proc ::mkitsql::cfLeaf {s pushable stVar {latmap {}}} {
             set plan [dict create kind wref tid [dict get $s tid] filter $filter]
         }
         info {
-            set plan [dict create kind info which [dict get $s which] filter $filter]
+            set plan [dict create kind info which [dict get $s which] db [dict get $s db] filter $filter]
         }
         default { error "cfLeaf: [dict get $s kind]" }
     }
@@ -744,7 +779,7 @@ proc ::mkitsql::letterSqlName {l} {
     }
     return $l
 }
-proc ::mkitsql::infoRows {which} {
+proc ::mkitsql::infoRows {which {ctx {}}} {
     set rows {}
     foreach tag [::mkitsql::db::tags] {
         foreach v [::mkitsql::db::views $tag] {
@@ -998,7 +1033,7 @@ proc ::mkitsql::explainSource {n depth} {
         lateral - lateralouter { lappend out "${ind}SUBVIEW [dict get $n sub] of each row" }
         derived - latderived { lappend out "${ind}SUBQUERY:" ; lappend out {*}[explainPlan [dict get $n sub] [expr {$depth + 1}]] }
         wref { lappend out "${ind}CTE result (computed once)" }
-        info { lappend out "${ind}information_schema.[dict get $n which]" }
+        info { lappend out "${ind}[dict get $n which]" }
     }
     return $out
 }

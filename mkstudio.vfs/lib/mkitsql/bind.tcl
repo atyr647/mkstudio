@@ -417,9 +417,9 @@ proc ::mkitsql::bindSource {node} {
                     }
                     incr k
                 }
-                if {[string equal -nocase $p0 information_schema]} {
-                    return [infoSource [lindex $parts 1] $alias]
-                }
+                # a virtual table (vtab.tcl): information_schema.*, kit.*, or one a program registered
+                set vs [virtualSource $p0 [lindex $parts 1] $alias]
+                if {$vs ne ""} { return $vs }
             }
             # ---- a real table
             lassign [resolveTable $parts] tag view
@@ -498,22 +498,6 @@ proc ::mkitsql::derivedCols {names types bq} {
         incr i
     }
     return $cols
-}
-
-# information_schema.tables / columns
-proc ::mkitsql::infoSource {which alias} {
-    set which [string tolower $which]
-    switch -- $which {
-        tables {
-            set cols {{table_catalog text "" 0 {}} {table_name text "" 0 {}} {table_type text "" 0 {}} {row_count int "" 0 {}}}
-        }
-        columns {
-            set cols {{table_catalog text "" 0 {}} {table_name text "" 0 {}} {column_name text "" 0 {}}
-                      {ordinal_position int "" 0 {}} {data_type text "" 0 {}} {metakit_type text "" 0 {}}}
-        }
-        default { fail "Unknown information_schema table '$which'.  Available: tables, columns" }
-    }
-    return [newSource info [pickName $alias $which] $cols which $which]
 }
 
 # ============================================================================
@@ -699,6 +683,8 @@ proc ::mkitsql::bx {node} {
         func {
             lassign $node _ name distinct args
             variable aggs
+            set pr [blobPart $name $distinct $args]
+            if {$pr ne ""} { return $pr }
             if {[lsearch -exact $aggs $name] >= 0 && [lindex $args 0 0] ne "star"} {
                 set max [expr {$name in {STRING_AGG GROUP_CONCAT} ? 2 : 1}]
                 if {[llength $args] < 1 || [llength $args] > $max} {
@@ -713,6 +699,51 @@ proc ::mkitsql::bx {node} {
         }
     }
     error "bx: unknown node [lindex $node 0]"
+}
+
+# ---- parts of a blob, without reading the blob ------------------------------------------------------
+# LENGTH(b) / OCTET_LENGTH(b) and SUBSTR(b, start, len) with literal whole numbers, on a bare blob column of a table of
+# the query's own FROM clause, become a reference to a pseudo column  b<U+FDD4>size  /  b<U+FDD4>range<U+FDD4>start<U+FDD4>len
+# that the storage layer answers with  mk::get -size  or a ranged read (db::cell): a 1 GB value is never fetched to learn its
+# length or its first bytes.  Same results as the functions (tests/blobs.tcl compares them); anything else binds as usual.
+proc ::mkitsql::blobPart {name distinct fargs} {
+    variable needed ; variable scopes
+    if {$name ni {LENGTH CHAR_LENGTH CHARACTER_LENGTH OCTET_LENGTH SUBSTR SUBSTRING} || $distinct} { return "" }
+    if {[lindex $fargs 0 0] ne "col"} { return "" }
+    set substr [expr {$name in {SUBSTR SUBSTRING}}]
+    if {$substr} {
+        if {[llength $fargs] != 3} { return "" }
+        foreach a [lrange $fargs 1 2] {
+            if {[lindex $a 0] ne "lit" || ![string is wideinteger -strict [lindex $a 2]]} { return "" }
+        }
+        set start [lindex $fargs 1 2] ; set len [lindex $fargs 2 2]
+        if {$start < 1 || $len < 0} { return "" }
+    } elseif {[llength $fargs] != 1} { return "" }
+    set had [array get needed]
+    set b [bx [lindex $fargs 0]]
+    # not a blob of our own FROM clause: the call as it was, with the argument already bound
+    set ba [list $b]
+    foreach a [lrange $fargs 1 end] { lappend ba [bx $a] }
+    set plain [list func $name 0 $ba]
+    lassign $b k level sid cname
+    if {$k ne "ref" || $level != 0} { return $plain }
+    set letter ""
+    foreach s [lindex $scopes 0] {
+        if {[dict get $s id] ne $sid || [dict get $s kind] ni {table lateral}} continue
+        set ci [srcColIndex $s $cname]
+        if {$ci >= 0} { set letter [lindex [dict get $s cols] $ci 2] }
+    }
+    if {$letter ne "B"} { return $plain }
+    # the blob itself is not needed for this (it may still be for another part of the query)
+    set key $sid,[string tolower $cname]
+    if {![dict exists $had $key]} { unset -nocomplain needed($key) }
+    if {$substr} {
+        set pseudo "$cname\uFDD4range\uFDD4$start\uFDD4$len" ; set type text
+    } else {
+        set pseudo "$cname\uFDD4size" ; set type int
+    }
+    noteRef 0 $sid $pseudo
+    return [list ref 0 $sid $pseudo $type]
 }
 
 # Bind a nested query.  Returns {boundQuery outerRefs}; outerRefs are the

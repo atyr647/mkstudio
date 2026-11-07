@@ -314,7 +314,7 @@ proc ::mkitsql::srcStream {node outer sink} {
             if {$f ne ""} { set sink [list ::mkitsql::stFilter $f $outer $sink] }
             return [streamPlan [dict get $node sub] $outer $sink]
         }
-        info { return [emitAll $sink [filterRows [infoRows [dict get $node which]] [dict get $node filter] $outer]] }
+        info { return [emitAll $sink [filterRows [virtualRows [dict get $node which] [dict get $node db]] [dict get $node filter] $outer]] }
         wref {
             variable wtable
             return [emitAll $sink [filterRows $wtable([dict get $node tid]) [dict get $node filter] $outer]]
@@ -338,6 +338,8 @@ proc ::mkitsql::scanPlain {path node outer filter sink} {
     if {$push ne "" && $n >= $pushMin && ![catch {pushCandidates $path $push} cand]} {
         return [scanCandidates $path $node $outer $filter $sink $cand]
     }
+    set late [expr {[dict exists $node late] ? [dict get $node late] : ""}]
+    if {[llength $late]} { return [scanLate $path $node $outer $filter $sink "" $late] }
     for {set first 0} {$first < $n} {incr first $chunk} {
         if {$cancel} { fail "Cancelled" }
         if {$progressHook ne ""} { {*}$progressHook }
@@ -379,6 +381,8 @@ proc ::mkitsql::scanCandidates {path node outer filter sink cand} {
     variable chunk ; variable progressHook ; variable cancel ; variable M ; variable pushScans
     incr pushScans
     set props [dict get $node props] ; set subs [dict get $node subs] ; set dcols [dict get $node dcols]
+    set late [expr {[dict exists $node late] ? [dict get $node late] : ""}]
+    if {[llength $late]} { return [scanLate $path $node $outer $filter $sink $cand $late] }
     set total [llength $cand]
     for {set k 0} {$k < $total} {incr k $chunk} {
         if {$cancel} { fail "Cancelled" }
@@ -394,6 +398,35 @@ proc ::mkitsql::scanCandidates {path node outer filter sink cand} {
             if {$filter eq "" || [$filter $r $outer] eq "1"} { lappend out [::mkitsql::rt::sk $r] }
         }
         if {[llength $out] && [emit $sink $out]} { return 1 }
+    }
+    return 0
+}
+
+# A scan of a table with blob columns its filter does not look at (`late`, see lateBlobs in plan.tcl): the other columns are
+# read and filtered first, and the blobs only for the rows that pass, one row at a time just before the row is handed on, so a
+# LIMIT or an EXISTS that stops early reads no blob it does not return.  `cand` is "" for every row, or the candidate rows.
+proc ::mkitsql::scanLate {path node outer filter sink cand late} {
+    variable chunk ; variable progressHook ; variable cancel ; variable M
+    set props [dict get $node props] ; set subs [dict get $node subs] ; set dcols [dict get $node dcols]
+    set n [expr {$cand eq "" ? [::mkitsql::db::size $path] : [llength $cand]}]
+    for {set k 0} {$k < $n} {incr k $chunk} {
+        if {$cancel} { fail "Cancelled" }
+        if {$progressHook ne ""} { {*}$progressHook }
+        if {$cand eq ""} {
+            set idxs {} ; for {set i $k} {$i < min($n, $k + $chunk)} {incr i} { lappend idxs $i }
+        } else {
+            set idxs [lrange $cand $k [expr {$k + $chunk - 1}]]
+        }
+        set data [::mkitsql::db::rowsAt $path $props $idxs $late]
+        if {[string first $M [::mkitsql::rt::flat $data]] >= 0} { set data [cleanRows $data] }
+        if {[llength $dcols] && [string first -0 [::mkitsql::rt::flat $data]] >= 0} { set data [fixNegZero $data $dcols] }
+        foreach r $data i $idxs {
+            foreach sp $subs { lappend r [::mkitsql::db::subSize $path $i $sp] }
+            lappend r $path!$i
+            if {$filter ne "" && [$filter $r $outer] ne "1"} continue
+            foreach p $late { lset r $p [::mkitsql::db::cell $path!$i [lindex $props $p]] }
+            if {[emit $sink [list [::mkitsql::rt::sk $r]]]} { return 1 }
+        }
     }
     return 0
 }
@@ -617,7 +650,11 @@ proc ::mkitsql::mergeJoin {node outer sink bs} {
             } elseif {![llength $lg]} { set takeLeft 0
             } elseif {$lnull} { set takeLeft 1
             } elseif {$rnull} { set takeLeft 0
-            } else { set takeLeft [expr {[string compare $lk $rk] < 0}] }
+            } else {
+                # the order the sorter used (lsort -ascii), which is not always [string compare]'s: two byte arrays compare as
+                # bytes there, but lsort orders a NUL byte after all others, and a merge that disagrees with its sort misses matches
+                set takeLeft [expr {[lindex [lsort -ascii [list $lk $rk]] 0] eq $lk}]
+            }
             if {$takeLeft} {
                 if {$type in {left full}} { foreach rec [lindex $lg 1] { lappend out [::mkitsql::rt::sk [list {*}[lindex $rec 1] {*}$nullR]] } }
                 set lg [readerGroup $lr]
