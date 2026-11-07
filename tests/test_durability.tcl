@@ -133,6 +133,17 @@ check begin_commit_wrote_a_record $rec 1
 check sum_gone_once_the_commit_begins [file exists $f.sum] 0
 store::endCommit $f
 check sum_back_after_endCommit [file exists $f.sum] 1
+# A file no commit record can describe (no Metakit header at offset 0: a foreign file, a damaged header, the test stand-in's files)
+# is committed without a record, but its checksum must not outlive the commit either: beginCommit removes it as well (it used to stay,
+# so store::commit left a stale checksum beside every later save of such a file; tests/gui_logic.tcl's damage checks, which run on
+# the stand-in too, rely on this), and store::commit writes a new one when the commit is done.
+set ff [tmp dur_foreign.bin] ; clean $ff ; writebin $ff "no Metakit header here, just bytes"
+store::sumWrite $ff
+check foreign_sum_before [file exists $ff.sum] 1
+check foreign_begin_no_record [store::beginCommit $ff] 0
+check foreign_sum_removed_at_begin [file exists $ff.sum] 0
+check foreign_no_record_file [file exists $ff.commit] 0
+clean $ff
 store::commit $t
 check sum_valid_after_the_commit [store::sumCheck $f] ok
 store::closeFile $t

@@ -226,7 +226,7 @@ jobs:
         run: chmod +x tools/ext/tclkit-8.6.18-*
 
       - name: Install tools
-        run: sudo apt-get update && sudo apt-get install -y tcl8.6 xvfb imagemagick strace
+        run: sudo apt-get update && sudo apt-get install -y tcl8.6 tk8.6 xvfb imagemagick strace
 
       - name: Fetch tclkit runtimes (SHA1-verified)
         run: tools/fetch-runtimes.sh
@@ -248,6 +248,8 @@ jobs:
       - name: Stand-in Metakit (pure Tcl)
         run: |
           for t in test_mkql test_engine_semantics test_provider_lifecycle test_provider_contract; do tclsh8.6 tests/$t.tcl; done
+      - name: UI logic on the stand-in Metakit (system Tcl/Tk 8.6)
+        run: xvfb-run -a wish8.6 tests/run.tcl tests/gui_logic.tcl
       - name: Optimised executor == reference executor (random queries; stand-in, Metakit 8.6, Metakit 8.5)
         run: |
           MKS_FUZZ=1000 tclsh8.6 tests/test_engine_diff.tcl

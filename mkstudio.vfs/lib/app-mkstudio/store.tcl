@@ -824,10 +824,16 @@ proc ::store::beginCommit {path} {
     } elseif {![file exists $path] || [file size $path] == 0} {
         set line "empty 0"
     } else {
+        # No record can describe this file (no Metakit header at offset 0: a foreign file, a damaged header, the test stand-in's
+        # files).  The checksum does not depend on the header, though: the old one must not outlive this commit either (next to a
+        # newer file of the same size and modification second it would call that file "damaged", and next to any other it hides
+        # what this commit wrote); commit writes a new one when it is done.
+        catch {file delete [sumPath $path]}
+        syncDisk $path
         return 0
     }
     set rec [commitRecord $path]
-    if {[catch { set h [open $rec w] ; puts -nonewline $h $line ; close $h }]} { return 0 }
+    if {[catch { set h [open $rec w] ; puts -nonewline $h $line ; close $h }]} { catch {file delete [sumPath $path]} ; return 0 }
     # The checksum file describes the file as it is BEFORE this commit.  If a power cut left the new file next to that old checksum
     # (the checksum is rewritten only after the commit) and the two happened to have the same size and modification second - a commit
     # that fits into the space an earlier one freed, two saves within a second - the old checksum would call the new, perfectly good
@@ -1294,18 +1300,20 @@ proc ::store::verifyLock {tag} {
 proc ::store::commit {tag} {
     variable dirty ; variable file ; variable backedUp ; variable taint
     if {[info exists taint($tag)]} { taintedError $tag }
-    set record 0
+    set record 0 ; set began 0
     if {$dirty($tag) > 0} {
         verifyLock $tag
         if {![info exists backedUp($tag)]} {
             if {[integrityState $tag] eq "damaged"} { protectBackup $file($tag) ; set backedUp($tag) 0 } else { set backedUp($tag) [backupBeforeCommit $file($tag)] }
         }
         set record [beginCommit $file($tag)]
+        set began 1
     }
     mk::file commit $tag
     set dirty($tag) 0
     guardReset $tag
-    if {$record} { endCommit $file($tag) }
+    # the checksum of the finished file, with or without a commit record (endCommit writes it after the record)
+    if {$record} { endCommit $file($tag) } elseif {$began} { syncDisk $file($tag) ; catch {sumWrite $file($tag)} }
 }
 
 # Discard uncommitted work.  Newer Mk4tcl has `mk::file rollback`; for older
