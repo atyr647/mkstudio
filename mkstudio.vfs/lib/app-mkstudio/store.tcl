@@ -524,6 +524,15 @@ proc ::store::openFile {path args} {
         if {[sameFile $file($t) $path]} { error "File is already open as '$t'." }
     }
     if {!$create && ![file exists $path]} { error "File not found: $path" }
+    # Mk4tcl will "open" ANY file (a text file just looks like a database with no views).  A file that is neither Metakit nor
+    # empty is refused HERE, before anything is written next to it: no lock, no checksum baseline, no repair of an "interrupted
+    # commit" - opening a text file for writing used to leave <file>.sum behind before the refusal.  The one exception is a file
+    # with a commit record beside it: that is this program's own interrupted commit (a first commit killed halfway leaves bytes
+    # that are no Metakit file yet), which the repair below puts right first - and the file is checked again after it.
+    set pending [file exists [commitRecord $path]]
+    if {!$create && !$pending && [file size $path] > 0 && ![looksLikeMetakit $path]} {
+        error "This file isn't a Metakit database, so it was not opened:\n$path"
+    }
     # Metakit data after a header (a starkit, starpack or kit) is opened READ-ONLY: the commit protection here (the commit
     # record, the repair of an interrupted commit, the checksum file) works on the 8-byte header at offset 0 of an ordinary
     # datafile, and a kit is only ever written by kit itself
@@ -543,6 +552,10 @@ proc ::store::openFile {path args} {
         set lf [expr {$mine eq "" ? "" : [lockPath $path]}]
         # with the lock held nobody else is mid-commit: put right a commit that was interrupted
         if {[file exists $path] && [catch {repairFile $path} repairNote]} { set repairNote "" }
+        if {!$create && $pending && [file exists $path] && [file size $path] > 0 && ![looksLikeMetakit $path]} {
+            if {$lf ne ""} { releaseLock $lf $mine }
+            error "This file isn't a Metakit database, so it was not opened:\n$path"
+        }
         if {[file exists $path] && ![catch {integrityOnOpen $path} verdict]} { set integ $verdict }
     }
     set tag [makeTag $path]
@@ -555,10 +568,7 @@ proc ::store::openFile {path args} {
             error $err
         }
     }
-    # Mk4tcl will "open" ANY file (a text file just looks like a database with no
-    # views).  Refuse files that are neither Metakit nor empty, before anything
-    # could be committed into them.  Metakit datafiles start with "JL" (or "LJ");
-    # a starkit/starpack has no such header but does contain views.
+    # (checked again on the open file, before anything could be committed into it: the file may have changed since)
     if {!$create && [file size $path] > 0 && ![hasMetakitSignature $path] && ![llength [mk::file views $tag]]} {
         catch {mk::file close $tag}
         if {$lf ne ""} { releaseLock $lf $mine }
@@ -589,6 +599,19 @@ proc ::store::unprotectedNote {tag} {
     return "The folder of this database does not allow new files, so MK Studio cannot lock it or keep a backup: saving works, but without protection against a crash, a power cut or a second program."
 }
 
+# Is this a Metakit file, judged without writing anything: a Metakit header at offset 0 or a Metakit store found from the end of
+# the file (hasMetakitSignature), or else a file Mk4tcl, opened READ-ONLY for a moment, finds views in.
+proc ::store::looksLikeMetakit {path} {
+    if {[hasMetakitSignature $path]} { return 1 }
+    variable probeSeq
+    set t mksprobe[incr probeSeq]
+    if {[catch {mk::file open $t $path -readonly}]} { return 0 }
+    set n 0
+    catch {set n [llength [mk::file views $t]]}
+    catch {mk::file close $t}
+    return [expr {$n > 0}]
+}
+namespace eval ::store { variable probeSeq 0 }
 proc ::store::hasMetakitSignature {path} {
     if {[catch {
         set h [open $path rb] ; set sig [read $h 2] ; close $h

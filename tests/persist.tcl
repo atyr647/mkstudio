@@ -29,9 +29,16 @@ check readonly_flag [store::readonly $ro] 1
 check readonly_write_blocked [catch {mkql::run "DELETE FROM orders" $ro}] 1
 check subviews_survive [dict get [mkql::run {SELECT COUNT(*) FROM orders[0].lines} $ro] rows] {2}
 check missing_file [catch {store::openFile /nonexistent/x.mk}] 1
-set txt [tmp not_metakit.txt] ; set h [open $txt w] ; puts $h "just some text" ; close $h ; set sz [file size $txt]
-check not_metakit [catch {store::openFile $txt}] 1
-check not_metakit_untouched [file size $txt] $sz
+set txt [tmp not_metakit.txt] ; foreach x [glob -nocomplain $txt.*] { file delete $x }
+set h [open $txt w] ; puts $h "just some text" ; close $h ; set sz [file size $txt] ; set mt [file mtime $txt] ; set ntags [llength [store::tags]]
+check not_metakit [catch {store::openFile $txt} m] 1
+check not_metakit_msg [string match "*isn't a Metakit database*" $m] 1
+check not_metakit_untouched [list [file size $txt] [file mtime $txt]] [list $sz $mt]
+# refused before anything is written next to it: no checksum, lock, commit record or backup is left behind (a .sum used to be)
+check not_metakit_nothing_beside [glob -nocomplain -tails -directory [file dirname $txt] [file tail $txt].*] {}
+check not_metakit_readonly [catch {store::openFile $txt -readonly}] 1
+check not_metakit_readonly_nothing_beside [glob -nocomplain -tails -directory [file dirname $txt] [file tail $txt].*] {}
+check not_metakit_not_listed [llength [store::tags]] $ntags
 # ---- an interrupted commit is put right when the database is next opened for writing --------------------------------
 # (the byte-level evidence for this is tests/test_power_loss.tcl; this checks the behaviour of the store itself)
 set g [tmp interrupted.mk] ; foreach x [glob -nocomplain $g*] { file delete $x }
