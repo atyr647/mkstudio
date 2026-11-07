@@ -181,8 +181,10 @@ proc ::grid::memsrc {w method args} {
 proc ::grid::ksLoad {w mk layout} {
     variable KS
     set KS($w,mk) $mk ; set KS($w,layout) $layout ; set KS($w,order) {}
+    # bytes columns are not fetched with the row: a cell shows the size and the first bytes, read on their own (a 1 GB value
+    # would otherwise be loaded whole to show "<1,000,000,000 bytes>")
     set props {}
-    foreach c $layout { if {[lindex $c 1] ne "V"} { lappend props [lindex $c 0] } }
+    foreach c $layout { if {[lindex $c 1] ni {V B}} { lappend props [lindex $c 0] } }
     set KS($w,props) $props
     set KS($w,cache) [dict create]
     set KS($w,total) [::store::size $mk]
@@ -195,10 +197,11 @@ proc ::grid::ksRow {w idx vals} {
         if {$t eq "V"} {
             set cnt [::store::subSize $KS($w,mk) $idx $name]
             lappend out "\u25B8 $cnt row[expr {$cnt == 1 ? {} : {s}}]"
+        } elseif {$t eq "B"} {
+            set n [::store::cellSize $KS($w,mk) $idx $name]
+            lappend out [bytesLabelOf $n [::store::cellRange $KS($w,mk) $idx $name 0 [expr {min($n, 10)}]]]
         } else {
-            set v [lindex $vals $k] ; incr k
-            # (an if, not expr's ?: -- that would turn text such as 07 into the number 7)
-            if {$t eq "B"} { lappend out [bytesLabel $v] } else { lappend out $v }
+            lappend out [lindex $vals $k] ; incr k
         }
     }
     return $out
@@ -317,10 +320,11 @@ proc ::grid::cmpKeyed {a b} { ::grid::compare [lindex $a 1] [lindex $b 1] }
 #  Loading
 # ============================================================================
 # Binary columns never go into a cell as raw bytes: show size plus a short hex preview.
-proc ::grid::bytesLabel {v} {
-    set n [string length $v]
+proc ::grid::bytesLabel {v} { bytesLabelOf [string length $v] [string range $v 0 9] }
+# the same from the size and the first (up to 10) bytes, which is all a cell needs
+proc ::grid::bytesLabelOf {n head} {
     if {$n == 0} { return "" }
-    binary scan [string range $v 0 9] H* hx
+    binary scan [string range $head 0 9] H* hx
     regsub -all {..} $hx {& } hx
     return "<$n byte[expr {$n == 1 ? {} : {s}}]>  [string trim $hx][expr {$n > 10 ? { ...} : {}}]"
 }

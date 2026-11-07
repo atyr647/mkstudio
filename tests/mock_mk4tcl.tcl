@@ -245,11 +245,16 @@ proc ::mkmock::cmd_get {cursor args} {
         return $out
     }
     set out {}
+    set size 0
+    if {[lindex $args 0] eq "-size"} { set size 1 ; set args [lrange $args 1 end] }
     foreach p $args {
         set t [_type $layout $p]
         if {$t eq ""} { error "no such property: $p" }
         if {$t eq "V"} { error "cannot get a subview property" }
-        lappend out [dict get $row $p]
+        set v [dict get $row $p]
+        # -size: the stored size in bytes (strings as UTF-8, numbers as the text Metakit would give for S)
+        if {$size} { set v [expr {$t eq "B" ? [string length $v] : [string length [encoding convertto utf-8 $v]]}] }
+        lappend out $v
     }
     if {[llength $args] == 1} { return [lindex $out 0] }
     return $out

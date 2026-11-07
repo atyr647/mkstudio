@@ -524,6 +524,14 @@ proc ::store::openFile {path args} {
         if {[sameFile $file($t) $path]} { error "File is already open as '$t'." }
     }
     if {!$create && ![file exists $path]} { error "File not found: $path" }
+    # Metakit data after a header (a starkit, starpack or kit) is opened READ-ONLY: the commit protection here (the commit
+    # record, the repair of an interrupted commit, the checksum file) works on the 8-byte header at offset 0 of an ordinary
+    # datafile, and a kit is only ever written by kit itself
+    set front 0
+    if {!$create && [file exists $path] && [file size $path] > 0} {
+        set fr [metakitFrame $path]
+        if {$fr ne "" && [dict get $fr start] > 0} { set front [dict get $fr start] ; set readonly 1 }
+    }
     # a file over 2 GiB (wide format) that this Mk4tcl cannot read would look EMPTY: refuse before anything touches it
     set why [wideRefusal $path]
     if {$why ne ""} { return -code error -errorcode [list STORE WIDEFILE] $why }
@@ -557,6 +565,7 @@ proc ::store::openFile {path args} {
         error "This file isn't a Metakit database, so it was not opened:\n$path"
     }
     lappend tags $tag
+    variable prefix ; set prefix($tag) $front
     if {$repairNote ne ""} { variable repaired ; set repaired($tag) $repairNote }
     if {$integ ne ""} { variable integrity ; set integrity($tag) $integ }
     set file($tag) $path ; set ro($tag) $readonly ; set dirty($tag) 0
@@ -584,8 +593,46 @@ proc ::store::hasMetakitSignature {path} {
     if {[catch {
         set h [open $path rb] ; set sig [read $h 2] ; close $h
     }]} { return 0 }
-    return [expr {$sig eq "JL" || $sig eq "LJ"}]
+    if {$sig eq "JL" || $sig eq "LJ"} { return 1 }
+    # Metakit data after a header (a starkit, a starpack, a Ribbon kit): Metakit finds its store from the END of the file
+    return [expr {[metakitFrame $path] ne ""}]
 }
+
+# Where the Metakit store in a file is, found the way Metakit itself finds it: from the file's last 16 (24, wide) bytes, the
+# "tails" (src/marks.h of the fork).  The skip tail says how far back the store starts; there must be a Metakit header
+# ("JL"/"LJ", then 1A) exactly there.  Returns {start S end E wide W} (start 0 for an ordinary datafile, > 0 when something - a
+# tclkit runtime, a script, a kit's seal - comes first), or "" for anything that is not a Metakit file (text, a truncated
+# file: its last bytes are no tails, or they point at no header).  Reads 28 bytes; Metakit is not involved.
+proc ::store::metakitFrame {path} {
+    if {[catch {
+        set size [file size $path]
+        if {$size < 32} { error short }
+        set h [open $path rb]
+        seek $h [expr {$size - 24}] start ; set tail [read $h 24]
+        close $h
+    }]} { catch {close $h} ; return "" }
+    if {[string length $tail] != 24} { return "" }
+    binary scan $tail c* raw
+    set b {} ; foreach x $raw { lappend b [expr {$x & 0xFF}] }
+    if {[lindex $b 8] == 0x80 && [lindex $b 9] == 0 && [lindex $b 10] == 0 && [lindex $b 11] == 0 && [lindex $b 16] == 0x80} {
+        binary scan [string range $tail 12 15] I skip
+        set start [expr {$size - 16 - ($skip & 0xFFFFFFFF)}]
+        set wide 0
+    } elseif {[lindex $b 0] == 0x82 && [lindex $b 1] == 0 && [lindex $b 2] == 0 && [lindex $b 3] == 0 && [lindex $b 8] == 0x83 && [lindex $b 16] == 0x81} {
+        binary scan [string range $tail 4 7] I lo
+        set skip [expr {([lindex $b 9] << 48) + ([lindex $b 10] << 40) + ([lindex $b 11] << 32) + ($lo & 0xFFFFFFFF)}]
+        set start [expr {$size - 24 - $skip}]
+        set wide 1
+    } else { return "" }
+    if {$start < 0 || $start > $size - 24} { return "" }
+    if {[catch {set h [open $path rb] ; seek $h $start start ; set head [read $h 4] ; close $h}]} { catch {close $h} ; return "" }
+    if {[string length $head] != 4} { return "" }
+    set m [string range $head 0 1]
+    if {($m ne "JL" && $m ne "LJ") || [string index $head 2] ne "\x1a"} { return "" }
+    return [dict create start $start end $size wide $wide]
+}
+# bytes in front of the Metakit store of an open file (0 for an ordinary datafile)
+proc ::store::headerBytes {tag} { variable prefix ; expr {[info exists prefix($tag)] ? $prefix($tag) : 0} }
 
 # Commands called with the tag just BEFORE a database is closed (streaming results freeze themselves here).
 namespace eval ::store { variable closeHooks {} }
@@ -603,7 +650,7 @@ proc ::store::closeFile {tag} {
     if {$i >= 0} { set tags [lreplace $tags $i $i] }
     unset -nocomplain file($tag) ro($tag) dirty($tag)
     cacheClear $tag
-    unset -nocomplain ::store::gen($tag) ::store::repaired($tag) ::store::backedUp($tag) ::store::integrity($tag) ::store::unprotected($tag) ::store::taint($tag)
+    unset -nocomplain ::store::gen($tag) ::store::repaired($tag) ::store::backedUp($tag) ::store::integrity($tag) ::store::unprotected($tag) ::store::taint($tag) ::store::prefix($tag)
 }
 
 # ---- interrupted commits and power loss -------------------------------------------------------------------------
@@ -839,7 +886,10 @@ proc ::store::wideHeader {head8} {
 }
 proc ::store::isWide {path} {
     if {[catch {set h [open $path rb] ; set d [read $h 8] ; close $h}] || [string length $d] < 8} { return 0 }
-    wideHeader $d
+    if {[wideHeader $d]} { return 1 }
+    # the store of a starkit / kit starts later in the file: its tails say whether it is wide
+    set fr [metakitFrame $path]
+    expr {$fr ne "" && [dict get $fr wide]}
 }
 # is the header given as 16 hex digits (as the commit record keeps it) a wide one?
 proc ::store::wideHex {hex} {
@@ -1004,7 +1054,7 @@ proc ::store::guardCheck {path tag prop n} {
             if {![info exists guardIn($key)]} {
                 set total 0
                 for {set i 0} {$i < $rows} {incr i} {
-                    set len [string bytelength [mk::get $path!$i $prop]]
+                    set len [mk::get $path!$i -size $prop]                ;# the size alone: a value is never fetched to be measured
                     if {$len <= $guardSmall} { incr total [expr {$len + 1}] }
                 }
                 if {$guardTrack($tag) == 0} {
@@ -1474,6 +1524,29 @@ proc ::store::select {path conds} {
 }
 
 proc ::store::cell {path idx prop} { mk::get $path!$idx $prop }
+
+# A bytes (or text) cell without fetching it: its size in bytes, `count` bytes from `offset`, and all of it into a channel in
+# 1 MiB steps.  A 1 GB value costs nothing to measure and little to preview (the grid, the bytes viewer, export).  Mk4tcl's
+# mk::channel reads a range; without it (the test stand-in) the value is fetched and cut.
+proc ::store::cellSize {path idx prop} { mk::get $path!$idx -size $prop }
+proc ::store::cellRange {path idx prop offset count} {
+    if {$count <= 0} { return "" }
+    if {[llength [info commands ::mk::channel]] == 0} {
+        return [string range [mk::get $path!$idx $prop] $offset [expr {$offset + $count - 1}]]
+    }
+    set ch [mk::channel $path!$idx $prop r]
+    set rc [catch { fconfigure $ch -translation binary ; seek $ch $offset start ; read $ch $count } data opts]
+    close $ch
+    if {$rc} { return -options $opts $data }
+    return $data
+}
+proc ::store::cellCopy {path idx prop out} {
+    if {[llength [info commands ::mk::channel]] == 0} { puts -nonewline $out [mk::get $path!$idx $prop] ; return }
+    set ch [mk::channel $path!$idx $prop r]
+    set rc [catch { fconfigure $ch -translation binary ; while {1} { set d [read $ch 1048576] ; if {$d eq ""} break ; puts -nonewline $out $d } } err opts]
+    close $ch
+    if {$rc} { return -options $opts $err }
+}
 
 # Number of rows in the subview `prop` of row `idx`.
 proc ::store::subSize {path idx prop} { mk::view size $path!$idx.$prop }

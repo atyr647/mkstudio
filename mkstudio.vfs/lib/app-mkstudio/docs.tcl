@@ -705,9 +705,10 @@ proc ::design::dropColumn {id} {
 # ============================================================================
 namespace eval ::bytes { variable maxDump 4096 }
 
-proc ::bytes::dump {data} {
+# `data` is the start of the value (or all of it), `n` its whole size (default: the length of `data`)
+proc ::bytes::dump {data {n ""}} {
     variable maxDump
-    set n [string length $data]
+    if {$n eq ""} { set n [string length $data] }
     set show [string range $data 0 [expr {$maxDump - 1}]]
     set out {}
     for {set off 0} {$off < [string length $show]} {incr off 16} {
@@ -722,14 +723,16 @@ proc ::bytes::dump {data} {
 }
 
 proc ::bytes::view {mk rowid col readonly {docId ""}} {
-    set data [::store::cell $mk $rowid $col]
+    variable maxDump
+    # the size, and only the bytes that are shown: a 1 GB value is never loaded to look at its first 4 KiB
+    set n [::store::cellSize $mk $rowid $col]
+    set data [::store::cellRange $mk $rowid $col 0 [expr {min($n, $maxDump)}]]
     set w [::ui::modal "Bytes: $col"]
-    set n [string length $data]
     ttk::label $w.body.info -style SurfaceDim.TLabel \
         -text "[::app::commas $n] byte[expr {$n == 1 ? {} : {s}}]   -   [::ddoc::viewLabel $mk]\[$rowid\].$col"
     text $w.body.t -width 78 -height 18 -font MkMono -borderwidth 0 -highlightthickness 0 -padx 10 -pady 8 \
         -wrap none -state normal
-    $w.body.t insert 1.0 [expr {$n ? [dump $data] : "(empty)"}]
+    $w.body.t insert 1.0 [expr {$n ? [dump $data $n] : "(empty)"}]
     $w.body.t configure -state disabled
     ::theme::reg $w.body.t {%w configure -background $::theme::c(editor) -foreground $::theme::c(fg) -selectbackground $::theme::c(sel)}
     pack $w.body.info -side top -anchor w -pady {0 8}
@@ -748,7 +751,10 @@ proc ::bytes::export {mk rowid col} {
     set f [tk_getSaveFile -title "Export bytes" -initialfile $col.bin]
     if {$f eq ""} return
     if {[catch {
-        set out [open $f wb] ; puts -nonewline $out [::store::cell $mk $rowid $col] ; close $out
+        set out [open $f wb]
+        set rc [catch {::store::cellCopy $mk $rowid $col $out} e2]
+        close $out
+        if {$rc} { error $e2 }
     } err]} { ::ui::problem $err }
 }
 proc ::bytes::record {docId mk rowid col old new} {
