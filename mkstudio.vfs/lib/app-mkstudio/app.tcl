@@ -445,6 +445,7 @@ proc ::app::showDoc {id} {
     switch -- $A(type,$id) {
         query { focus $f.ed.t ; ::editor::cursorMoved $f.ed }
         data  { focus $f.g.t }
+        kit   { if {[winfo exists $f.body.files.tree.t]} { focus $f.body.files.tree.t } }
     }
 }
 proc ::app::tabSelected {id} { showDoc $id }
@@ -457,6 +458,7 @@ proc ::app::updateTitle {} {
     set db ""
     if {[docType $id] eq "query"} { set db [::qdoc::db $id] }
     if {[docType $id] in {data design}} { set db [lindex [split $A(path,$id) .] 0] }
+    if {[docType $id] eq "kit"} { set db [::kitdoc::tagOf $id] }
     if {$db ne ""} { append t "  \u2014  $db" }
     wm title . "$t  \u2014  MK Studio"
 }
@@ -550,6 +552,20 @@ proc ::app::openDesign {mk title} {
     set A(path,$id) $mk
     return $id
 }
+# the Kit tab of an open database that is a Ribbon kit (kit.tcl); one per database
+proc ::app::openKit {tag} {
+    variable A
+    foreach id [docs] {
+        if {[docType $id] eq "kit" && [::kitdoc::tagOf $id] eq $tag} { showDoc $id ; return $id }
+    }
+    set id [newId]
+    set A(path,$id) $tag
+    ::kitdoc::create $id [docFrame $id] $tag
+    addDoc $id kit "$tag (kit)" kit
+    set A(path,$id) $tag
+    return $id
+}
+proc ::app::isKitDb {tag} { expr {[::store::exists $tag] && [::kitdoc::isKit [::store::path $tag]]} }
 proc ::app::docEdited {id} {
     variable A
     set f [docFrame $id]
@@ -575,6 +591,7 @@ proc ::app::closeDoc {id {force 0}} {
             if {$r eq "Save"} { if {![saveScript 0 $id]} { return 0 } }
         }
     }
+    if {$A(type,$id) eq "kit"} { ::kitdoc::forget $id }
     set next [::tabs::remove .main.center.tabs $id]
     destroy $f
     unset -nocomplain A(type,$id) A(title,$id) A(file,$id) A(saved,$id) A(path,$id)
@@ -658,6 +675,17 @@ proc ::app::openOne {path} {
     ::crash::crumb "database opened[expr {[::store::readonly $tag] ? { (read-only)} : {}}]"
     afterDbChange
     ::explorer::expandDb $tag
+    # a Ribbon kit gets its Kit tab; any file whose Metakit data follows a header (starkit, starpack, kit) is read-only
+    set front [::store::headerBytes $tag]
+    if {[isKitDb $tag]} {
+        openKit $tag
+        setStatus "Opened kit '$tag' read-only (kits are only written by kit itself). Its raw views are in the Object Explorer." ok
+        return $tag
+    }
+    if {$front > 0} {
+        setStatus "Opened '$tag' read-only: its Metakit data follows a $front-byte header (a starkit or starpack)." warn
+        return $tag
+    }
     if {[::store::unprotectedNote $tag] ne ""} {
         setStatus "Opened '$tag'. [::store::unprotectedNote $tag]" warn
     } elseif {[::store::repairedNote $tag] ne ""} {
@@ -736,7 +764,7 @@ proc ::app::closeDB {tag {discard 0}} {
         }
     }
     foreach id [docs] {
-        if {[docType $id] in {data design} && [lindex [split $A(path,$id) .] 0] eq $tag} { closeDoc $id 1 }
+        if {[docType $id] in {data design kit} && [lindex [split $A(path,$id) .] 0] eq $tag} { closeDoc $id 1 }
     }
     ::store::closeFile $tag
     ::crash::crumb "database closed"
@@ -831,6 +859,7 @@ proc ::app::explorerAction {name m} {
         selectTop { newQuery "SELECT *\nFROM [dict get $m path]\nLIMIT 1000" [dict get $m tag] 1 }
         editRows  { openData [dict get $m path] [dict get $m name] }
         design    { openDesign [dict get $m path] [dict get $m name] }
+        openKit   { openKit [dict get $m tag] }
         dropView  { dropView $m }
         dropSelected { if {$m ne "" && [dict get $m kind] eq "view"} { dropView $m } }
         copyName  { clipboard clear ; clipboard append [dict get $m name] ; setStatus "Name copied." ok }

@@ -29,6 +29,19 @@ set tag [::store::createSample $f]
 ::app::afterDbChange
 
 switch -- $scenario {
+    kit {
+        # the Kit tab on one of Ribbon's golden kits (REAL_MK=1); KIT=<path> picks another
+        set k [expr {[info exists ::env(KIT)] ? $::env(KIT) : [file join $here kits app.kit]}]
+        set kt [::app::openOne $k] ; expandAll
+        foreach d [::app::docs] { if {[::app::docType $d] eq "kit"} { set kid $d } }
+        $::kitdoc::K($kid,ftree) selection set lib/big.txt
+        if {[info exists ::env(PAGE)]} { ::kitdoc::showPage $kid $::env(PAGE) }
+        if {[info exists ::env(PAGE)] && $::env(PAGE) eq "verify"} {
+            ::kitdoc::verify $kid
+            while {$::kitdoc::K($kid,busy)} { settle 100 }
+        }
+        shot $out
+    }
     realworld {
         set rw [::store::openFile /tmp/realworld.mk -readonly]
         ::app::afterDbChange

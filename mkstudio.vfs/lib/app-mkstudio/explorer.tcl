@@ -304,6 +304,10 @@ proc ::explorer::onMenu {x y X Y} {
             $mn add command -label "New Sample Database..." -command [list ::explorer::act newSample $m]
         }
         db {
+            if {[::app::isKitDb [dict get $m tag]]} {
+                $mn add command -label "Show Kit" -command [list ::explorer::act openKit $m]
+                $mn add separator
+            }
             $mn add command -label "New Query" -command [list ::explorer::act newQuery $m]
             $mn add separator
             $mn add command -label "New View..." -command [list ::explorer::act newView $m]
@@ -350,7 +354,9 @@ proc ::explorer::describe {m} {
             set bytes [::store::fileSize $tag]
             return [list $tag "Metakit datafile" [list \
                 General [list Name $tag Path [::store::path $tag] Size [fmtBytes $bytes] \
-                    Mode [expr {[::store::readonly $tag] ? "read-only" : "read-write"}]] \
+                    Mode [expr {[::store::readonly $tag] ? "read-only" : "read-write"}] \
+                    "Header" [expr {[::store::headerBytes $tag] > 0 ? "[::store::headerBytes $tag] bytes before the Metakit data" : "none"}] \
+                    Kind [expr {[::app::isKitDb $tag] ? "Ribbon kit" : "Metakit datafile"}]] \
                 Status [list "Pending changes" [::store::dirty $tag] Views [llength [::store::views $tag]]]]]
         }
         views {

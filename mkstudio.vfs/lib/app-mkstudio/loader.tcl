@@ -13,7 +13,8 @@ if {[info exists ::env(MKS_ENGINE)] && $::env(MKS_ENGINE) eq "mkql"} {
     source -encoding utf-8 [file join $::mkstudio_lib .. mkitsql mkitsql.tcl]
     source -encoding utf-8 [file join $::mkstudio_lib .. mkitsql engine_studio.tcl]
 }
-foreach f {grid editor explorer docs update crash app} {
+# kit.tcl: the Kit tab, on Ribbon's kit reader (mkstudio.vfs/lib/kitfmt, vendored: see tools/sync-kitfmt.sh)
+foreach f {grid editor explorer docs kit update crash app} {
     source -encoding utf-8 [file join $::mkstudio_lib $f.tcl]
 }
 package provide app-mkstudio 1.0

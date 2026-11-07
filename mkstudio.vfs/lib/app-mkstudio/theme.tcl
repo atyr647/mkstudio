@@ -249,6 +249,8 @@ proc ::theme::styles {} {
         -font MkSmall
     ttk::style map Treeview.Heading -background [list active $c(hover)] -foreground [list active $c(fg)]
     ttk::style configure Grid.Treeview -rowheight [rowHeight]
+    ttk::style configure Horizontal.TProgressbar -background $c(accent) -troughcolor $c(raised) -borderwidth 0 \
+        -bordercolor $c(border) -lightcolor $c(accent) -darkcolor $c(accent)
     ttk::style layout Grid.Treeview {Treeview.padding -sticky nswe -children {Treeview.treearea -sticky nswe}}
     ttk::style map Grid.Treeview -background [list selected $c(sel)] -foreground [list selected $c(selFg)]
 }

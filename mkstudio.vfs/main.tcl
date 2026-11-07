@@ -49,6 +49,12 @@ if {[lindex $argv 0] eq "--info"} {
     exit $rc
 }
 
+# --kitverify KIT: verify a Ribbon kit in this separate process for the Kit tab (no window; see lib/app-mkstudio/kitverify.tcl)
+if {[lindex $argv 0] eq "--kitverify"} {
+    source [file join $::mkstudio_root lib app-mkstudio kitverify.tcl]
+    exit [::kitverify::run [lindex $argv 1]]
+}
+
 # Metakit: real Mk4tcl when available.  `--mock` (development only) loads the
 # pure-Tcl stand-in from tests/ so the UI can be exercised without Metakit.
 set ::mkstudio_args {}

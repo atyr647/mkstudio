@@ -162,6 +162,10 @@ proc ::icons::draw {name} {
         help { ell 7.5 7.5 6.5 6.5 blue ; ell 7.5 7.5 5.5 5.5 dblue ; arc 7.5 6 2 2 0 220 white ; px 7 9 white ; px 7 11 white ; px 8 9 white ; px 8 11 white ; px 7 8 white ; px 8 8 white }
         csv { rect 2 1 13 14 gray ; rect 3 2 12 13 pale ; rect 3 3 12 4 green ; line 3 7 12 7 gray ; line 3 10 12 10 gray ; line 7 4 7 13 gray }
         blank { }
+        kit {
+            rect 1 5 14 14 damber ; rect 2 6 13 13 amber ; tri 1 5 4 1 11 1 lamber ; tri 1 5 14 5 11 1 lamber
+            rect 6 6 9 13 lamber ; line 6 9 9 9 damber
+        }
         warn {
             tri 7 1 0 14 15 14 damber ; tri 7 3 2 13 13 13 amber ; tri 8 3 2 13 13 13 amber
             rect 7 5 8 10 ink ; rect 7 12 8 13 ink

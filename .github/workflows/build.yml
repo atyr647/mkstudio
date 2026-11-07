@@ -300,6 +300,11 @@ jobs:
           for kit in tools/ext/tclkit-8.6.18-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
             REAL_MK=1 xvfb-run -a $kit tests/run.tcl tests/test_engine_wiring.tcl
           done
+      - name: Ribbon kits - Metakit data after a header, bytes cells read by size, the Kit tab (real Metakit, Tcl 8.6 and 8.5)
+        run: |
+          for kit in tools/ext/tclkit-8.6.18-linux-x86_64 tools/ext/tclkit-8.5.17-linux-x86_64; do
+            REAL_MK=1 xvfb-run -a $kit tests/run.tcl tests/test_kit.tcl
+          done
       - name: UI logic (real Metakit, Tcl 8.6)
         run: REAL_MK=1 xvfb-run -a tools/ext/tclkit-8.6.18-linux-x86_64 tests/gui_logic.tcl
       - name: UI logic (real Metakit, Tcl 8.5)
@@ -651,7 +656,7 @@ jobs:
           export MKIT_STORE="$GITHUB_WORKSPACE/mkstudio.vfs/lib/app-mkstudio/store.tcl"
           for kit in "$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.18-linux-x86_64" "$GITHUB_WORKSPACE/tools/ext/tclkit-8.6.3-linux-x86_64"; do
             echo "=== $kit"
-            for t in studio_contract studio_listbug studio_repair attest locking lock_crash lock_takeover first_commit commitfail commitfail_records damage review_regress dropview insertrows run; do
+            for t in studio_contract studio_listbug studio_repair attest locking lock_crash lock_takeover first_commit commitfail commitfail_records damage review_regress dropview insertrows blobs kittables run; do
               echo "--- $t"
               # (a suite this mkit-sql commit does not have yet - the upstream leg may be older than the pinned one - is skipped, not failed)
               [ -f "tests/$t.tcl" ] || { echo "(no tests/$t.tcl in this mkit-sql checkout)"; continue; }
